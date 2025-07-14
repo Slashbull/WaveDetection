@@ -1,5 +1,5 @@
-# Quantum M.A.N.T.R.A. Requirements
-# Multi-Dimensional Trading Intelligence System
+# Quantum M.A.N.T.R.A. Ultimate Requirements
+# Streamlit Cloud compatible - no scipy needed!
 
 # Core framework
 streamlit==1.35.0
@@ -8,12 +8,8 @@ streamlit==1.35.0
 pandas==2.2.2
 numpy==1.26.4
 
-# Advanced visualizations
+# Visualization
 plotly==5.22.0
 
-# Statistical computations
-scipy==1.13.1
-
-# Additional utilities
-requests==2.32.3  # For Google Sheets download
-openpyxl==3.1.4   # Excel file support (optional)
+# HTTP requests for Google Sheets
+requests==2.32.3
