@@ -28,11 +28,9 @@ FL = CONFIG.HARD_FILTERS
 _pct_rank = lambda s: s.rank(pct=True, method="min")
 _z        = lambda s: stats.zscore(s.fillna(s.median()), nan_policy="omit")
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Factor construction
 # ─────────────────────────────────────────────────────────────────────────────
-
 def _build_factors(df: pd.DataFrame) -> pd.DataFrame:
     f = pd.DataFrame(index=df.index)
 
@@ -53,7 +51,7 @@ def _build_factors(df: pd.DataFrame) -> pd.DataFrame:
     eps_scaled = df["eps_tier"].map(_EPS_MAP).fillna(0) / _MAX_EPS
     f["eps"] = 0.5 * _pct_rank(df["eps_change_pct"]) + 0.5 * eps_scaled
 
-    # Volume conviction
+    # Volume conviction (uses percent columns, already cleaned)
     f["volume"] = _pct_rank(df["vol_ratio_1d_90d"] +
                              df["vol_ratio_7d_90d"] +
                              df["vol_ratio_30d_90d"] +
@@ -69,26 +67,21 @@ def _build_factors(df: pd.DataFrame) -> pd.DataFrame:
 
     return f
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Scoring
 # ─────────────────────────────────────────────────────────────────────────────
-
 def _blend(f: pd.DataFrame) -> pd.Series:
     # Exponent‑weighted geometric mean (prevents one weak pillar hiding)
     f_clipped = f.clip(lower=1e-6, upper=1)
     exps = pd.Series(W, index=f.columns)
     return np.exp((np.log(f_clipped) * exps).sum(axis=1))
 
-
 def _probability(raw: pd.Series) -> pd.Series:
     return 1 / (1 + np.exp(-_z(raw)))
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Public API
 # ─────────────────────────────────────────────────────────────────────────────
-
 def tag_watchlist(df: pd.DataFrame) -> pd.DataFrame:
     work = df.copy()
 
@@ -117,7 +110,6 @@ def tag_watchlist(df: pd.DataFrame) -> pd.DataFrame:
     return work[[
         "ticker", "category", "sector", "price_tier", "tag", "edge_prob"
     ]].sort_values("edge_prob", ascending=False)
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CLI test
