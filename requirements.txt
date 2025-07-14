@@ -1,7 +1,19 @@
-# requirements.txt  — FINAL (locked)
+# Quantum M.A.N.T.R.A. Requirements
+# Multi-Dimensional Trading Intelligence System
 
-streamlit==1.34.0   # UI framework
-pandas==2.2.2       # Data handling
-numpy==1.26.3       # Numeric operations
-scipy==1.13.0       # z-scores / statistics
-requests==2.32.3    # Google-Sheet CSV download
+# Core framework
+streamlit==1.35.0
+
+# Data processing
+pandas==2.2.2
+numpy==1.26.4
+
+# Advanced visualizations
+plotly==5.22.0
+
+# Statistical computations
+scipy==1.13.1
+
+# Additional utilities
+requests==2.32.3  # For Google Sheets download
+openpyxl==3.1.4   # Excel file support (optional)
