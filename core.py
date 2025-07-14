@@ -21,7 +21,6 @@ from config import CONFIG
 import data_loader as dl
 from adaptive_tag_model import tag_watchlist
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Public utility
 # ─────────────────────────────────────────────────────────────────────────────
@@ -50,10 +49,8 @@ def run(
         df_raw = dl.load_csv(csv)
     else:
         df_raw = dl.fetch_watchlist(sheet_id, gid)
-
     tagged = tag_watchlist(df_raw)
     return tagged.head(top)
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CLI helper
@@ -65,7 +62,6 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--gid",       help="Override worksheet gid")
     p.add_argument("--top", type=int, default=25, help="Rows to print")
     return p.parse_args()
-
 
 def _cli() -> None:
     args = _parse_args()
@@ -82,7 +78,6 @@ def _cli() -> None:
     except Exception as e:
         print(f"❌  Error: {e}", file=sys.stderr)
         sys.exit(1)
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Entry-point
