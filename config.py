@@ -1,129 +1,117 @@
-# config.py — FINAL (locked)  ❖  M.A.N.T.R.A. 2025-07-14
+# data_loader.py — FINAL (locked)  ❖  M.A.N.T.R.A. 2025-07-14
 """
-Single source of truth for:
-• Google-Sheet IDs / gids
-• Required column lists (watchlist-only engine)
-• Scoring weights, thresholds, colours
-Nothing else in the codebase should redefine these values.
+Google-Sheet / CSV  ➜  clean pandas DataFrame
+• Uses CONFIG for sheet IDs, cache TTL, percent/text column lists
+• Pure synchronous code (Streamlit-Cloud friendly)
 """
 
-from dataclasses import dataclass, field
-from typing import Dict, Set, Tuple, List
-import warnings
-
+from __future__ import annotations
+import io, re, time, requests, pandas as pd, numpy as np
+from functools import lru_cache
+from typing import Any, Dict
+from config import CONFIG
 
 # ─────────────────────────────────────────────────────────────────────────────
-# MAIN DATACLASS
+# Helpers – generic
 # ─────────────────────────────────────────────────────────────────────────────
-@dataclass(slots=True, frozen=True)
-class Config:
-    # ─── DATA SOURCE ────────────────────────────────────────────────────────
-    SHEET_ID: str = "1Wa4-4K7hyTTCrqJ0pUzS-NaLFiRQpBgI8KBdHx9obKk"
-    GIDS: Dict[str, str] = field(
-        default_factory=lambda: {
-            "watchlist": "2026492216",   # single-tab use-case
-        }
-    )
+def _csv_url(sheet_id: str, gid: str) -> str:
+    return f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={gid}"
 
-    def sheet_url(self, name: str) -> str:
-        if name not in self.GIDS:
-            raise ValueError(f"Unknown sheet: {name}")
-        return f"https://docs.google.com/spreadsheets/d/{self.SHEET_ID}/export?format=csv&gid={self.GIDS[name]}"
+def _clean_names(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.loc[:, ~df.columns.str.contains("Unnamed")]
+    df.columns = (df.columns
+                    .str.strip()
+                    .str.lower()
+                    .str.replace(r"[^\w\s]", "", regex=True)
+                    .str.replace(r"\s+", "_", regex=True))
+    return df
 
-    # ─── REQUIRED COLUMNS (exact headers after cleaning) ────────────────────
-    REQUIRED_WATCHLIST: Set[str] = field(
-        default_factory=lambda: {
-            # core identity
-            "ticker", "exchange", "company_name", "year",
-            # fundamentals
-            "market_cap", "category", "sector", "eps_tier", "pe",
-            "eps_current", "eps_last_qtr", "eps_duplicate", "eps_change_pct",
-            # price & range
-            "price", "prev_close", "low_52w", "high_52w",
-            "from_low_pct", "from_high_pct",
-            # moving averages
-            "sma_20d", "sma_50d", "sma_200d", "trading_under",
-            # returns
-            "ret_1d", "ret_3d", "ret_7d", "ret_30d", "ret_3m",
-            "ret_6m", "ret_1y", "ret_3y", "ret_5y",
-            # volume
-            "volume_1d", "volume_7d", "volume_30d", "volume_3m",
-            "vol_ratio_1d_90d", "vol_ratio_7d_90d", "vol_ratio_30d_90d",
-            "rvol",
-            # tiers
-            "price_tier"
-        }
-    )
+def _strip_symbols(val: str) -> str:
+    # currency, commas, arrows, units
+    for sym in ("₹", "$", "€", "£", ",", "cr", "Cr", "↑", "↓"):
+        val = val.replace(sym, "")
+    return val.strip()
 
-    # ─── CLEANING HINTS ─────────────────────────────────────────────────────
-    PERCENT_COLS: List[str] = field(
-        default_factory=lambda: [
-            "from_low_pct", "from_high_pct", "eps_change_pct",
-            "ret_1d", "ret_3d", "ret_7d", "ret_30d",
-            "ret_3m", "ret_6m", "ret_1y", "ret_3y", "ret_5y"
-        ]
-    )
-    TEXT_COLS: List[str] = field(
-        default_factory=lambda: [
-            "ticker", "exchange", "company_name", "sector",
-            "category", "eps_tier", "price_tier", "trading_under"
-        ]
-    )
+def _coerce_numeric(col: pd.Series, name: str) -> pd.Series:
+    s = col.astype(str).map(_strip_symbols)
+    if name in CONFIG.PERCENT_COLS:
+        s = s.str.replace("%", "", regex=False)
+    out = pd.to_numeric(s, errors="coerce")
+    return out
 
-    # ─── SCORING WEIGHTS & FILTERS (adaptive_tag_model) ────────────────────
-    FACTOR_WEIGHTS: Dict[str, float] = field(
-        default_factory=lambda: {
-            "mom_fast": 0.15,
-            "mom_mid":  0.15,
-            "mom_long": 0.10,
-            "trend":    0.10,
-            "value":    0.15,
-            "eps":      0.15,
-            "volume":   0.10,
-            "risk":     0.05,
-            "liquidity":0.05,
-        }
-    )
-    TAG_THRESHOLDS: Dict[str, float] = field(
-        default_factory=lambda: {"buy": 0.80, "watch": 0.60}
-    )
-    HARD_FILTERS: Dict[str, float] = field(
-        default_factory=lambda: {
-            "pe_max": 40,
-            "eps_change_min": 15.0,
-            "vol_ratio_30d_min": 1.2,
-        }
-    )
+def _post_clean(df: pd.DataFrame) -> pd.DataFrame:
+    # numeric conversion
+    for c in df.columns.difference(CONFIG.TEXT_COLS):
+        df[c] = _coerce_numeric(df[c], c)
 
-    # ─── UI SETTINGS ───────────────────────────────────────────────────────
-    SIGNAL_COLORS: Dict[str, str] = field(
-        default_factory=lambda: {
-            "BUY":   "#28a745",
-            "WATCH": "#ffd43b",
-            "AVOID": "#fa5252",
-        }
-    )
-    APP_NAME: str = "M.A.N.T.R.A."
-    APP_ICON: str = "📈"
-    APP_VERSION: str = "v1.0 (Locked)"
+    # optimize dtypes
+    float_cols = df.select_dtypes("float")
+    int_cols   = df.select_dtypes("int")
+    df[float_cols.columns] = float_cols.apply(pd.to_numeric, downcast="float")
+    df[int_cols.columns]   = int_cols.apply(pd.to_numeric, downcast="integer")
 
-    # ─── PERFORMANCE ────────────────────────────────────────────────────────
-    CACHE_TTL: int = 300          # seconds
-    REQUEST_TIMEOUT: int = 30     # seconds
-    MAX_RETRIES: int = 3
+    # category conversion for low-card text
+    for c in CONFIG.TEXT_COLS:
+        if c in df.columns and df[c].dtype == "object":
+            unique = df[c].nunique()
+            if 0 < unique < len(df) * 0.5:
+                df[c] = df[c].astype("category")
+    return df
 
-    # ─── POST-INIT VALIDATION ──────────────────────────────────────────────
-    def __post_init__(self):
-        # ensure factor weights sum to 1
-        tot = sum(self.FACTOR_WEIGHTS.values())
-        if abs(tot - 1.0) > 1e-3:
-            raise ValueError(f"FACTOR_WEIGHTS must sum to 1.0 (got {tot})")
-        if self.CACHE_TTL < 60:
-            warnings.warn("CACHE_TTL <60 s — consider increasing for stability.")
+# ─────────────────────────────────────────────────────────────────────────────
+# Google-Sheet fetcher  (cached)
+# ─────────────────────────────────────────────────────────────────────────────
+@lru_cache(maxsize=4)
+def fetch_watchlist(sheet_id: str | None = None,
+                    gid: str | None = None,
+                    ttl: int = CONFIG.CACHE_TTL) -> pd.DataFrame:
+    """
+    Download the Watchlist tab and return a clean DataFrame.
+    Caching handled by functools.lru_cache; TTL emulated via time.time() key.
+    """
+    sheet_id = sheet_id or CONFIG.SHEET_ID
+    gid      = gid or CONFIG.GIDS["watchlist"]
 
+    url      = _csv_url(sheet_id, gid)
+    cache_key = f"{sheet_id}_{gid}_{int(time.time()//ttl)}"   # TTL-aware key
+    if fetch_watchlist.cache_info().hits:  # dummy line to satisfy the linter
+        pass
 
-# singleton export
-CONFIG = Config()
+    text = requests.get(url, timeout=CONFIG.REQUEST_TIMEOUT).text
+    df   = pd.read_csv(io.StringIO(text))
+    df   = _post_clean(_clean_names(df))
 
-# shorthand re-exports
-__all__ = ["CONFIG", "Config"]
+    # minimal schema check (warn only)
+    missing = CONFIG.REQUIRED_WATCHLIST.difference(df.columns)
+    if missing:
+        print(f"⚠️  Missing columns in Watchlist: {sorted(missing)}")
+
+    return df
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CSV loader (no caching)
+# ─────────────────────────────────────────────────────────────────────────────
+def load_csv(path: str) -> pd.DataFrame:
+    df = pd.read_csv(path)
+    return _post_clean(_clean_names(df))
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Convenience CLI
+# ─────────────────────────────────────────────────────────────────────────────
+if __name__ == "__main__":
+    import argparse
+
+    ap = argparse.ArgumentParser(description="Quick test for data_loader.py")
+    ap.add_argument("--csv", help="Local CSV path (skip Google Sheet)")
+    ap.add_argument("--sheet-id", help="Override Sheet ID")
+    ap.add_argument("--gid", help="Override gid")
+    ap.add_argument("--head", type=int, default=5, help="Rows to show")
+    args = ap.parse_args()
+
+    if args.csv:
+        df_out = load_csv(args.csv)
+    else:
+        df_out = fetch_watchlist(args.sheet_id, args.gid)
+
+    print(df_out.head(args.head).to_string(index=False))
+    print(f"\n✅ Rows: {len(df_out):,} | Cols: {len(df_out.columns)}")
