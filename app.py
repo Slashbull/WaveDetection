@@ -1,8 +1,8 @@
-# app.py (M.A.N.T.R.A. Streamlit Dashboard — FINAL VERSION)
+# app.py (M.A.N.T.R.A. Streamlit Dashboard — FINAL, ALL-TIME BEST)
 """
-Streamlit dashboard UI for M.A.N.T.R.A.
-Uses core.py for loading, engine.py for analytics, filters.py for filtering.
-Ultra-clean, minimal, robust. No code bloat.
+M.A.N.T.R.A. — The Indian Stock Intelligence Engine
+Streamlit Dashboard (Ultra-Clean, Modular, No Bloat)
+All analytics logic in engine.py, filters in filters.py, data in core.py.
 """
 
 import streamlit as st
@@ -33,7 +33,7 @@ st.title("📈 M.A.N.T.R.A. — Indian Stock Intelligence Engine")
 st.caption("Decisions, Not Guesses. Data-Driven Edge Only.")
 
 # ============================================================================
-# LOAD DATA (caching handled by core)
+# LOAD DATA & HEALTH PANEL
 # ============================================================================
 
 with st.sidebar:
@@ -61,7 +61,7 @@ regime = st.sidebar.selectbox(
 )
 
 # ============================================================================
-# DATA PIPELINE
+# DATA PIPELINE (Scoring, Tagging, Anomalies, Edges, Sector)
 # ============================================================================
 
 with st.spinner("Computing scores & analytics..."):
@@ -103,7 +103,7 @@ preset = st.sidebar.selectbox(
 )
 
 # Search & Sort
-search_ticker = st.sidebar.text_input("Search Ticker").strip().upper()
+search_ticker = st.sidebar.text_input("Search Ticker or Company").strip().upper()
 sort_by = st.sidebar.selectbox("Sort By", ["final_score", "momentum_score", "value_score", "eps_score", "volume_score"])
 ascending = st.sidebar.checkbox("Ascending Sort", False)
 
