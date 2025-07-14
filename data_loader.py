@@ -11,13 +11,11 @@ from functools import lru_cache
 from typing import Any, Dict
 from config import CONFIG
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers – generic
 # ─────────────────────────────────────────────────────────────────────────────
 def _csv_url(sheet_id: str, gid: str) -> str:
     return f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={gid}"
-
 
 def _clean_names(df: pd.DataFrame) -> pd.DataFrame:
     df = df.loc[:, ~df.columns.str.contains("Unnamed")]
@@ -28,13 +26,11 @@ def _clean_names(df: pd.DataFrame) -> pd.DataFrame:
                     .str.replace(r"\s+", "_", regex=True))
     return df
 
-
 def _strip_symbols(val: str) -> str:
     # currency, commas, arrows, units
     for sym in ("₹", "$", "€", "£", ",", "cr", "Cr", "↑", "↓"):
         val = val.replace(sym, "")
     return val.strip()
-
 
 def _coerce_numeric(col: pd.Series, name: str) -> pd.Series:
     s = col.astype(str).map(_strip_symbols)
@@ -43,13 +39,12 @@ def _coerce_numeric(col: pd.Series, name: str) -> pd.Series:
     out = pd.to_numeric(s, errors="coerce")
     return out
 
-
 def _post_clean(df: pd.DataFrame) -> pd.DataFrame:
     # numeric conversion
     for c in df.columns.difference(CONFIG.TEXT_COLS):
         df[c] = _coerce_numeric(df[c], c)
 
-    # optimise dtypes
+    # optimize dtypes
     float_cols = df.select_dtypes("float")
     int_cols   = df.select_dtypes("int")
     df[float_cols.columns] = float_cols.apply(pd.to_numeric, downcast="float")
@@ -62,7 +57,6 @@ def _post_clean(df: pd.DataFrame) -> pd.DataFrame:
             if 0 < unique < len(df) * 0.5:
                 df[c] = df[c].astype("category")
     return df
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Google-Sheet fetcher  (cached)
@@ -94,14 +88,12 @@ def fetch_watchlist(sheet_id: str | None = None,
 
     return df
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # CSV loader (no caching)
 # ─────────────────────────────────────────────────────────────────────────────
 def load_csv(path: str) -> pd.DataFrame:
     df = pd.read_csv(path)
     return _post_clean(_clean_names(df))
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Convenience CLI
