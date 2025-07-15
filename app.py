@@ -897,11 +897,18 @@ def main():
         
         # Special situations
         if 'special_situation' in analyzed_df.columns:
-            special_situations = analyzed_df['special_situation'].unique()
+            special_situations = analyzed_df['special_situation'].unique().tolist()
+            # Only set defaults that actually exist in the data
+            available_defaults = [s for s in ['Perfect Storm', 'Momentum Monster', 'Smart Money', 'Hidden Gem'] 
+                                if s in special_situations]
+            # If no special defaults exist, include 'None' if it exists
+            if not available_defaults and 'None' in special_situations:
+                available_defaults = ['None']
+            
             special_filter = st.multiselect(
                 "Special Situations",
                 special_situations,
-                default=['Perfect Storm', 'Momentum Monster', 'Smart Money']
+                default=available_defaults
             )
         else:
             special_filter = ['None']
@@ -975,7 +982,7 @@ def main():
     if selected_sectors and 'sector' in filtered_df.columns:
         filtered_df = filtered_df[filtered_df['sector'].isin(selected_sectors)]
     
-    if 'special_situation' in filtered_df.columns:
+    if 'special_situation' in filtered_df.columns and special_filter:
         filtered_df = filtered_df[filtered_df['special_situation'].isin(special_filter)]
     
     # Advanced filters
@@ -1021,7 +1028,10 @@ def main():
         st.metric("💪 Strong", strong_count)
     
     with col4:
-        special_count = len(filtered_df[filtered_df['special_situation'] != 'None'])
+        if 'special_situation' in filtered_df.columns:
+            special_count = len(filtered_df[filtered_df['special_situation'] != 'None'])
+        else:
+            special_count = 0
         st.metric("🌟 Special", special_count)
     
     with col5:
@@ -1044,11 +1054,12 @@ def main():
         # Top opportunity alert
         if len(filtered_df) > 0 and filtered_df.iloc[0]['signal'] == 'ELITE':
             top_stock = filtered_df.iloc[0]
+            special_text = f"- Special: {top_stock['special_situation']}" if 'special_situation' in top_stock else ""
             st.success(f"""
             🚨 **TOP OPPORTUNITY: {top_stock['ticker']} - {top_stock.get('company_name', 'N/A')}**
             - Signal: **{top_stock['signal']}** | Alpha: **{top_stock['alpha_score']:.3f}** | Confidence: **{top_stock['confidence']}**
             - Price: ₹{top_stock['price']:.2f} | 30D Return: {top_stock.get('ret_30d', 0):.1f}%
-            - Special: {top_stock['special_situation']}
+            {special_text}
             """)
         
         # Search functionality
@@ -1078,13 +1089,21 @@ def main():
                 ]
         
         # Display settings
+        all_display_cols = ['ticker', 'company_name', 'signal', 'alpha_score', 'confidence',
+                           'special_situation', 'price', 'pe', 'eps_tier', 'ret_30d',
+                           'momentum_score', 'volume_score', 'technical_score', 'fundamental_score']
+        # Only show columns that exist
+        available_display_cols = [col for col in all_display_cols if col in display_df.columns]
+        
+        default_display_cols = ['ticker', 'company_name', 'signal', 'alpha_score', 
+                               'price', 'pe', 'ret_30d', 'special_situation']
+        # Only include defaults that exist
+        default_display_cols = [col for col in default_display_cols if col in available_display_cols]
+        
         show_cols = st.multiselect(
             "Display Columns",
-            ['ticker', 'company_name', 'signal', 'alpha_score', 'confidence',
-             'special_situation', 'price', 'pe', 'eps_tier', 'ret_30d',
-             'momentum_score', 'volume_score', 'technical_score', 'fundamental_score'],
-            default=['ticker', 'company_name', 'signal', 'alpha_score', 
-                    'price', 'pe', 'ret_30d', 'special_situation']
+            available_display_cols,
+            default=default_display_cols
         )
         
         # Filter for available columns
@@ -1221,7 +1240,8 @@ def main():
                     st.caption(f"30D: {stock_data['ret_30d']:.1f}%")
             
             with col4:
-                st.metric("Special", stock_data['special_situation'])
+                special_sit = stock_data.get('special_situation', 'None')
+                st.metric("Special", special_sit)
                 if 'sector' in stock_data:
                     st.caption(stock_data['sector'])
             
@@ -1386,12 +1406,13 @@ Generated: {timestamp}
             
             # Add top stocks
             for i, row in filtered_df.head(max_stocks).iterrows():
+                special_sit = row.get('special_situation', 'None')
                 report_content += f"""
 ### {i+1}. {row['ticker']} - {row.get('company_name', 'N/A')}
 - Signal: {row['signal']} | Alpha: {row['alpha_score']:.3f}
 - Price: ₹{row['price']:.2f} | P/E: {row.get('pe', 'N/A')}
 - 30D Return: {row.get('ret_30d', 0):.1f}%
-- Special Situation: {row['special_situation']}
+- Special Situation: {special_sit}
 """
             
             # Add market insights
@@ -1422,11 +1443,16 @@ Generated: {timestamp}
         export_df = filtered_df.copy()
         
         # Select columns for export
+        available_export_cols = export_df.columns.tolist()
+        default_export_cols = ['ticker', 'company_name', 'signal', 'alpha_score', 'price', 
+                              'pe', 'ret_30d', 'special_situation', 'sector', 'category']
+        # Only include defaults that exist
+        default_export_cols = [col for col in default_export_cols if col in available_export_cols]
+        
         export_columns = st.multiselect(
             "Select Columns for Export",
-            export_df.columns.tolist(),
-            default=['ticker', 'company_name', 'signal', 'alpha_score', 'price', 
-                    'pe', 'ret_30d', 'special_situation', 'sector', 'category']
+            available_export_cols,
+            default=default_export_cols
         )
         
         # Filter for available columns
