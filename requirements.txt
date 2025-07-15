@@ -12,3 +12,6 @@ scipy==1.14.1
 
 # Note: These are the latest stable versions as of deployment
 # Streamlit Cloud will automatically install these dependencies
+
+seaborn>=0.12.2
+
