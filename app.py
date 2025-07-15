@@ -72,10 +72,13 @@ def load_data():
         df.columns = [col.strip() for col in df.columns]
         
         # Critical numeric conversions
-        # Volume columns
-        for col in ['volume_90d', 'volume_180d']:
+        # Volume columns - ENSURE they are numeric
+        volume_cols = ['volume_1d', 'volume_7d', 'volume_30d', 'volume_3m', 'volume_90d', 'volume_180d']
+        for col in volume_cols:
             if col in df.columns:
-                df[col] = pd.to_numeric(df[col].astype(str).str.replace(',', ''), errors='coerce')
+                # Convert to string first, then clean and convert to numeric
+                df[col] = df[col].astype(str).str.replace(',', '').str.replace('₹', '').str.strip()
+                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
         
         # Percentage columns  
         for col in ['vol_ratio_1d_90d', 'vol_ratio_7d_90d', 'vol_ratio_30d_90d', 
@@ -89,7 +92,7 @@ def load_data():
                 df[col] = pd.to_numeric(df[col], errors='coerce')
         
         # Price columns
-        for col in ['price', 'sma_20d', 'sma_50d', 'sma_200d']:
+        for col in ['price', 'sma_20d', 'sma_50d', 'sma_200d', 'low_52w', 'high_52w']:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce')
         
@@ -101,7 +104,11 @@ def load_data():
         # Fill critical NaN values
         df['vol_ratio_30d_90d'] = df['vol_ratio_30d_90d'].fillna(0)
         df['vol_ratio_30d_180d'] = df['vol_ratio_30d_180d'].fillna(0)
-        df['pe'] = df['pe'].fillna(df['pe'].median())
+        df['pe'] = df['pe'].fillna(df['pe'].median() if df['pe'].notna().any() else 20)
+        
+        # Ensure volume_1d is numeric (extra safety check)
+        if 'volume_1d' in df.columns:
+            df['volume_1d'] = pd.to_numeric(df['volume_1d'], errors='coerce').fillna(0)
         
         return df
         
@@ -125,20 +132,40 @@ def calculate_volume_acceleration(df):
         labels=['STRONG DECEL', 'DECEL', 'STABLE', 'ACCEL', 'STRONG ACCEL']
     )
     
-    # Calculate average trade size trend
+    # Calculate average trade size trend - with safety checks
     if all(col in df.columns for col in ['volume_1d', 'volume_7d', 'volume_30d']):
-        df['avg_trade_size_trend'] = (
-            df['volume_1d'] / 1 > 
-            df['volume_7d'] / 7
-        ).astype(int)
+        # Ensure columns are numeric
+        df['volume_1d'] = pd.to_numeric(df['volume_1d'], errors='coerce').fillna(0)
+        df['volume_7d'] = pd.to_numeric(df['volume_7d'], errors='coerce').fillna(0)
+        
+        # Calculate with safety for division
+        df['avg_trade_size_trend'] = np.where(
+            df['volume_7d'] > 0,
+            (df['volume_1d'] > df['volume_7d'] / 7).astype(int),
+            0
+        )
     
     return df
 
 def detect_momentum_acceleration(df):
     """Detect if momentum is accelerating RIGHT NOW"""
-    # Calculate daily momentum acceleration
-    df['momentum_1d_3d'] = np.where(df['ret_3d'] != 0, df['ret_1d'] / (df['ret_3d'] / 3), 0)
-    df['momentum_3d_7d'] = np.where(df['ret_7d'] != 0, (df['ret_3d'] / 3) / (df['ret_7d'] / 7), 0)
+    # Ensure return columns are numeric
+    for col in ['ret_1d', 'ret_3d', 'ret_7d', 'ret_1y', 'ret_3y']:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+    
+    # Calculate daily momentum acceleration with safety checks
+    df['momentum_1d_3d'] = np.where(
+        (df['ret_3d'] != 0) & (df['ret_3d'].notna()),
+        df['ret_1d'] / (df['ret_3d'] / 3),
+        0
+    )
+    
+    df['momentum_3d_7d'] = np.where(
+        (df['ret_7d'] != 0) & (df['ret_7d'].notna()),
+        (df['ret_3d'] / 3) / (df['ret_7d'] / 7),
+        0
+    )
     
     # Combined acceleration score
     df['momentum_acceleration'] = (df['momentum_1d_3d'] + df['momentum_3d_7d']) / 2
@@ -146,7 +173,7 @@ def detect_momentum_acceleration(df):
     # Long-term performance check
     if all(col in df.columns for col in ['ret_1y', 'ret_3y']):
         df['recent_vs_longterm'] = np.where(
-            df['ret_3y'] != 0,
+            (df['ret_3y'] != 0) & (df['ret_3y'].notna()),
             df['ret_1y'] > (df['ret_3y'] / 3),
             True
         )
@@ -155,9 +182,26 @@ def detect_momentum_acceleration(df):
 
 def calculate_sector_metrics(df):
     """Calculate sector median PE for comparison"""
-    sector_pe = df.groupby('sector')['pe'].median().to_dict()
-    df['sector_median_pe'] = df['sector'].map(sector_pe)
-    df['pe_vs_sector'] = df['pe'] / df['sector_median_pe']
+    # Only calculate for valid PE values
+    valid_pe_df = df[df['pe'] > 0]
+    if len(valid_pe_df) > 0:
+        sector_pe = valid_pe_df.groupby('sector')['pe'].median().to_dict()
+        df['sector_median_pe'] = df['sector'].map(sector_pe)
+        
+        # Handle missing sector medians
+        overall_median_pe = valid_pe_df['pe'].median()
+        df['sector_median_pe'] = df['sector_median_pe'].fillna(overall_median_pe)
+        
+        # Calculate PE vs sector safely
+        df['pe_vs_sector'] = np.where(
+            df['sector_median_pe'] > 0,
+            df['pe'] / df['sector_median_pe'],
+            1.0
+        )
+    else:
+        # If no valid PE values, set defaults
+        df['sector_median_pe'] = 20
+        df['pe_vs_sector'] = 1.0
     
     return df
 
@@ -166,23 +210,37 @@ def calculate_conviction_score(df):
     df['conviction_score'] = 0
     
     # Volume acceleration component (40 points)
-    df.loc[df['volume_acceleration'] > 0, 'conviction_score'] += 20
-    df.loc[df['volume_acceleration'] > 10, 'conviction_score'] += 20
+    if 'volume_acceleration' in df.columns:
+        df.loc[df['volume_acceleration'] > 0, 'conviction_score'] += 20
+        df.loc[df['volume_acceleration'] > 10, 'conviction_score'] += 20
     
     # Momentum building component (20 points)
-    if 'ret_7d' in df.columns and 'ret_30d' in df.columns:
+    if all(col in df.columns for col in ['ret_7d', 'ret_30d']):
+        # Ensure numeric
+        df['ret_7d'] = pd.to_numeric(df['ret_7d'], errors='coerce').fillna(0)
+        df['ret_30d'] = pd.to_numeric(df['ret_30d'], errors='coerce').fillna(0)
+        
         df.loc[df['ret_7d'] > df['ret_30d'] / 4, 'conviction_score'] += 20
     
     # Fundamentals improving (20 points)
-    if 'eps_current' in df.columns and 'eps_last_qtr' in df.columns:
+    if all(col in df.columns for col in ['eps_current', 'eps_last_qtr']):
+        # Ensure numeric
+        df['eps_current'] = pd.to_numeric(df['eps_current'], errors='coerce').fillna(0)
+        df['eps_last_qtr'] = pd.to_numeric(df['eps_last_qtr'], errors='coerce').fillna(0)
+        
         df.loc[df['eps_current'] > df['eps_last_qtr'], 'conviction_score'] += 20
     
     # Technical support (10 points)
-    if 'price' in df.columns and 'sma_50d' in df.columns:
+    if all(col in df.columns for col in ['price', 'sma_50d']):
+        # Ensure numeric
+        df['price'] = pd.to_numeric(df['price'], errors='coerce').fillna(0)
+        df['sma_50d'] = pd.to_numeric(df['sma_50d'], errors='coerce').fillna(0)
+        
         df.loc[df['price'] > df['sma_50d'], 'conviction_score'] += 10
     
     # High interest today (10 points)
     if 'rvol' in df.columns:
+        df['rvol'] = pd.to_numeric(df['rvol'], errors='coerce').fillna(0)
         df.loc[df['rvol'] > 1.5, 'conviction_score'] += 10
     
     return df
@@ -193,6 +251,12 @@ def calculate_conviction_score(df):
 
 def signal_0_triple_alignment(df):
     """TRIPLE ALIGNMENT: The Holy Grail Pattern - 90%+ win rate"""
+    # Ensure numeric columns
+    numeric_cols = ['volume_acceleration', 'eps_current', 'eps_last_qtr', 'from_high_pct', 'ret_30d', 'pe']
+    for col in numeric_cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+    
     df['triple_alignment'] = (
         (df['volume_acceleration'] > 10) &                      # Institutions loading
         (df['eps_current'] > df['eps_last_qtr']) &            # EPS accelerating
@@ -202,40 +266,64 @@ def signal_0_triple_alignment(df):
     )
     
     # Higher targets for this premium signal
-    df.loc[df['triple_alignment'], 'triple_alignment_target'] = (
-        40 + abs(df['from_high_pct']) * 0.5  # 40-60% target
-    )
+    if df['triple_alignment'].any():
+        triple_mask = df['triple_alignment'] == True
+        df.loc[triple_mask, 'triple_alignment_target'] = (
+            40 + df.loc[triple_mask, 'from_high_pct'].abs() * 0.5  # 40-60% target
+        )
     df.loc[df['triple_alignment'], 'position_size_multiplier'] = 3  # Bet bigger
     
     return df
 
 def signal_1_coiled_spring(df):
     """COILED SPRING: Accumulation + Stable Price + Away from highs"""
+    # Ensure required columns exist and are numeric
+    required_cols = ['volume_acceleration', 'ret_30d', 'from_high_pct', 'vol_ratio_30d_180d']
+    for col in required_cols:
+        if col not in df.columns:
+            df[col] = 0
+        else:
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+    
     df['coiled_spring'] = (
         (df['volume_acceleration'] > COILED_SPRING_PARAMS['min_vol_acceleration']) &  # Volume accelerating
         (df['ret_30d'].abs() < COILED_SPRING_PARAMS['max_price_move']) &             # Price stable
         (df['from_high_pct'] < COILED_SPRING_PARAMS['min_from_high']) &              # Away from highs
         (df['vol_ratio_30d_180d'] > 0) &                                             # Positive long-term volume
-        (~df['triple_alignment'])                                                     # Not already triple alignment
+        (~df.get('triple_alignment', False))                                          # Not already triple alignment
     )
     
     # Calculate expected gain based on how compressed the spring is
-    df.loc[df['coiled_spring'], 'coiled_spring_target'] = (
-        20 + abs(df['from_high_pct']) * 0.3  # More compressed = higher target
-    )
+    if df['coiled_spring'].any():
+        spring_mask = df['coiled_spring'] == True
+        df.loc[spring_mask, 'coiled_spring_target'] = (
+            20 + df.loc[spring_mask, 'from_high_pct'].abs() * 0.3  # More compressed = higher target
+        )
     df.loc[df['coiled_spring'], 'position_size_multiplier'] = 2  # 2x position
     
     return df
 
 def signal_2_momentum_knife(df):
     """MOMENTUM KNIFE: Acceleration + Volume Spike + Above Support"""
-    df['momentum_knife'] = (
-        (df['momentum_acceleration'] > MOMENTUM_KNIFE_PARAMS['min_acceleration']) &   # Accelerating
-        (df['vol_ratio_1d_90d'] > MOMENTUM_KNIFE_PARAMS['min_vol_spike']) &         # Volume spike
-        (df['ret_1d'] > 0) &                                                        # Positive today
-        (df['price'] > df['sma_50d']) &                                             # Above support
-        (~df['triple_alignment']) & (~df['coiled_spring'])                          # Not other signals
-    )
+    # Ensure required columns are numeric
+    numeric_cols = ['momentum_acceleration', 'vol_ratio_1d_90d', 'ret_1d', 'price', 'sma_50d']
+    for col in numeric_cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+    
+    # Create boolean conditions with safe defaults
+    has_columns = all(col in df.columns for col in ['momentum_acceleration', 'vol_ratio_1d_90d', 'ret_1d', 'price', 'sma_50d'])
+    
+    if has_columns:
+        df['momentum_knife'] = (
+            (df['momentum_acceleration'] > MOMENTUM_KNIFE_PARAMS['min_acceleration']) &   # Accelerating
+            (df['vol_ratio_1d_90d'] > MOMENTUM_KNIFE_PARAMS['min_vol_spike']) &         # Volume spike
+            (df['ret_1d'] > 0) &                                                        # Positive today
+            (df['price'] > df['sma_50d']) &                                             # Above support
+            (~df.get('triple_alignment', False)) & (~df.get('coiled_spring', False))    # Not other signals
+        )
+    else:
+        df['momentum_knife'] = False
     
     # Quick 3-5 day target
     df.loc[df['momentum_knife'], 'knife_target'] = 5  # 5% in 3 days
@@ -246,30 +334,62 @@ def signal_2_momentum_knife(df):
 
 def signal_3_smart_money(df):
     """SMART MONEY TELL: Earnings Growth + Cheap + Long-term Accumulation"""
-    df['smart_money'] = (
-        (df['eps_current'] > df['eps_last_qtr']) &                                  # Earnings accelerating
-        (df['eps_change_pct'] > SMART_MONEY_PARAMS['min_eps_growth']) &            # Strong growth
-        (df['vol_ratio_30d_180d'] > SMART_MONEY_PARAMS['min_accumulation']) &      # Long-term accumulation
-        (df['pe_vs_sector'] < 1) &                                                 # Below sector median
-        (df['pe'] > 0) & (df['pe'] < 40) &                                        # Reasonable PE
-        (~df['triple_alignment']) & (~df['coiled_spring']) & (~df['momentum_knife']) # Not other signals
-    )
+    # Ensure all required columns exist and are numeric
+    required_cols = ['eps_current', 'eps_last_qtr', 'eps_change_pct', 'vol_ratio_30d_180d', 
+                    'pe', 'pe_vs_sector']
+    
+    for col in required_cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+        else:
+            # Set defaults if column missing
+            if col == 'pe_vs_sector':
+                df[col] = 1.0
+            else:
+                df[col] = 0
+    
+    # Check if we have minimum required columns
+    if all(col in df.columns for col in ['eps_current', 'eps_last_qtr', 'pe']):
+        df['smart_money'] = (
+            (df['eps_current'] > df['eps_last_qtr']) &                                  # Earnings accelerating
+            (df['eps_change_pct'] > SMART_MONEY_PARAMS['min_eps_growth']) &            # Strong growth
+            (df['vol_ratio_30d_180d'] > SMART_MONEY_PARAMS['min_accumulation']) &      # Long-term accumulation
+            (df['pe_vs_sector'] < 1) &                                                 # Below sector median
+            (df['pe'] > 0) & (df['pe'] < 40) &                                        # Reasonable PE
+            (~df.get('triple_alignment', False)) & 
+            (~df.get('coiled_spring', False)) & 
+            (~df.get('momentum_knife', False))
+        )
+    else:
+        df['smart_money'] = False
     
     # 2-6 month target based on undervaluation
-    df.loc[df['smart_money'], 'smart_money_target'] = (
-        30 + (1 - df['pe_vs_sector']) * 20  # More undervalued = higher target
-    )
+    if df['smart_money'].any():
+        smart_money_mask = df['smart_money'] == True
+        if 'pe_vs_sector' in df.columns:
+            df.loc[smart_money_mask, 'smart_money_target'] = (
+                30 + (1 - df.loc[smart_money_mask, 'pe_vs_sector'].clip(0, 1)) * 20
+            )
+        else:
+            df.loc[smart_money_mask, 'smart_money_target'] = 40  # Default target
+            
     df.loc[df['smart_money'], 'position_size_multiplier'] = 1.5  # 1.5x position
     
     return df
 
 def detect_exit_conditions(df):
     """Detect when to EXIT positions"""
+    # Initialize exit signal columns
+    df['exit_signal_volume'] = False
+    df['exit_signal_exhaustion'] = False
+    df['exit_signal_earnings'] = False
+    
     # Volume deceleration = Smart money leaving
-    df['exit_signal_volume'] = df['volume_acceleration'] < -10
+    if 'volume_acceleration' in df.columns:
+        df['exit_signal_volume'] = df['volume_acceleration'] < -10
     
     # Momentum exhaustion
-    if all(col in df.columns for col in ['ret_1d', 'ret_7d', 'from_high_pct']):
+    if all(col in df.columns for col in ['ret_1d', 'ret_7d', 'ret_30d', 'from_high_pct']):
         df['exit_signal_exhaustion'] = (
             (df['from_high_pct'] > -5) &  # Near highs
             (df['ret_1d'] < 0) &          # Negative today
@@ -278,13 +398,21 @@ def detect_exit_conditions(df):
     
     # EPS deceleration
     if all(col in df.columns for col in ['eps_current', 'eps_last_qtr']):
-        df['exit_signal_earnings'] = df['eps_current'] < df['eps_last_qtr'] * 0.9
+        # Ensure numeric
+        df['eps_current'] = pd.to_numeric(df['eps_current'], errors='coerce').fillna(0)
+        df['eps_last_qtr'] = pd.to_numeric(df['eps_last_qtr'], errors='coerce').fillna(0)
+        
+        df['exit_signal_earnings'] = np.where(
+            df['eps_last_qtr'] > 0,
+            df['eps_current'] < df['eps_last_qtr'] * 0.9,
+            False
+        )
     
     # Master exit signal
     df['EXIT_NOW'] = (
-        df.get('exit_signal_volume', False) | 
-        df.get('exit_signal_exhaustion', False) |
-        df.get('exit_signal_earnings', False)
+        df['exit_signal_volume'] | 
+        df['exit_signal_exhaustion'] |
+        df['exit_signal_earnings']
     )
     
     return df
@@ -295,6 +423,10 @@ def detect_exit_conditions(df):
 
 def run_edge_detection(df):
     """Run all edge detection algorithms"""
+    
+    # Initialize columns to avoid errors
+    df['position_size_multiplier'] = 1.0
+    df['EXIT_NOW'] = False
     
     # Calculate derived metrics
     df = calculate_volume_acceleration(df)
@@ -317,9 +449,6 @@ def run_edge_detection(df):
     df.loc[df['momentum_knife'], 'EDGE_SIGNAL'] = 'MOMENTUM_KNIFE'  
     df.loc[df['coiled_spring'], 'EDGE_SIGNAL'] = 'COILED_SPRING'
     df.loc[df['triple_alignment'], 'EDGE_SIGNAL'] = 'TRIPLE_ALIGNMENT'  # Highest priority
-    
-    # Set position sizes
-    df['position_size_multiplier'] = df['position_size_multiplier'].fillna(1)
     
     # Add conviction-based ranking
     df['final_rank'] = (
@@ -362,8 +491,8 @@ def create_volume_acceleration_scatter(df):
                 text=signal_stocks['ticker'],
                 textposition="top center",
                 marker=dict(size=size, color=color, line=dict(width=1, color='black')),
-                hovertemplate='<b>%{text}</b><br>Vol Accel: %{x:.1f}%<br>30D Return: %{y:.1f}%<br>Conviction: ' + 
-                             signal_stocks['conviction_score'].astype(str) + '<extra></extra>'
+                hovertemplate='<b>%{text}</b><br>Vol Accel: %{x:.1f}%<br>30D Return: %{y:.1f}%<br>Conviction: %{customdata}<extra></extra>',
+                customdata=signal_stocks['conviction_score'].round(0).astype(int) if 'conviction_score' in signal_stocks.columns else [0]*len(signal_stocks)
             ))
     
     # Add quadrant lines
@@ -465,13 +594,29 @@ def main():
         df = run_edge_detection(df)
     
     # Get stocks for each signal
-    triple_alignments = df[df['EDGE_SIGNAL'] == 'TRIPLE_ALIGNMENT'].sort_values('conviction_score', ascending=False)
-    coiled_springs = df[df['EDGE_SIGNAL'] == 'COILED_SPRING'].sort_values('volume_acceleration', ascending=False)
-    momentum_knives = df[df['EDGE_SIGNAL'] == 'MOMENTUM_KNIFE'].sort_values('momentum_acceleration', ascending=False)
-    smart_money = df[df['EDGE_SIGNAL'] == 'SMART_MONEY'].sort_values('eps_change_pct', ascending=False)
+    triple_alignments = df[df['EDGE_SIGNAL'] == 'TRIPLE_ALIGNMENT']
+    if 'conviction_score' in df.columns:
+        triple_alignments = triple_alignments.sort_values('conviction_score', ascending=False)
     
-    # Get exit signals
-    exit_signals = df[df['EXIT_NOW'] == True].sort_values('volume_acceleration')
+    coiled_springs = df[df['EDGE_SIGNAL'] == 'COILED_SPRING']
+    if 'volume_acceleration' in df.columns:
+        coiled_springs = coiled_springs.sort_values('volume_acceleration', ascending=False)
+    
+    momentum_knives = df[df['EDGE_SIGNAL'] == 'MOMENTUM_KNIFE']
+    if 'momentum_acceleration' in df.columns:
+        momentum_knives = momentum_knives.sort_values('momentum_acceleration', ascending=False)
+    
+    smart_money = df[df['EDGE_SIGNAL'] == 'SMART_MONEY']
+    if 'eps_change_pct' in df.columns:
+        smart_money = smart_money.sort_values('eps_change_pct', ascending=False)
+    
+    # Get exit signals - ensure EXIT_NOW is boolean
+    if 'EXIT_NOW' in df.columns:
+        exit_signals = df[df['EXIT_NOW'] == True]
+        if 'volume_acceleration' in df.columns:
+            exit_signals = exit_signals.sort_values('volume_acceleration')
+    else:
+        exit_signals = pd.DataFrame()  # Empty dataframe if no EXIT_NOW column
     
     # Summary cards
     st.markdown("### 📊 Today's Edge Opportunities")
@@ -525,41 +670,66 @@ def main():
                           'volume_acceleration', 'eps_change_pct', 'from_high_pct',
                           'triple_alignment_target', 'position_size_multiplier', 'pe', 'sector']
             
+            # Only include columns that exist
+            available_cols = [col for col in display_cols if col in triple_alignments.columns]
+            
+            # Create format dict only for numeric columns that exist
+            format_dict = {}
+            if 'price' in available_cols:
+                format_dict['price'] = '₹{:.2f}'
+            if 'conviction_score' in available_cols:
+                format_dict['conviction_score'] = '{:.0f}/100'
+            if 'volume_acceleration' in available_cols:
+                format_dict['volume_acceleration'] = '{:.1f}%'
+            if 'eps_change_pct' in available_cols:
+                format_dict['eps_change_pct'] = '{:.1f}%'
+            if 'from_high_pct' in available_cols:
+                format_dict['from_high_pct'] = '{:.1f}%'
+            if 'triple_alignment_target' in available_cols:
+                format_dict['triple_alignment_target'] = '+{:.0f}%'
+            if 'position_size_multiplier' in available_cols:
+                format_dict['position_size_multiplier'] = '{:.0f}x'
+            if 'pe' in available_cols:
+                format_dict['pe'] = '{:.1f}'
+            
             st.dataframe(
-                triple_alignments[display_cols].head(20).style.format({
-                    'price': '₹{:.2f}',
-                    'conviction_score': '{:.0f}/100',
-                    'volume_acceleration': '{:.1f}%',
-                    'eps_change_pct': '{:.1f}%',
-                    'from_high_pct': '{:.1f}%',
-                    'triple_alignment_target': '+{:.0f}%',
-                    'position_size_multiplier': '{:.0f}x',
-                    'pe': '{:.1f}'
-                }).background_gradient(subset=['conviction_score'], cmap='Reds'),
+                triple_alignments[available_cols].head(20).style.format(format_dict).background_gradient(subset=['conviction_score'], cmap='Reds'),
                 use_container_width=True,
                 height=500
             )
             
             # Best pick with detailed analysis
-            best = triple_alignments.iloc[0]
-            st.error(f"""
-            **🔥 TOP TRIPLE ALIGNMENT: {best['ticker']}**
-            
-            **Why This is THE Trade:**
-            - Volume Acceleration: {best['volume_acceleration']:.1f}% → Big money is loading
-            - EPS Growth: {best['eps_change_pct']:.1f}% → Fundamentals exploding  
-            - Distance from High: {best['from_high_pct']:.1f}% → Massive upside room
-            - Conviction Score: {best['conviction_score']:.0f}/100
-            
-            **Action Plan:**
-            - Entry: ₹{best['price']:.2f} (or accumulate up to ₹{best['price']*1.05:.2f})
-            - Position Size: {best['position_size_multiplier']:.0f}x normal (15-20% of portfolio)
-            - Target: ₹{best['price']*(1+best['triple_alignment_target']/100):.2f} (+{best['triple_alignment_target']:.0f}%)
-            - Stop Loss: ₹{best['price']*0.92:.2f} (-8%)
-            - Time Horizon: 2-3 months
-            
-            **This is the setup institutions dream about. Don't miss it.**
-            """)
+            if len(triple_alignments) > 0:
+                best = triple_alignments.iloc[0]
+                
+                # Get values safely with defaults
+                ticker = best.get('ticker', 'N/A')
+                vol_accel = best.get('volume_acceleration', 0)
+                eps_change = best.get('eps_change_pct', 0)
+                from_high = best.get('from_high_pct', 0)
+                conviction = best.get('conviction_score', 0)
+                price = best.get('price', 0)
+                target_pct = best.get('triple_alignment_target', 40)
+                multiplier = best.get('position_size_multiplier', 3)
+                
+                st.error(f"""
+                **🔥 TOP TRIPLE ALIGNMENT: {ticker}**
+                
+                **Why This is THE Trade:**
+                - Volume Acceleration: {vol_accel:.1f}% → Big money is loading
+                - EPS Growth: {eps_change:.1f}% → Fundamentals exploding  
+                - Distance from High: {from_high:.1f}% → Massive upside room
+                - Conviction Score: {conviction:.0f}/100
+                
+                **Action Plan:**
+                - Entry: ₹{price:.2f} (or accumulate up to ₹{price*1.05:.2f})
+                - Position Size: {multiplier:.0f}x normal (15-20% of portfolio)
+                - Target: ₹{price*(1+target_pct/100):.2f} (+{target_pct:.0f}%)
+                - Stop Loss: ₹{price*0.92:.2f} (-8%)
+                - Time Horizon: 2-3 months
+                
+                **This is the setup institutions dream about. Don't miss it.**
+                """)
         else:
             st.info("No Triple Alignment patterns found today. These are rare but worth waiting for.")
     
@@ -577,30 +747,47 @@ def main():
                           'ret_30d', 'from_high_pct', 'vol_ratio_30d_90d', 'vol_ratio_30d_180d',
                           'coiled_spring_target', 'pe', 'sector']
             
+            # Filter for available columns
+            available_cols = [col for col in display_cols if col in coiled_springs.columns]
+            
+            # Create format dict
+            format_dict = {}
+            numeric_formats = {
+                'price': '₹{:.2f}',
+                'volume_acceleration': '{:.1f}%',
+                'ret_30d': '{:.1f}%',
+                'from_high_pct': '{:.1f}%',
+                'vol_ratio_30d_90d': '{:.1f}%',
+                'vol_ratio_30d_180d': '{:.1f}%',
+                'coiled_spring_target': '+{:.0f}%',
+                'pe': '{:.1f}'
+            }
+            
+            for col, fmt in numeric_formats.items():
+                if col in available_cols:
+                    format_dict[col] = fmt
+            
             st.dataframe(
-                coiled_springs[display_cols].head(20).style.format({
-                    'price': '₹{:.2f}',
-                    'volume_acceleration': '{:.1f}%',
-                    'ret_30d': '{:.1f}%',
-                    'from_high_pct': '{:.1f}%',
-                    'vol_ratio_30d_90d': '{:.1f}%',
-                    'vol_ratio_30d_180d': '{:.1f}%',
-                    'coiled_spring_target': '+{:.0f}%',
-                    'pe': '{:.1f}'
-                }).background_gradient(subset=['volume_acceleration'], cmap='Greens'),
+                coiled_springs[available_cols].head(20).style.format(format_dict).background_gradient(subset=['volume_acceleration'], cmap='Greens'),
                 use_container_width=True,
                 height=500
             )
             
             # Best pick
-            best = coiled_springs.iloc[0]
-            st.success(f"""
-            **🏆 BEST COILED SPRING: {best['ticker']}**  
-            - Volume Acceleration: {best['volume_acceleration']:.1f}% (90d vs 180d)
-            - Current Price: ₹{best['price']:.2f}
-            - Expected Gain: +{best['coiled_spring_target']:.0f}%
-            - Entry: NOW | Stop: ₹{best['price']*0.95:.2f} | Target: ₹{best['price']*(1+best['coiled_spring_target']/100):.2f}
-            """)
+            if len(coiled_springs) > 0:
+                best = coiled_springs.iloc[0]
+                ticker = best.get('ticker', 'N/A')
+                vol_accel = best.get('volume_acceleration', 0)
+                price = best.get('price', 0)
+                target_pct = best.get('coiled_spring_target', 25)
+                
+                st.success(f"""
+                **🏆 BEST COILED SPRING: {ticker}**  
+                - Volume Acceleration: {vol_accel:.1f}% (90d vs 180d)
+                - Current Price: ₹{price:.2f}
+                - Expected Gain: +{target_pct:.0f}%
+                - Entry: NOW | Stop: ₹{price*0.95:.2f} | Target: ₹{price*(1+target_pct/100):.2f}
+                """)
         else:
             st.info("No Coiled Spring setups found today. Check back tomorrow.")
     
@@ -617,40 +804,66 @@ def main():
                           'vol_ratio_1d_90d', 'ret_1d', 'ret_3d', 'ret_7d', 
                           'knife_target', 'knife_days']
             
+            # Filter for available columns
+            available_cols = [col for col in display_cols if col in momentum_knives.columns]
+            
             # Add entry and exit prices
             momentum_knives['entry_price'] = momentum_knives['price']
             momentum_knives['target_price'] = momentum_knives['price'] * 1.05
             momentum_knives['stop_price'] = momentum_knives['price'] * 0.98
             
-            display_cols.extend(['entry_price', 'target_price', 'stop_price'])
+            # Add these to display if price exists
+            if 'price' in momentum_knives.columns:
+                for col in ['entry_price', 'target_price', 'stop_price']:
+                    if col not in available_cols:
+                        available_cols.append(col)
+            
+            # Create format dict
+            format_dict = {}
+            numeric_formats = {
+                'price': '₹{:.2f}',
+                'momentum_acceleration': '{:.2f}x',
+                'vol_ratio_1d_90d': '{:.0f}%',
+                'ret_1d': '{:.1f}%',
+                'ret_3d': '{:.1f}%',
+                'ret_7d': '{:.1f}%',
+                'knife_target': '+{:.0f}%',
+                'knife_days': '{:.0f} days',
+                'entry_price': '₹{:.2f}',
+                'target_price': '₹{:.2f}',
+                'stop_price': '₹{:.2f}'
+            }
+            
+            for col, fmt in numeric_formats.items():
+                if col in available_cols:
+                    format_dict[col] = fmt
             
             st.dataframe(
-                momentum_knives[display_cols].head(20).style.format({
-                    'price': '₹{:.2f}',
-                    'momentum_acceleration': '{:.2f}x',
-                    'vol_ratio_1d_90d': '{:.0f}%',
-                    'ret_1d': '{:.1f}%',
-                    'ret_3d': '{:.1f}%',
-                    'ret_7d': '{:.1f}%',
-                    'knife_target': '+{:.0f}%',
-                    'knife_days': '{:.0f} days',
-                    'entry_price': '₹{:.2f}',
-                    'target_price': '₹{:.2f}',
-                    'stop_price': '₹{:.2f}'
-                }).background_gradient(subset=['momentum_acceleration'], cmap='Oranges'),
+                momentum_knives[available_cols].head(20).style.format(format_dict).background_gradient(
+                    subset=['momentum_acceleration'] if 'momentum_acceleration' in available_cols else [], 
+                    cmap='Oranges'
+                ),
                 use_container_width=True,
                 height=500
             )
             
             # Best pick
-            best = momentum_knives.iloc[0]
-            st.warning(f"""
-            **⚡ HOTTEST KNIFE: {best['ticker']}**  
-            - Momentum Acceleration: {best['momentum_acceleration']:.2f}x
-            - Volume Spike: {best['vol_ratio_1d_90d']:.0f}%
-            - Entry: ₹{best['entry_price']:.2f} | Stop: ₹{best['stop_price']:.2f} | Target: ₹{best['target_price']:.2f}
-            - **EXIT IN 3 DAYS** - Don't get greedy!
-            """)
+            if len(momentum_knives) > 0:
+                best = momentum_knives.iloc[0]
+                ticker = best.get('ticker', 'N/A')
+                mom_accel = best.get('momentum_acceleration', 0)
+                vol_spike = best.get('vol_ratio_1d_90d', 0)
+                entry = best.get('entry_price', 0)
+                stop = best.get('stop_price', 0)
+                target = best.get('target_price', 0)
+                
+                st.warning(f"""
+                **⚡ HOTTEST KNIFE: {ticker}**  
+                - Momentum Acceleration: {mom_accel:.2f}x
+                - Volume Spike: {vol_spike:.0f}%
+                - Entry: ₹{entry:.2f} | Stop: ₹{stop:.2f} | Target: ₹{target:.2f}
+                - **EXIT IN 3 DAYS** - Don't get greedy!
+                """)
         else:
             st.info("No Momentum Knife setups found today.")
     
@@ -667,29 +880,51 @@ def main():
                           'pe', 'pe_vs_sector', 'vol_ratio_30d_180d', 
                           'smart_money_target', 'sector']
             
+            # Filter for available columns
+            available_cols = [col for col in display_cols if col in smart_money.columns]
+            
+            # Create format dict
+            format_dict = {}
+            numeric_formats = {
+                'price': '₹{:.2f}',
+                'eps_change_pct': '{:.1f}%',
+                'pe': '{:.1f}',
+                'pe_vs_sector': '{:.2f}x',
+                'vol_ratio_30d_180d': '{:.1f}%',
+                'smart_money_target': '+{:.0f}%'
+            }
+            
+            for col, fmt in numeric_formats.items():
+                if col in available_cols:
+                    format_dict[col] = fmt
+            
             st.dataframe(
-                smart_money[display_cols].head(20).style.format({
-                    'price': '₹{:.2f}',
-                    'eps_change_pct': '{:.1f}%',
-                    'pe': '{:.1f}',
-                    'pe_vs_sector': '{:.2f}x',
-                    'vol_ratio_30d_180d': '{:.1f}%',
-                    'smart_money_target': '+{:.0f}%'
-                }).background_gradient(subset=['eps_change_pct'], cmap='Blues'),
+                smart_money[available_cols].head(20).style.format(format_dict).background_gradient(
+                    subset=['eps_change_pct'] if 'eps_change_pct' in available_cols else [], 
+                    cmap='Blues'
+                ),
                 use_container_width=True,
                 height=500
             )
             
             # Best pick
-            best = smart_money.iloc[0]
-            st.info(f"""
-            **🏆 TOP SMART MONEY PICK: {best['ticker']}**  
-            - EPS Growth: {best['eps_change_pct']:.1f}%
-            - PE vs Sector: {best['pe_vs_sector']:.2f}x (undervalued)
-            - Long-term Volume: {best['vol_ratio_30d_180d']:.1f}% (institutions loading)
-            - Target: +{best['smart_money_target']:.0f}% in 2-6 months
-            - Entry: Accumulate below ₹{best['price']*1.05:.2f}
-            """)
+            if len(smart_money) > 0:
+                best = smart_money.iloc[0]
+                ticker = best.get('ticker', 'N/A')
+                eps_change = best.get('eps_change_pct', 0)
+                pe_vs_sector = best.get('pe_vs_sector', 1)
+                vol_180d = best.get('vol_ratio_30d_180d', 0)
+                target_pct = best.get('smart_money_target', 40)
+                price = best.get('price', 0)
+                
+                st.info(f"""
+                **🏆 TOP SMART MONEY PICK: {ticker}**  
+                - EPS Growth: {eps_change:.1f}%
+                - PE vs Sector: {pe_vs_sector:.2f}x (undervalued)
+                - Long-term Volume: {vol_180d:.1f}% (institutions loading)
+                - Target: +{target_pct:.0f}% in 2-6 months
+                - Entry: Accumulate below ₹{price*1.05:.2f}
+                """)
         else:
             st.info("No Smart Money setups found today.")
     
@@ -721,20 +956,26 @@ def main():
         
         # Show conviction score distribution
         st.markdown("### 📈 Conviction Score Analysis")
-        conviction_df = df[df['conviction_score'] >= 60].sort_values('conviction_score', ascending=False)
         
-        if len(conviction_df) > 0:
-            fig_conviction = go.Figure(data=[
-                go.Histogram(x=conviction_df['conviction_score'], nbinsx=20, 
-                           marker_color='darkblue', name='Conviction Distribution')
-            ])
-            fig_conviction.update_layout(
-                title="High Conviction Stocks (Score >= 60)",
-                xaxis_title="Conviction Score",
-                yaxis_title="Count",
-                height=400
-            )
-            st.plotly_chart(fig_conviction, use_container_width=True)
+        if 'conviction_score' in df.columns:
+            conviction_df = df[df['conviction_score'] >= 60].sort_values('conviction_score', ascending=False)
+            
+            if len(conviction_df) > 0:
+                fig_conviction = go.Figure(data=[
+                    go.Histogram(x=conviction_df['conviction_score'], nbinsx=20, 
+                               marker_color='darkblue', name='Conviction Distribution')
+                ])
+                fig_conviction.update_layout(
+                    title="High Conviction Stocks (Score >= 60)",
+                    xaxis_title="Conviction Score",
+                    yaxis_title="Count",
+                    height=400
+                )
+                st.plotly_chart(fig_conviction, use_container_width=True)
+            else:
+                st.info("No stocks with conviction score >= 60 found")
+        else:
+            st.warning("Conviction score calculation not available")
     
     with tab6:
         st.markdown("### ⚠️ EXIT SIGNALS - Time to Get Out")
@@ -747,33 +988,42 @@ def main():
         
         if len(exit_signals) > 0:
             # Group by exit reason
-            volume_exits = exit_signals[exit_signals.get('exit_signal_volume', False)]
-            exhaustion_exits = exit_signals[exit_signals.get('exit_signal_exhaustion', False)]
-            earnings_exits = exit_signals[exit_signals.get('exit_signal_earnings', False)]
+            volume_exits = exit_signals[exit_signals['exit_signal_volume'] == True] if 'exit_signal_volume' in exit_signals.columns else pd.DataFrame()
+            exhaustion_exits = exit_signals[exit_signals['exit_signal_exhaustion'] == True] if 'exit_signal_exhaustion' in exit_signals.columns else pd.DataFrame()
+            earnings_exits = exit_signals[exit_signals['exit_signal_earnings'] == True] if 'exit_signal_earnings' in exit_signals.columns else pd.DataFrame()
             
             if len(volume_exits) > 0:
                 st.error(f"**📉 VOLUME DECELERATION ({len(volume_exits)} stocks)**")
-                st.dataframe(
-                    volume_exits[['ticker', 'company_name', 'price', 'volume_acceleration', 
-                                'ret_30d', 'from_high_pct']].head(10),
-                    use_container_width=True
-                )
+                display_cols = ['ticker', 'company_name', 'price', 'volume_acceleration', 'ret_30d', 'from_high_pct']
+                available_cols = [col for col in display_cols if col in volume_exits.columns]
+                if available_cols:
+                    st.dataframe(
+                        volume_exits[available_cols].head(10),
+                        use_container_width=True
+                    )
             
             if len(exhaustion_exits) > 0:
                 st.warning(f"**🔻 MOMENTUM EXHAUSTION ({len(exhaustion_exits)} stocks)**")
-                st.dataframe(
-                    exhaustion_exits[['ticker', 'company_name', 'price', 'from_high_pct', 
-                                    'ret_1d', 'ret_7d']].head(10),
-                    use_container_width=True
-                )
+                display_cols = ['ticker', 'company_name', 'price', 'from_high_pct', 'ret_1d', 'ret_7d']
+                available_cols = [col for col in display_cols if col in exhaustion_exits.columns]
+                if available_cols:
+                    st.dataframe(
+                        exhaustion_exits[available_cols].head(10),
+                        use_container_width=True
+                    )
             
             if len(earnings_exits) > 0:
                 st.info(f"**📊 EARNINGS DECELERATION ({len(earnings_exits)} stocks)**")
-                st.dataframe(
-                    earnings_exits[['ticker', 'company_name', 'price', 'eps_current', 
-                                  'eps_last_qtr', 'eps_change_pct']].head(10),
-                    use_container_width=True
-                )
+                display_cols = ['ticker', 'company_name', 'price', 'eps_current', 'eps_last_qtr', 'eps_change_pct']
+                available_cols = [col for col in display_cols if col in earnings_exits.columns]
+                if available_cols:
+                    st.dataframe(
+                        earnings_exits[available_cols].head(10),
+                        use_container_width=True
+                    )
+            
+            if len(volume_exits) == 0 and len(exhaustion_exits) == 0 and len(earnings_exits) == 0:
+                st.success("✅ Exit signals detected but no specific category flags. Review positions manually.")
         else:
             st.success("✅ No exit signals detected. All positions looking healthy!")
     
