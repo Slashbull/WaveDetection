@@ -178,7 +178,7 @@ class SystemDiagnostics:
                 
                 self.diagnostics['tests_run'] += 1
                 self.diagnostics['data_quality']['missing_columns'] = list(missing_cols)
-                self.diagnostics['data_quality']['total_columns'] = len(self.df_raw.columns)
+                self.diagnostics['data_quality']['total_columns'] = int(len(self.df_raw.columns))
         
         # Test 4: Data Quality
         with st.expander("Test 4: Data Quality Analysis", expanded=True):
@@ -215,8 +215,8 @@ class SystemDiagnostics:
                         self.diagnostics['warnings'].append(f"Duplicate tickers: {duplicates}")
                 
                 self.diagnostics['tests_run'] += 1
-                self.diagnostics['data_quality']['null_percentage'] = null_pct
-                self.diagnostics['data_quality']['duplicate_tickers'] = duplicates
+                self.diagnostics['data_quality']['null_percentage'] = float(null_pct)
+                self.diagnostics['data_quality']['duplicate_tickers'] = int(duplicates)
     
     def test_calculations(self):
         """Test all calculations"""
@@ -295,19 +295,19 @@ class SystemDiagnostics:
             components = {}
             
             if 'volume_acceleration' in df.columns:
-                components['Volume Acceleration > 10%'] = (df['volume_acceleration'] > 10).sum()
+                components['Volume Acceleration > 10%'] = int((df['volume_acceleration'] > 10).sum())
             
             if 'ret_7d' in df.columns and 'ret_30d' in df.columns:
-                components['Momentum Building'] = (df['ret_7d'] > df['ret_30d']/4).sum()
+                components['Momentum Building'] = int((df['ret_7d'] > df['ret_30d']/4).sum())
             
             if all(col in df.columns for col in ['eps_current', 'eps_last_qtr']):
-                components['EPS Improving'] = (df['eps_current'] > df['eps_last_qtr']).sum()
+                components['EPS Improving'] = int((df['eps_current'] > df['eps_last_qtr']).sum())
             
             if all(col in df.columns for col in ['price', 'sma_50d']):
-                components['Above 50MA'] = (df['price'] > df['sma_50d']).sum()
+                components['Above 50MA'] = int((df['price'] > df['sma_50d']).sum())
             
             if 'rvol' in df.columns:
-                components['High Volume'] = (df['rvol'] > 1.5).sum()
+                components['High Volume'] = int((df['rvol'] > 1.5).sum())
             
             for component, count in components.items():
                 st.write(f"{component}: {count} stocks")
@@ -345,7 +345,7 @@ class SystemDiagnostics:
                 fig.update_layout(title="Signal Distribution", height=400)
                 st.plotly_chart(fig, use_container_width=True)
                 
-                self.diagnostics['signal_analysis']['distribution'] = signal_counts.to_dict()
+                self.diagnostics['signal_analysis']['distribution'] = {k: int(v) for k, v in signal_counts.to_dict().items()}
                 
                 # Quality check
                 total_signals = signal_counts[signal_counts.index != 'NONE'].sum() if 'NONE' in signal_counts.index else signal_counts.sum()
@@ -395,7 +395,7 @@ class SystemDiagnostics:
                 else:
                     st.info("No Triple Alignment patterns found (this is rare and normal)")
                 
-                self.diagnostics['signal_analysis']['triple_alignments'] = len(triple_align)
+                self.diagnostics['signal_analysis']['triple_alignments'] = int(len(triple_align))
             
             self.diagnostics['tests_run'] += 1
     
@@ -498,7 +498,7 @@ class SystemDiagnostics:
                         st.success(f"✅ Indian market sectors identified: {', '.join(found_indian[:5])}")
                         self.diagnostics['tests_passed'] += 1
                     
-                    self.diagnostics['data_quality']['top_sectors'] = sectors.head(5).to_dict()
+                    self.diagnostics['data_quality']['top_sectors'] = {k: int(v) for k, v in sectors.head(5).to_dict().items()}
                 else:
                     st.warning("⚠️ No sector data available")
             
@@ -549,9 +549,9 @@ class SystemDiagnostics:
             
             self.diagnostics['tests_run'] += 2
             self.diagnostics['performance_metrics'] = {
-                'load_time': load_time,
-                'process_time': process_time if 'process_time' in locals() else None,
-                'total_time': total_time if 'total_time' in locals() else None
+                'load_time': float(load_time),
+                'process_time': float(process_time) if 'process_time' in locals() and process_time is not None else None,
+                'total_time': float(total_time) if 'total_time' in locals() else None
             }
         
         # Memory usage
@@ -567,7 +567,7 @@ class SystemDiagnostics:
                     st.warning("⚠️ High memory usage")
                 
                 self.diagnostics['tests_run'] += 1
-                self.diagnostics['performance_metrics']['memory_mb'] = memory_mb
+                self.diagnostics['performance_metrics']['memory_mb'] = float(memory_mb)
     
     def generate_diagnostic_reports(self):
         """Generate downloadable diagnostic reports"""
@@ -755,6 +755,26 @@ class SystemDiagnostics:
     
     def generate_text_report(self):
         """Generate human-readable text report"""
+        # Convert numpy types to Python types for JSON serialization
+        def convert_to_serializable(obj):
+            if isinstance(obj, dict):
+                return {k: convert_to_serializable(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [convert_to_serializable(v) for v in obj]
+            elif hasattr(obj, 'item'):  # numpy scalar
+                return obj.item()
+            elif pd.api.types.is_integer_dtype(type(obj)):
+                return int(obj)
+            elif pd.api.types.is_float_dtype(type(obj)):
+                return float(obj)
+            else:
+                return obj
+        
+        # Convert diagnostics for JSON serialization
+        data_quality = convert_to_serializable(self.diagnostics['data_quality'])
+        performance_metrics = convert_to_serializable(self.diagnostics['performance_metrics'])
+        signal_analysis = convert_to_serializable(self.diagnostics['signal_analysis'])
+        
         report = f"""
 M.A.N.T.R.A. DIAGNOSTIC REPORT
 ==============================
@@ -769,15 +789,15 @@ Success Rate: {self.diagnostics['success_rate']:.1f}%
 
 DATA QUALITY
 ------------
-{json.dumps(self.diagnostics['data_quality'], indent=2)}
+{json.dumps(data_quality, indent=2)}
 
 PERFORMANCE METRICS
 ------------------
-{json.dumps(self.diagnostics['performance_metrics'], indent=2)}
+{json.dumps(performance_metrics, indent=2)}
 
 SIGNAL ANALYSIS
 --------------
-{json.dumps(self.diagnostics['signal_analysis'], indent=2)}
+{json.dumps(signal_analysis, indent=2)}
 
 WARNINGS ({len(self.diagnostics['warnings'])})
 --------
