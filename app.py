@@ -186,6 +186,12 @@ def load_sheet() -> pd.DataFrame:
         # We will *not* explicitly fillna here. The scoring functions are designed to handle NaNs
         # by returning NaN for that specific score component, and the adaptive weighting will
         # redistribute the weight. This adheres to the user's request to keep blanks as blanks.
+        
+        # Ensure 'sector' and 'category' are strings, fillna with empty string for consistent grouping/filtering
+        if 'sector' in df.columns:
+            df['sector'] = df['sector'].astype(str).fillna("")
+        if 'category' in df.columns:
+            df['category'] = df['category'].astype(str).fillna("")
 
 
         # Derived columns
@@ -700,7 +706,7 @@ def render_ui():
             selected_sectors = st.multiselect("Filter by Sector:", options=unique_sectors, default=unique_sectors)
             if selected_sectors:
                 # Filter, also keeping rows where 'sector' might be NaN if not explicitly selected
-                current_filtered_df = current_filtered_df[current_filtered_df["sector"].isin(selected_sectors) | current_filtered_df["sector"].isna()]
+                current_filtered_df = current_filtered_df[current_filtered_df["sector"].isin(selected_sectors) | (current_filtered_df["sector"].isna() & ("" in selected_sectors))]
 
         with filter_cols_1[2]:
             # Category Filter (options based on current_filtered_df)
@@ -710,7 +716,7 @@ def render_ui():
             selected_categories = st.multiselect("Filter by Category:", options=unique_categories, default=unique_categories)
             if selected_categories:
                 # Filter, also keeping rows where 'category' might be NaN if not explicitly selected
-                current_filtered_df = current_filtered_df[current_filtered_df["category"].isin(selected_categories) | current_filtered_df["category"].isna()]
+                current_filtered_df = current_filtered_df[current_filtered_df["category"].isin(selected_categories) | (current_filtered_df["category"].isna() & ("" in selected_categories))]
 
         with filter_cols_1[3]:
             # Volume Classification Filter (options based on current_filtered_df)
@@ -720,7 +726,7 @@ def render_ui():
             selected_volume_classifications = st.multiselect("Filter by Volume Classification:", options=unique_volume_classifications, default=unique_volume_classifications)
             if selected_volume_classifications:
                 # Filter, also keeping rows where 'volume_classification' might be NaN if not explicitly selected
-                current_filtered_df = current_filtered_df[current_filtered_df["volume_classification"].isin(selected_volume_classifications) | current_filtered_df["volume_classification"].isna()]
+                current_filtered_df = current_filtered_df[current_filtered_df["volume_classification"].isin(selected_volume_classifications) | (current_filtered_df["volume_classification"].isna() & ("" in selected_volume_classifications))]
 
         filter_cols_2 = st.columns(3)
         with filter_cols_2[0]:
@@ -731,7 +737,7 @@ def render_ui():
             sorted_eps_tiers = [tier for tier in eps_tier_order if tier in unique_eps_tiers]
             selected_eps_tiers = st.multiselect("Filter by EPS Tier:", options=sorted_eps_tiers, default=sorted_eps_tiers)
             if selected_eps_tiers:
-                current_filtered_df = current_filtered_df[current_filtered_df["eps_tier"].isin(selected_eps_tiers) | current_filtered_df["eps_tier"].isna()]
+                current_filtered_df = current_filtered_df[current_filtered_df["eps_tier"].isin(selected_eps_tiers) | (current_filtered_df["eps_tier"].isna() & ("" in selected_eps_tiers))]
 
         with filter_cols_2[1]:
             # Price Tier Filter (options based on current_filtered_df)
@@ -741,7 +747,7 @@ def render_ui():
             sorted_price_tiers = [tier for tier in price_tier_order if tier in unique_price_tiers]
             selected_price_tiers = st.multiselect("Filter by Price Tier:", options=sorted_price_tiers, default=sorted_price_tiers)
             if selected_price_tiers:
-                current_filtered_df = current_filtered_df[current_filtered_df["price_tier"].isin(selected_price_tiers) | current_filtered_df["price_tier"].isna()]
+                current_filtered_df = current_filtered_df[current_filtered_df["price_tier"].isin(selected_price_tiers) | (current_filtered_df["price_tier"].isna() & ("" in selected_price_tiers))]
 
         with filter_cols_2[2]:
             # PE Ratio Slider Filter (min/max based on current_filtered_df)
