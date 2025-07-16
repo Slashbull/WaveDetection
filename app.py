@@ -405,85 +405,8 @@ def compute_scores(df: pd.DataFrame, weights: Tuple[float, float, float, float])
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Visualization Functions - Defined before render_ui
-# ─────────────────────────────────────────────────────────────────────────────
-
-def plot_volume_acceleration_scatter(df: pd.DataFrame):
-    """
-    Plots a scatter plot of volume acceleration vs. distance from 52-week high.
-    Highlights high conviction signals. [cite: ⚡ EDGE Protocol System - COMPLETE]
-    """
-    # Ensure EDGE_Classification order for consistent coloring
-    order = ["EXPLOSIVE", "STRONG", "MODERATE", "WATCH"]
-    df['tag'] = pd.Categorical(df['tag'], categories=order, ordered=True)
-    df = df.sort_values('tag')
-
-    # Ensure 'volume_acceleration' and 'from_high_pct' exist
-    if "volume_acceleration" not in df.columns or "from_high_pct" not in df.columns:
-        st.warning("Volume acceleration or 'from_high_pct' column missing for scatter plot.")
-        return
-
-    fig = px.scatter(df, x="from_high_pct", y="volume_acceleration",
-                     color="tag",
-                     size="EDGE", # Size points by overall EDGE score
-                     hover_data=["ticker", "company_name", "sector", "EDGE", "vol_score", "mom_score", "volume_classification"],
-                     title="Volume Acceleration vs. Distance from 52-Week High",
-                     labels={
-                         "from_high_pct": "% From 52-Week High (Lower is better for consolidation)",
-                         "volume_acceleration": "Volume Acceleration (30d/90d - 30d/180d % Diff)"
-                     },
-                     color_discrete_map={ # Consistent colors
-                         "EXPLOSIVE": "#FF4B4B", # Red
-                         "STRONG": "#FFA500",    # Orange
-                         "MODERATE": "#FFD700",  # Gold/Yellow
-                         "WATCH": "#1F77B4"      # Blue
-                     }
-                    )
-    fig.update_traces(marker=dict(line=dict(width=1, color='DarkSlateGrey')))
-    fig.add_vline(x=-10, line_dash="dash", line_color="green", annotation_text="< -10% from High (Consolidation Zone)")
-    fig.add_hline(y=20, line_dash="dash", line_color="red", annotation_text="> 20% Volume Acceleration (Strong)")
-
-    st.plotly_chart(fig, use_container_width=True)
-
-
-def plot_stock_radar_chart(df_row: pd.Series):
-    """
-    Plots a radar chart for an individual stock's EDGE components. [cite: ⚡ EDGE Protocol System - COMPLETE]
-    """
-    categories = ['Volume Acceleration', 'Momentum Divergence', 'Risk/Reward', 'Fundamentals']
-    # Ensure scores exist before plotting
-    scores = [
-        df_row.get('vol_score', 0),
-        df_row.get('mom_score', 0),
-        df_row.get('rr_score', 0),
-        df_row.get('fund_score', 0)
-    ]
-
-    fig = go.Figure()
-
-    fig.add_trace(go.Scatterpolar(
-          r=scores,
-          theta=categories,
-          fill='toself',
-          name=df_row['company_name'],
-          line_color='darkblue'
-    ))
-
-    fig.update_layout(
-        polar=dict(
-            radialaxis=dict(
-                visible=True,
-                range=[0, 100] # Ensure consistent scale
-            )),
-        showlegend=False, # Legend is redundant for single stock
-        title=f"EDGE Component Breakdown for {df_row['company_name']} ({df_row['ticker']})",
-        font_size=16
-    )
-    st.plotly_chart(fig, use_container_width=True)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Helper functions for new filters (EPS Tier, Price Tier)
+# Helper functions for new filters (EPS Tier, Price Tier, Volume Classification)
+# Moved here to be defined before render_ui
 # ─────────────────────────────────────────────────────────────────────────────
 
 def get_eps_tier(eps: float) -> str:
@@ -526,6 +449,53 @@ def get_price_tier(price: float) -> str:
     elif price < 100:
         return "100↓"
     return "" # Fallback for unexpected values
+
+
+def calculate_volume_acceleration_and_classify(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Calculates volume acceleration metrics and classifies accumulation/distribution.
+    This function is now defined here to ensure it's available before render_ui.
+    """
+    df = df.copy() # Work on a copy
+
+    # Calculate Average Daily Volume for respective periods
+    df['avg_vol_30d'] = df['volume_30d'] / 30.0
+    df['avg_vol_90d'] = df['volume_90d'] / 90.0
+    df['avg_vol_180d'] = df['volume_180d'] / 180.0
+
+    # Calculate Volume Ratios (percentage change)
+    # Handle division by zero by using np.where or replacing zero denominators with NaN then filling
+    df['vol_ratio_30d_90d_calc'] = np.where(df['avg_vol_90d'] != 0,
+                                         (df['avg_vol_30d'] / df['avg_vol_90d'] - 1) * 100, 0)
+    df['vol_ratio_30d_180d_calc'] = np.where(df['avg_vol_180d'] != 0,
+                                          (df['avg_vol_30d'] / df['avg_vol_180d'] - 1) * 100, 0)
+    df['vol_ratio_90d_180d_calc'] = np.where(df['avg_vol_180d'] != 0,
+                                          (df['avg_vol_90d'] / df['avg_vol_180d'] - 1) * 100, 0)
+
+    # Volume Acceleration: Checks if recent accumulation (30d) is accelerating faster than longer periods (90d, 180d)
+    df['volume_acceleration'] = df['vol_ratio_30d_90d_calc'] - df['vol_ratio_30d_180d_calc']
+
+    # Classify based on volume acceleration and current ratios
+    def classify_volume(row):
+        ratio_30_90 = row['vol_ratio_30d_90d_calc']
+        ratio_30_180 = row['vol_ratio_30d_180d_calc']
+        acceleration = row['volume_acceleration']
+
+        if acceleration > 20 and ratio_30_90 > 5 and ratio_30_180 > 5:
+            return "Institutional Loading"
+        elif acceleration > 5 and ratio_30_90 > 0 and ratio_30_180 > 0:
+            return "Heavy Accumulation"
+        elif ratio_30_90 > 0 and ratio_30_180 > 0:
+            return "Accumulation"
+        elif ratio_30_90 < 0 and ratio_30_180 < 0 and acceleration < -5:
+            return "Exodus"
+        elif ratio_30_90 < 0 and ratio_30_180 < 0:
+            return "Distribution"
+        else:
+            return "Neutral"
+
+    df['volume_classification'] = df.apply(classify_volume, axis=1)
+    return df
 
 
 # ─────────────────────────────────────────────────────────────────────────────
