@@ -34,7 +34,7 @@ warnings.filterwarnings("ignore")
 SHEET_ID = "1Wa4-4K7hyTTCrqJ0pUzS-NaLFiRQpBgI8KBdHx9obKk"
 GID_WATCHLIST = "2026492216" # This GID corresponds to a specific sheet/tab within your Google Sheet
 SHEET_URL = (
-    f"https://docs.google.com/sheets/d/{SHEET_ID}/export?format=csv&gid={GID_WATCHLIST}"
+    f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid={GID_WATCHLIST}"
 )
 
 # UI CONSTANTS
