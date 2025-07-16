@@ -1,31 +1,15 @@
-"""
-EDGE Protocol – Final Locked Implementation
-==========================================
-Single‑file Streamlit application that realises the final strategy agreed
-on 16 Jul 2025.  Drop this file in your project root, run
-    streamlit run edge_protocol_app.py
-and enjoy!  Requires pandas, numpy, requests, plotly, streamlit 1.33+ .
-"""
-
-from __future__ import annotations
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Imports & Config
-# ─────────────────────────────────────────────────────────────────────────────
+import streamlit as st
+import pandas as pd
+import numpy as np
+import plotly.express as px
+import plotly.graph_objects as go
 import io
-import json
+import requests
 import math
 import warnings
 from functools import lru_cache
-from typing import Dict, List, Tuple
-
-import numpy as np
-import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go
-import requests
-import streamlit as st
 from scipy import stats
+from typing import Dict, List, Tuple
 
 warnings.filterwarnings("ignore")
 
@@ -489,11 +473,11 @@ def calculate_volume_acceleration_and_classify(df: pd.DataFrame) -> pd.DataFrame
     # Calculate Volume Ratios (percentage change)
     # Handle division by zero by using np.where or replacing zero denominators with NaN then filling
     df['vol_ratio_30d_90d_calc'] = np.where(df['avg_vol_90d'] != 0,
-                                         (df['avg_vol_30d'] / df['avg_vol_90d'] - 1) * 100, 0)
+                                           (df['avg_vol_30d'] / df['avg_vol_90d'] - 1) * 100, 0)
     df['vol_ratio_30d_180d_calc'] = np.where(df['avg_vol_180d'] != 0,
-                                          (df['avg_vol_30d'] / df['avg_vol_180d'] - 1) * 100, 0)
+                                            (df['avg_vol_30d'] / df['avg_vol_180d'] - 1) * 100, 0)
     df['vol_ratio_90d_180d_calc'] = np.where(df['avg_vol_180d'] != 0,
-                                          (df['avg_vol_90d'] / df['avg_vol_180d'] - 1) * 100, 0)
+                                            (df['avg_vol_90d'] / df['avg_vol_180d'] - 1) * 100, 0)
 
     # Volume Acceleration: Checks if recent accumulation (30d) is accelerating faster than longer periods (90d, 180d)
     df['volume_acceleration'] = df['vol_ratio_30d_90d_calc'] - df['vol_ratio_30d_180d_calc']
@@ -575,11 +559,11 @@ def plot_stock_radar_chart(df_row: pd.Series):
     fig = go.Figure()
 
     fig.add_trace(go.Scatterpolar(
-          r=scores,
-          theta=categories,
-          fill='toself',
-          name=df_row['company_name'],
-          line_color='darkblue'
+            r=scores,
+            theta=categories,
+            fill='toself',
+            name=df_row['company_name'],
+            line_color='darkblue'
     ))
 
     fig.update_layout(
@@ -859,10 +843,10 @@ def render_ui():
             agg["opacity"] = np.where(agg["n"] < MIN_STOCKS_PER_SECTOR, 0.4, 1.0)
 
             fig = px.treemap(agg, path=["sector"], values="n", color="edge_mean",
-                            range_color=(0, 100), # Ensure color scale is 0-100 for EDGE scores
-                            color_continuous_scale=px.colors.sequential.Viridis, # Choose a color scale
-                            title="Average EDGE Score by Sector"
-                            )
+                             range_color=(0, 100), # Ensure color scale is 0-100 for EDGE scores
+                             color_continuous_scale=px.colors.sequential.Viridis, # Choose a color scale
+                             title="Average EDGE Score by Sector"
+                             )
             # FIX: opacity is a direct property of the trace, not within marker for treemaps
             # Iterate through traces and set opacity
             for i, trace in enumerate(fig.data):
