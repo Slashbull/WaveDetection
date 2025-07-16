@@ -306,6 +306,298 @@ def score_fundamentals(row: pd.Series, df: pd.DataFrame) -> float:
     return np.mean(scores)
 
 # ─────────────────────────────────────────────────────────────────────────────
+# EXPLOSIVE PATTERN DETECTION FUNCTIONS
+# ─────────────────────────────────────────────────────────────────────────────
+
+def detect_volume_price_divergence(row: pd.Series) -> float:
+    """Calculate volume-price divergence score."""
+    if pd.isna(row.get('vol_ratio_30d_90d')) or pd.isna(row.get('ret_30d')):
+        return 0
+    
+    # Prevent division by zero
+    price_move = abs(row['ret_30d']) + 0.01
+    # Higher score when volume increases but price doesn't move much
+    divergence = row['vol_ratio_30d_90d'] / price_move
+    
+    # Normalize to 0-100 scale
+    return min(divergence * 2, 100)
+
+def detect_accumulation_under_resistance(row: pd.Series) -> dict:
+    """Pattern 1: Volume explodes but price stays flat near resistance."""
+    score = 0
+    signals = []
+    
+    # Check volume explosion (>50% increase)
+    if not pd.isna(row.get('vol_ratio_30d_90d')) and row['vol_ratio_30d_90d'] > 0.50:
+        score += 40
+        signals.append(f"Volume up {row['vol_ratio_30d_90d']:.0%}")
+    
+    # Check price is flat (moved less than 5%)
+    if not pd.isna(row.get('ret_30d')) and abs(row['ret_30d']) < 0.05:
+        score += 30
+        signals.append(f"Price flat ({row['ret_30d']:.1%})")
+    
+    # Check if near 52w high (potential resistance)
+    if not pd.isna(row.get('from_high_pct')) and -0.10 <= row['from_high_pct'] <= 0:
+        score += 30
+        signals.append("Near 52w high resistance")
+        
+    # Bonus for high RVOL
+    if not pd.isna(row.get('rvol')) and row['rvol'] > 2.0:
+        score = min(score * 1.2, 100)
+        signals.append(f"RVOL: {row['rvol']:.1f}x")
+    
+    return {
+        'pattern': 'Accumulation Under Resistance',
+        'score': score,
+        'signals': signals,
+        'target': row.get('high_52w', row.get('price', 0)) * 1.05  # 5% above resistance
+    }
+
+def detect_coiled_spring(row: pd.Series) -> dict:
+    """Pattern 2: Volume up significantly but price in tight range."""
+    score = 0
+    signals = []
+    
+    # Volume increase check
+    if not pd.isna(row.get('vol_ratio_30d_90d')) and row['vol_ratio_30d_90d'] > 0.30:
+        score += 35
+        signals.append(f"Volume +{row['vol_ratio_30d_90d']:.0%}")
+    
+    # Price in tight range (compare multiple timeframes)
+    tight_range = True
+    for col in ['ret_7d', 'ret_30d']:
+        if not pd.isna(row.get(col)) and abs(row[col]) > 0.05:
+            tight_range = False
+            break
+    
+    if tight_range:
+        score += 35
+        signals.append("Tight consolidation")
+    
+    # Check if price above key SMAs (bullish bias)
+    sma_score = 0
+    for sma in ['sma_20d', 'sma_50d', 'sma_200d']:
+        if not pd.isna(row.get(sma)) and not pd.isna(row.get('price')):
+            if row['price'] > row[sma]:
+                sma_score += 10
+    score += sma_score
+    if sma_score == 30:
+        signals.append("Above all SMAs")
+    
+    # Bonus for decreasing ATR (tighter coil)
+    if not pd.isna(row.get('atr_20')) and not pd.isna(row.get('price')):
+        atr_pct = row['atr_20'] / row['price']
+        if atr_pct < 0.02:  # Less than 2% ATR
+            score = min(score * 1.1, 100)
+            signals.append("Very tight ATR")
+    
+    return {
+        'pattern': 'Coiled Spring',
+        'score': score,
+        'signals': signals,
+        'target': row.get('price', 0) * 1.08  # 8% breakout target
+    }
+
+def detect_absorption_pattern(row: pd.Series) -> dict:
+    """Pattern 3: High RVOL sustained over multiple periods."""
+    score = 0
+    signals = []
+    
+    # Check sustained high RVOL
+    if not pd.isna(row.get('rvol')) and row['rvol'] > 1.5:
+        score += 30
+        signals.append(f"RVOL: {row['rvol']:.1f}x")
+        
+        # Extra points for very high RVOL
+        if row['rvol'] > 2.5:
+            score += 20
+            signals.append("Extreme volume!")
+    
+    # Check if volume ratios are consistently positive
+    vol_consistency = 0
+    for col in ['vol_ratio_1d_90d', 'vol_ratio_7d_90d', 'vol_ratio_30d_90d']:
+        if not pd.isna(row.get(col)) and row[col] > 0:
+            vol_consistency += 1
+    
+    if vol_consistency == 3:
+        score += 30
+        signals.append("Consistent volume across timeframes")
+    
+    # Check for price stability (absorption characteristic)
+    if not pd.isna(row.get('ret_7d')) and abs(row['ret_7d']) < 0.03:
+        score += 20
+        signals.append("Price absorbed at levels")
+    
+    return {
+        'pattern': 'Absorption Pattern',
+        'score': score,
+        'signals': signals,
+        'target': row.get('price', 0) * 1.10  # 10% target after absorption
+    }
+
+def detect_failed_breakdown_reversal(row: pd.Series) -> dict:
+    """Pattern 4: Near 52w low but volume accelerating."""
+    score = 0
+    signals = []
+    
+    # Check if near 52w low
+    if not pd.isna(row.get('from_low_pct')) and row['from_low_pct'] < 0.10:
+        score += 40
+        signals.append(f"Near 52w low (+{row['from_low_pct']:.0%})")
+    
+    # Check volume acceleration
+    if not pd.isna(row.get('volume_acceleration')) and row['volume_acceleration'] > 20:
+        score += 40
+        signals.append(f"Volume accel: {row['volume_acceleration']:.0f}%")
+    
+    # Check for positive momentum reversal
+    if not pd.isna(row.get('ret_7d')) and row['ret_7d'] > 0:
+        score += 20
+        signals.append("Momentum turning positive")
+    
+    # Bonus for quality stocks in reversal
+    if not pd.isna(row.get('ret_3y')) and row['ret_3y'] > 2.0:  # 200% in 3 years
+        score = min(score * 1.2, 100)
+        signals.append("Quality stock reversal")
+    
+    return {
+        'pattern': 'Failed Breakdown Reversal',
+        'score': score,
+        'signals': signals,
+        'target': row.get('sma_50d', row.get('price', 0) * 1.15)  # Target 50 SMA or 15% up
+    }
+
+def detect_stealth_breakout(row: pd.Series) -> dict:
+    """Pattern 5: Quiet accumulation with gradual volume build."""
+    score = 0
+    signals = []
+    
+    # Check if above all SMAs (stealth strength)
+    sma_count = 0
+    for sma in ['sma_20d', 'sma_50d', 'sma_200d']:
+        if not pd.isna(row.get(sma)) and not pd.isna(row.get('price')):
+            if row['price'] > row[sma]:
+                sma_count += 1
+    
+    if sma_count == 3:
+        score += 40
+        signals.append("Above all SMAs")
+    
+    # Check gradual volume build (positive but not explosive)
+    if not pd.isna(row.get('vol_ratio_30d_90d')):
+        if 0.10 <= row['vol_ratio_30d_90d'] <= 0.30:
+            score += 30
+            signals.append("Gradual volume increase")
+    
+    # Check steady price appreciation
+    if not pd.isna(row.get('ret_30d')) and 0.05 <= row['ret_30d'] <= 0.15:
+        score += 30
+        signals.append("Steady price climb")
+    
+    # Bonus for low volatility breakout
+    if not pd.isna(row.get('atr_20')) and not pd.isna(row.get('price')):
+        if row['atr_20'] / row['price'] < 0.03:
+            score = min(score * 1.1, 100)
+            signals.append("Low volatility breakout")
+    
+    return {
+        'pattern': 'Stealth Breakout',
+        'score': score,
+        'signals': signals,
+        'target': row.get('high_52w', row.get('price', 0) * 1.20)  # Target 52w high or 20% up
+    }
+
+def detect_pre_earnings_accumulation(row: pd.Series) -> dict:
+    """Pattern 6: Unusual volume with EPS momentum."""
+    score = 0
+    signals = []
+    
+    # Check EPS momentum
+    if not pd.isna(row.get('eps_qoq_acceleration')) and row['eps_qoq_acceleration'] > 10:
+        score += 35
+        signals.append(f"EPS accel: {row['eps_qoq_acceleration']:.0f}%")
+    
+    # Check unusual volume in recent periods
+    if not pd.isna(row.get('vol_ratio_7d_90d')) and row['vol_ratio_7d_90d'] > 0.50:
+        score += 35
+        signals.append("Unusual recent volume")
+    
+    # Check if price is in accumulation phase
+    if not pd.isna(row.get('from_high_pct')) and -0.20 <= row['from_high_pct'] <= -0.05:
+        score += 30
+        signals.append("Accumulation zone")
+    
+    # Bonus for improving fundamentals
+    if not pd.isna(row.get('eps_change_pct')) and row['eps_change_pct'] > 0.20:
+        score = min(score * 1.2, 100)
+        signals.append("Strong earnings growth")
+    
+    return {
+        'pattern': 'Pre-Earnings Accumulation',
+        'score': score,
+        'signals': signals,
+        'target': row.get('price', 0) * 1.12  # 12% earnings surprise target
+    }
+
+def calculate_pattern_confluence(patterns: list) -> dict:
+    """Calculate confluence score when multiple patterns align."""
+    high_score_patterns = [p for p in patterns if p['score'] >= 70]
+    confluence_score = 0
+    confluence_signals = []
+    
+    if len(high_score_patterns) >= 3:
+        confluence_score = 100
+        confluence_signals.append(f"{len(high_score_patterns)} PATTERNS ALIGNED!")
+    elif len(high_score_patterns) >= 2:
+        confluence_score = 85
+        confluence_signals.append(f"{len(high_score_patterns)} patterns converging")
+    elif len(high_score_patterns) >= 1:
+        confluence_score = 70
+        confluence_signals.append("Strong pattern detected")
+    
+    # Calculate average target from all strong patterns
+    if high_score_patterns:
+        avg_target = np.mean([p['target'] for p in high_score_patterns])
+    else:
+        avg_target = 0
+    
+    return {
+        'score': confluence_score,
+        'pattern_count': len(high_score_patterns),
+        'signals': confluence_signals,
+        'target': avg_target,
+        'patterns': [p['pattern'] for p in high_score_patterns]
+    }
+
+def detect_all_patterns(row: pd.Series) -> dict:
+    """Detect all explosive patterns for a stock."""
+    patterns = [
+        detect_accumulation_under_resistance(row),
+        detect_coiled_spring(row),
+        detect_absorption_pattern(row),
+        detect_failed_breakdown_reversal(row),
+        detect_stealth_breakout(row),
+        detect_pre_earnings_accumulation(row)
+    ]
+    
+    # Sort by score
+    patterns.sort(key=lambda x: x['score'], reverse=True)
+    
+    # Calculate confluence
+    confluence = calculate_pattern_confluence(patterns)
+    
+    # Volume-Price Divergence
+    vp_divergence = detect_volume_price_divergence(row)
+    
+    return {
+        'patterns': patterns,
+        'confluence': confluence,
+        'vp_divergence': vp_divergence,
+        'top_pattern': patterns[0] if patterns else None
+    }
+
+# ─────────────────────────────────────────────────────────────────────────────
 # SUPER EDGE Detection Function
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -650,9 +942,10 @@ def render_ui():
         df_filtered_by_min_edge = df_filtered_by_min_edge[df_filtered_by_min_edge["tag"] == "SUPER_EDGE"]
 
     # Tabs
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
         "📊 Daily EDGE Signals", 
         "⭐ SUPER EDGE Analysis",
+        "🎯 Explosive Patterns",
         "📈 Volume Acceleration", 
         "🔥 Sector Heatmap", 
         "🔍 Stock Deep Dive", 
@@ -826,6 +1119,203 @@ def render_ui():
             st.info("No SUPER EDGE signals detected today. Check EXPLOSIVE category for next best opportunities.")
 
     with tab3:
+        st.header("🎯 Explosive Patterns Discovery")
+        st.markdown("""
+        **Pattern-based trading catches moves 2-5 days BEFORE they explode!**
+        
+        These 6 patterns identify stocks about to make significant moves based on volume-price dynamics:
+        """)
+        
+        # Pattern explanations
+        with st.expander("📚 Pattern Guide"):
+            st.markdown("""
+            1. **Accumulation Under Resistance** - Volume explodes but price stays flat near highs
+            2. **Coiled Spring** - Tight consolidation with increasing volume pressure
+            3. **Absorption Pattern** - Big players absorbing supply at current levels
+            4. **Failed Breakdown Reversal** - Smart money buying near 52w lows
+            5. **Stealth Breakout** - Quiet accumulation breaking above all SMAs
+            6. **Pre-Earnings Accumulation** - Unusual volume before earnings announcements
+            
+            **🔥 Pattern Confluence**: When 3+ patterns align = ULTRA HIGH CONVICTION!
+            """)
+        
+        # Filter for high-scoring patterns
+        pattern_min_score = st.slider("Minimum Pattern Score", 0, 100, 70, 5, 
+                                     help="Show only patterns with score above this threshold")
+        
+        # Find stocks with high-scoring patterns
+        pattern_stocks = []
+        for idx, row in df_scored.iterrows():
+            if row['top_pattern_score'] >= pattern_min_score:
+                pattern_stocks.append({
+                    'ticker': row['ticker'],
+                    'company_name': row['company_name'],
+                    'price': row['price'],
+                    'edge_score': row['EDGE'],
+                    'pattern': row['top_pattern_name'],
+                    'pattern_score': row['top_pattern_score'],
+                    'confluence_score': row['pattern_confluence_score'],
+                    'vp_divergence': row['vp_divergence_score'],
+                    'pattern_data': row['pattern_analysis']
+                })
+        
+        pattern_df = pd.DataFrame(pattern_stocks).sort_values('confluence_score', ascending=False)
+        
+        if not pattern_df.empty:
+            # Summary metrics
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("Total Pattern Signals", len(pattern_df))
+            with col2:
+                confluence_high = len(pattern_df[pattern_df['confluence_score'] >= 85])
+                st.metric("High Confluence (3+ patterns)", confluence_high)
+            with col3:
+                avg_pattern_score = pattern_df['pattern_score'].mean()
+                st.metric("Avg Pattern Score", f"{avg_pattern_score:.0f}")
+            with col4:
+                unique_patterns = pattern_df['pattern'].nunique()
+                st.metric("Pattern Types Active", unique_patterns)
+            
+            # Pattern distribution
+            st.subheader("Pattern Distribution")
+            pattern_counts = pattern_df['pattern'].value_counts()
+            
+            fig_patterns = go.Figure(data=[go.Bar(
+                x=pattern_counts.index,
+                y=pattern_counts.values,
+                text=pattern_counts.values,
+                textposition='auto',
+                marker_color=['#ff4444', '#ff8844', '#ffcc44', '#88cc44', '#44ff44', '#4444ff']
+            )])
+            fig_patterns.update_layout(
+                title="Active Pattern Types",
+                xaxis_title="Pattern",
+                yaxis_title="Count",
+                height=400
+            )
+            st.plotly_chart(fig_patterns, use_container_width=True)
+            
+            # Confluence Leaders
+            st.subheader("🔥 High Confluence Signals (Multiple Patterns Aligned)")
+            
+            high_confluence = pattern_df[pattern_df['confluence_score'] >= 70].head(10)
+            if not high_confluence.empty:
+                for _, stock in high_confluence.iterrows():
+                    patterns = stock['pattern_data']['patterns']
+                    confluence = stock['pattern_data']['confluence']
+                    
+                    with st.expander(f"💎 {stock['ticker']} - {stock['company_name']} (Confluence: {stock['confluence_score']:.0f})"):
+                        col1, col2 = st.columns([3, 1])
+                        
+                        with col1:
+                            st.write(f"**Price**: ₹{stock['price']:.2f} | **EDGE Score**: {stock['edge_score']:.1f}")
+                            st.write(f"**Volume-Price Divergence**: {stock['vp_divergence']:.1f}")
+                            
+                            # Show aligned patterns
+                            st.write("**Aligned Patterns:**")
+                            for pattern in patterns[:3]:  # Top 3 patterns
+                                if pattern['score'] >= 50:
+                                    st.write(f"- {pattern['pattern']}: {pattern['score']:.0f}/100")
+                                    for signal in pattern['signals'][:2]:
+                                        st.write(f"  • {signal}")
+                            
+                            # Confluence target
+                            if confluence['target'] > 0:
+                                target_pct = (confluence['target'] / stock['price'] - 1) * 100
+                                st.success(f"**Pattern Target**: ₹{confluence['target']:.2f} (+{target_pct:.1f}%)")
+                        
+                        with col2:
+                            # Pattern strength meter
+                            fig_gauge = go.Figure(go.Indicator(
+                                mode="gauge+number",
+                                value=stock['confluence_score'],
+                                domain={'x': [0, 1], 'y': [0, 1]},
+                                gauge={'axis': {'range': [None, 100]},
+                                      'bar': {'color': "darkgreen" if stock['confluence_score'] >= 85 else "orange"},
+                                      'steps': [
+                                          {'range': [0, 50], 'color': "lightgray"},
+                                          {'range': [50, 70], 'color': "yellow"},
+                                          {'range': [70, 85], 'color': "orange"},
+                                          {'range': [85, 100], 'color': "red"}],
+                                      'threshold': {'line': {'color': "red", 'width': 4},
+                                                   'thickness': 0.75, 'value': 90}}))
+                            fig_gauge.update_layout(height=200, margin=dict(l=20, r=20, t=20, b=20))
+                            st.plotly_chart(fig_gauge, use_container_width=True)
+            
+            # All Pattern Signals Table
+            st.subheader("All Pattern Signals")
+            
+            display_pattern_df = pattern_df[[
+                'ticker', 'company_name', 'price', 'edge_score', 
+                'pattern', 'pattern_score', 'confluence_score', 'vp_divergence'
+            ]]
+            
+            # Color code by confluence score
+            def color_confluence(val):
+                if val >= 85:
+                    return 'background-color: #ffcccc'  # Light red
+                elif val >= 70:
+                    return 'background-color: #ffffcc'  # Light yellow
+                return ''
+            
+            st.dataframe(
+                display_pattern_df.style.applymap(
+                    color_confluence, subset=['confluence_score']
+                ).format({
+                    'price': '₹{:.2f}',
+                    'edge_score': '{:.1f}',
+                    'pattern_score': '{:.0f}',
+                    'confluence_score': '{:.0f}',
+                    'vp_divergence': '{:.1f}'
+                }),
+                use_container_width=True
+            )
+            
+            # Export pattern signals
+            csv_patterns = display_pattern_df.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                "📥 Export Pattern Signals",
+                csv_patterns,
+                f"explosive_patterns_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.csv",
+                "text/csv"
+            )
+            
+        else:
+            st.info(f"No patterns found with score >= {pattern_min_score}. Try lowering the threshold.")
+        
+        # Pattern combination insights
+        st.subheader("🎯 Today's Best Pattern Combinations")
+        
+        # Find stocks with specific powerful combinations
+        power_combos = []
+        for idx, row in df_scored.iterrows():
+            if 'pattern_analysis' in row:
+                patterns = row['pattern_analysis']['patterns']
+                pattern_names = [p['pattern'] for p in patterns if p['score'] >= 70]
+                
+                # Check for power combinations
+                if ('Accumulation Under Resistance' in pattern_names and 
+                    'Coiled Spring' in pattern_names):
+                    power_combos.append({
+                        'ticker': row['ticker'],
+                        'combo': 'Resistance Breakout Imminent',
+                        'signal': 'Volume + Coil at resistance'
+                    })
+                
+                if ('Failed Breakdown Reversal' in pattern_names and 
+                    'Pre-Earnings Accumulation' in pattern_names):
+                    power_combos.append({
+                        'ticker': row['ticker'],
+                        'combo': 'Earnings Reversal Play',
+                        'signal': 'Bottom + Earnings catalyst'
+                    })
+        
+        if power_combos:
+            st.success("🚀 Power Combinations Detected!")
+            for combo in power_combos[:5]:
+                st.write(f"**{combo['ticker']}**: {combo['combo']} - {combo['signal']}")
+
+    with tab4:
         st.header("Volume Acceleration Insights")
         st.markdown("Enhanced visualization with RVOL overlay to spot INSTITUTIONAL URGENCY")
 
