@@ -922,7 +922,10 @@ def render_ui():
     df_processed = calculate_volume_acceleration_and_classify(df.copy())
     df_processed['eps_tier'] = df_processed['eps_current'].apply(get_eps_tier)
     df_processed['price_tier'] = df_processed['price'].apply(get_price_tier)
-    df_scored = compute_scores(df_processed, weights)
+    
+    # Show progress for compute_scores
+    with st.spinner("Computing EDGE scores and detecting patterns..."):
+        df_scored = compute_scores(df_processed, weights)
     df_filtered_by_min_edge = df_scored[df_scored["EDGE"].notna() & (df_scored["EDGE"] >= min_edge)].copy()
 
     # SUPER EDGE Alert
@@ -1145,21 +1148,27 @@ def render_ui():
         
         # Find stocks with high-scoring patterns
         pattern_stocks = []
-        for idx, row in df_scored.iterrows():
-            if row['top_pattern_score'] >= pattern_min_score:
-                pattern_stocks.append({
-                    'ticker': row['ticker'],
-                    'company_name': row['company_name'],
-                    'price': row['price'],
-                    'edge_score': row['EDGE'],
-                    'pattern': row['top_pattern_name'],
-                    'pattern_score': row['top_pattern_score'],
-                    'confluence_score': row['pattern_confluence_score'],
-                    'vp_divergence': row['vp_divergence_score'],
-                    'pattern_data': row['pattern_analysis']
-                })
         
-        pattern_df = pd.DataFrame(pattern_stocks).sort_values('confluence_score', ascending=False)
+        # Check if pattern columns exist before trying to access them
+        if 'top_pattern_score' in df_scored.columns:
+            for idx, row in df_scored.iterrows():
+                if row['top_pattern_score'] >= pattern_min_score:
+                    pattern_stocks.append({
+                        'ticker': row['ticker'],
+                        'company_name': row['company_name'],
+                        'price': row['price'],
+                        'edge_score': row['EDGE'],
+                        'pattern': row['top_pattern_name'],
+                        'pattern_score': row['top_pattern_score'],
+                        'confluence_score': row['pattern_confluence_score'],
+                        'vp_divergence': row['vp_divergence_score'],
+                        'pattern_data': row['pattern_analysis']
+                    })
+            
+            pattern_df = pd.DataFrame(pattern_stocks).sort_values('confluence_score', ascending=False)
+        else:
+            st.warning("⚠️ Pattern analysis is still processing or unavailable. Please check the data quality.")
+            pattern_df = pd.DataFrame()  # Empty dataframe
         
         if not pattern_df.empty:
             # Summary metrics
@@ -1201,8 +1210,10 @@ def render_ui():
             high_confluence = pattern_df[pattern_df['confluence_score'] >= 70].head(10)
             if not high_confluence.empty:
                 for _, stock in high_confluence.iterrows():
-                    patterns = stock['pattern_data']['patterns']
-                    confluence = stock['pattern_data']['confluence']
+                    # Safely get pattern data
+                    pattern_data = stock.get('pattern_data', {})
+                    patterns = pattern_data.get('patterns', [])
+                    confluence = pattern_data.get('confluence', {})
                     
                     with st.expander(f"💎 {stock['ticker']} - {stock['company_name']} (Confluence: {stock['confluence_score']:.0f})"):
                         col1, col2 = st.columns([3, 1])
@@ -1213,14 +1224,16 @@ def render_ui():
                             
                             # Show aligned patterns
                             st.write("**Aligned Patterns:**")
-                            for pattern in patterns[:3]:  # Top 3 patterns
-                                if pattern['score'] >= 50:
-                                    st.write(f"- {pattern['pattern']}: {pattern['score']:.0f}/100")
-                                    for signal in pattern['signals'][:2]:
+                            shown_patterns = 0
+                            for pattern in patterns:
+                                if pattern.get('score', 0) >= 50 and shown_patterns < 3:
+                                    st.write(f"- {pattern['pattern']}: {pattern.get('score', 0):.0f}/100")
+                                    for signal in pattern.get('signals', [])[:2]:
                                         st.write(f"  • {signal}")
+                                    shown_patterns += 1
                             
                             # Confluence target
-                            if confluence['target'] > 0:
+                            if confluence.get('target', 0) > 0:
                                 target_pct = (confluence['target'] / stock['price'] - 1) * 100
                                 st.success(f"**Pattern Target**: ₹{confluence['target']:.2f} (+{target_pct:.1f}%)")
                         
@@ -1289,9 +1302,9 @@ def render_ui():
         # Find stocks with specific powerful combinations
         power_combos = []
         for idx, row in df_scored.iterrows():
-            if 'pattern_analysis' in row:
-                patterns = row['pattern_analysis']['patterns']
-                pattern_names = [p['pattern'] for p in patterns if p['score'] >= 70]
+            if 'pattern_analysis' in row and isinstance(row.get('pattern_analysis'), dict):
+                patterns = row['pattern_analysis'].get('patterns', [])
+                pattern_names = [p['pattern'] for p in patterns if p.get('score', 0) >= 70]
                 
                 # Check for power combinations
                 if ('Accumulation Under Resistance' in pattern_names and 
