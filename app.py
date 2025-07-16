@@ -160,8 +160,8 @@ def load_sheet() -> pd.DataFrame:
                     df[col] = s.apply(parse_market_cap_value)
                 else:
                     # For all other numeric columns, remove common non-numeric characters
-                    # Note: percentage sign is removed here too, as normalization happens later based on value
-                    s = re.sub(r"[₹,$€£%,]", "", s) # Use re.sub directly on the series content
+                    # Use .str.replace for Series operations
+                    s = s.str.replace(r"[₹,$€£%,]", "", regex=True) 
                     s = s.replace({"nan": np.nan, "": np.nan, "-": np.nan}) # Convert common NaN strings
 
                     # Convert to numeric, coercing errors to NaN
