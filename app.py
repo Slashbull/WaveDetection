@@ -1,4 +1,3 @@
-```python
 # app.py - THE ULTIMATE TRADING EDGE SYSTEM
 """
 EDGE Protocol - Finding What Others Can't See
