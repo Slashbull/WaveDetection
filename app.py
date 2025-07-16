@@ -851,21 +851,27 @@ def render_ui():
             n=("EDGE", "size")
         ).reset_index()
         
-        # Add opacity based on number of stocks in sector
-        agg["opacity"] = np.where(agg["n"] < MIN_STOCKS_PER_SECTOR, 0.4, 1.0)
+        # Drop rows where 'edge_mean' is NaN (sectors with no valid scores)
+        agg.dropna(subset=['edge_mean'], inplace=True)
 
-        fig = px.treemap(agg, path=["sector"], values="n", color="edge_mean",
-                         range_color=(0, 100), # Ensure color scale is 0-100 for EDGE scores
-                         color_continuous_scale=px.colors.sequential.Viridis, # Choose a color scale
-                         title="Average EDGE Score by Sector"
-                        )
-        # FIX: opacity is a direct property of the trace, not within marker for treemaps
-        # Iterate through traces and set opacity
-        for i, trace in enumerate(fig.data):
-            if i < len(agg["opacity"]): # Ensure index is within bounds
-                trace.opacity = agg["opacity"].iloc[i]
+        if not agg.empty:
+            # Add opacity based on number of stocks in sector
+            agg["opacity"] = np.where(agg["n"] < MIN_STOCKS_PER_SECTOR, 0.4, 1.0)
 
-        st.plotly_chart(fig, use_container_width=True)
+            fig = px.treemap(agg, path=["sector"], values="n", color="edge_mean",
+                            range_color=(0, 100), # Ensure color scale is 0-100 for EDGE scores
+                            color_continuous_scale=px.colors.sequential.Viridis, # Choose a color scale
+                            title="Average EDGE Score by Sector"
+                            )
+            # FIX: opacity is a direct property of the trace, not within marker for treemaps
+            # Iterate through traces and set opacity
+            for i, trace in enumerate(fig.data):
+                if i < len(agg["opacity"]): # Ensure index is within bounds
+                    trace.opacity = agg["opacity"].iloc[i]
+
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No sectors with valid average EDGE scores to display in the heatmap after filtering.")
 
     with tab4:
         st.header("Stock Deep Dive (Radar Chart)")
@@ -875,65 +881,75 @@ def render_ui():
         available_stocks = df_scored[df_scored['EDGE'].notnull()].sort_values('company_name')['ticker'].tolist()
         
         if available_stocks:
-            selected_ticker = st.selectbox("Select Ticker:", available_stocks)
-            selected_stock_row = df_scored[df_scored['ticker'] == selected_ticker].iloc[0]
-            
-            # Plot radar chart for selected stock
-            plot_stock_radar_chart(selected_stock_row)
+            # FIX: Check if selected_ticker is actually in the available_stocks list
+            # If not, default to the first available stock to prevent IndexError
+            if 'selected_ticker' not in st.session_state or st.session_state.selected_ticker not in available_stocks:
+                st.session_state.selected_ticker = available_stocks[0] if available_stocks else None
 
-            st.subheader(f"Detailed Metrics for {selected_stock_row['company_name']} ({selected_stock_row['ticker']})")
+            selected_ticker = st.selectbox("Select Ticker:", available_stocks, key='selected_ticker')
             
-            # Display key metrics using st.metric
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("Current Price", f"₹{selected_stock_row['price']:.2f}")
-                st.metric("EDGE Score", f"{selected_stock_row['EDGE']:.2f}")
-                st.metric("Classification", selected_stock_row['tag'])
-            with col2:
-                st.metric("Volume Accel. Diff", f"{selected_stock_row['volume_acceleration']:.2f}%") # [cite: ⚡ EDGE Protocol System - COMPLETE]
-                st.metric("Volume Classification", selected_stock_row['volume_classification']) # This column should now exist
-                st.metric("Position Size", f"{selected_stock_row['position_size_pct']:.2%}") # [cite: ⚡ EDGE Protocol System - COMPLETE]
-            with col3:
-                st.metric("Dynamic Stop", f"₹{selected_stock_row['dynamic_stop']:.2f}") # [cite: ⚡ EDGE Protocol System - COMPLETE]
-                st.metric("Target 1", f"₹{selected_stock_row['target1']:.2f}") # [cite: ⚡ EDGE Protocol System - COMPLETE]
-                st.metric("Target 2", f"₹{selected_stock_row['target2']:.2f}") # [cite: ⚡ EDGE Protocol System - COMPLETE]
+            if selected_ticker: # Ensure a ticker is actually selected
+                selected_stock_row = df_scored[df_scored['ticker'] == selected_ticker].iloc[0]
+                
+                # Plot radar chart for selected stock
+                plot_stock_radar_chart(selected_stock_row)
 
-            st.markdown("---")
-            st.subheader("All Raw & Calculated Data")
-            # Display all columns for the selected stock, formatted
-            st.dataframe(
-                selected_stock_row.to_frame().T.style.format(
-                    {
-                        'market_cap': "₹{:,.0f} Cr",
-                        'price': "₹{:.2f}",
-                        'ret_1d': "{:.2f}%", 'ret_3d': "{:.2f}%", 'ret_7d': "{:.2f}%", 'ret_30d': "{:.2f}%",
-                        'ret_3m': "{:.2f}%", 'ret_6m': "{:.2f}%", 'ret_1y': "{:.2f}%",
-                        'ret_3y': "{:.2f}%", 'ret_5y': "{:.2f}%",
-                        'low_52w': "₹{:.2f}", 'high_52w': "₹{:.2f}",
-                        'from_low_pct': "{:.2f}%", 'from_high_pct': "{:.2f}%",
-                        'sma_20d': "₹{:.2f}", 'sma_50d': "₹{:.2f}", 'sma_200d': "₹{:.2f}",
-                        'volume_1d': "{:,.0f}", 'volume_7d': "{:,.0f}", 'volume_30d': "{:,.0f}",
-                        'volume_90d': "{:,.0f}", 'volume_180d': "{:,.0f}",
-                        'vol_ratio_1d_90d': "{:.2%}", 'vol_ratio_7d_90d': "{:.2%}", 'vol_ratio_30d_90d': "{:.2%}",
-                        'vol_ratio_1d_180d': "{:.2%}", 'vol_ratio_7d_180d': "{:.2%}", 'vol_ratio_30d_180d': "{:.2%}", 'vol_ratio_90d_180d': "{:.2%}",
-                        'vol_ratio_30d_90d_calc': "{:.2f}%", 'vol_ratio_30d_180d_calc': "{:.2f}%",
-                        'rvol': "{:.2f}",
-                        'prev_close': "₹{:.2f}",
-                        'pe': "{:.2f}",
-                        'eps_current': "{:.2f}", 'eps_last_qtr': "{:.2f}", 'eps_change_pct': "{:.2f}%",
-                        'atr_20': "₹{:.2f}", 'rs_volume_30d': "₹{:,.0f}",
-                        'vol_score': "{:.2f}", 'mom_score': "{:.2f}", 'rr_score': "{:.2f}", 'fund_score': "{:.2f}",
-                        'EDGE': "{:.2f}",
-                        'dynamic_stop': "₹{:.2f}", 'target1': "₹{:.2f}", 'target2': "₹{:.2f}",
-                        'volume_acceleration': "{:.2f}%",
-                        'volume_classification': "{}",
-                        'delta_accel': "{:.2f}%" # Assuming this is the delta_accel for the plot
-                    }
-                ),
-                use_container_width=True
-            )
+                st.subheader(f"Detailed Metrics for {selected_stock_row['company_name']} ({selected_stock_row['ticker']})")
+                
+                # Display key metrics using st.metric
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Current Price", f"₹{selected_stock_row['price']:.2f}")
+                    st.metric("EDGE Score", f"{selected_stock_row['EDGE']:.2f}")
+                    st.metric("Classification", selected_stock_row['tag'])
+                with col2:
+                    st.metric("Volume Accel. Diff", f"{selected_stock_row['volume_acceleration']:.2f}%") # [cite: ⚡ EDGE Protocol System - COMPLETE]
+                    st.metric("Volume Classification", selected_stock_row['volume_classification']) # This column should now exist
+                    st.metric("Position Size", f"{selected_stock_row['position_size_pct']:.2%}") # [cite: ⚡ EDGE Protocol System - COMPLETE]
+                with col3:
+                    st.metric("Dynamic Stop", f"₹{selected_stock_row['dynamic_stop']:.2f}") # [cite: ⚡ EDGE Protocol System - COMPLETE]
+                    st.metric("Target 1", f"₹{selected_stock_row['target1']:.2f}") # [cite: ⚡ EDGE Protocol System - COMPLETE]
+                    st.metric("Target 2", f"₹{selected_stock_row['target2']:.2f}") # [cite: ⚡ EDGE Protocol System - COMPLETE]
+
+                st.markdown("---")
+                st.subheader("All Raw & Calculated Data")
+                # Display all columns for the selected stock, formatted
+                st.dataframe(
+                    selected_stock_row.to_frame().T.style.format(
+                        {
+                            'market_cap': "₹{:,.0f} Cr",
+                            'price': "₹{:.2f}",
+                            'ret_1d': "{:.2f}%", 'ret_3d': "{:.2f}%", 'ret_7d': "{:.2f}%", 'ret_30d': "{:.2f}%",
+                            'ret_3m': "{:.2f}%", 'ret_6m': "{:.2f}%", 'ret_1y': "{:.2f}%",
+                            'ret_3y': "{:.2f}%", 'ret_5y': "{:.2f}%",
+                            'low_52w': "₹{:.2f}", 'high_52w': "₹{:.2f}",
+                            'from_low_pct': "{:.2f}%", 'from_high_pct': "{:.2f}%",
+                            'sma_20d': "₹{:.2f}", 'sma_50d': "₹{:.2f}", 'sma_200d': "₹{:.2f}",
+                            'volume_1d': "{:,.0f}", 'volume_7d': "{:,.0f}", 'volume_30d': "{:,.0f}",
+                            'volume_90d': "{:,.0f}", 'volume_180d': "{:,.0f}",
+                            'vol_ratio_1d_90d': "{:.2%}", 'vol_ratio_7d_90d': "{:.2%}", 'vol_ratio_30d_90d': "{:.2%}",
+                            'vol_ratio_1d_180d': "{:.2%}", 'vol_ratio_7d_180d': "{:.2%}", 'vol_ratio_30d_180d': "{:.2%}", 'vol_ratio_90d_180d': "{:.2%}",
+                            'vol_ratio_30d_90d_calc': "{:.2f}%", 'vol_ratio_30d_180d_calc': "{:.2f}%",
+                            'rvol': "{:.2f}",
+                            'prev_close': "₹{:.2f}",
+                            'pe': "{:.2f}",
+                            'eps_current': "{:.2f}", 'eps_last_qtr': "{:.2f}", 'eps_change_pct': "{:.2f}%",
+                            'atr_20': "₹{:.2f}", 'rs_volume_30d': "₹{:,.0f}",
+                            'vol_score': "{:.2f}", 'mom_score': "{:.2f}", 'rr_score': "{:.2f}", 'fund_score': "{:.2f}",
+                            'EDGE': "{:.2f}",
+                            'dynamic_stop': "₹{:.2f}", 'target1': "₹{:.2f}", 'target2': "₹{:.2f}",
+                            'volume_acceleration': "{:.2f}%",
+                            'volume_classification': "{}",
+                            'delta_accel': "{:.2f}%" # Assuming this is the delta_accel for the plot
+                        }
+                    ),
+                    use_container_width=True
+                )
+            else:
+                st.info("No stock selected or available after filters. Please adjust filters or ensure data is loaded.")
+
         else:
-            st.info("No stocks available for deep dive or data issues.")
+            st.info("No stocks available for deep dive after current filters. Please adjust filters or ensure data is loaded.")
 
 
     with tab5:
