@@ -7,6 +7,7 @@ import io
 import requests
 import math
 import warnings
+import re # Import the re module for regular expressions
 from functools import lru_cache
 from scipy import stats
 from typing import Dict, List, Tuple
@@ -120,21 +121,31 @@ def load_sheet() -> pd.DataFrame:
             if pd.isna(val) or not isinstance(val, str):
                 return np.nan
             val_str = val.strip()
-            if 'Cr' in val_str:
-                return float(val_str.replace('Cr', '').replace(',', '')) * 10**7
-            elif 'L' in val_str:
-                return float(val_str.replace('L', '').replace(',', '')) * 10**5
-            elif 'K' in val_str:
-                return float(val_str.replace('K', '').replace(',', '')) * 10**3
-            elif 'M' in val_str:
-                return float(val_str.replace('M', '').replace(',', '')) * 10**6
-            elif 'B' in val_str:
-                return float(val_str.replace('B', '').replace(',', '')) * 10**9
+
+            # First, remove all currency symbols, percentage signs, and commas
+            clean_val_str = re.sub(r"[₹,$€£%,]", "", val_str)
             
-            # Remove any remaining non-numeric characters before final conversion
-            clean_val = re.sub(r"[₹,$€£,]", "", val_str)
+            # Then handle suffixes
+            multiplier = 1
+            numeric_part = clean_val_str
+            if 'Cr' in clean_val_str:
+                numeric_part = clean_val_str.replace('Cr', '').strip()
+                multiplier = 10**7
+            elif 'L' in clean_val_str:
+                numeric_part = clean_val_str.replace('L', '').strip()
+                multiplier = 10**5
+            elif 'K' in clean_val_str:
+                numeric_part = clean_val_str.replace('K', '').strip()
+                multiplier = 10**3
+            elif 'M' in clean_val_str:
+                numeric_part = clean_val_str.replace('M', '').strip()
+                multiplier = 10**6
+            elif 'B' in clean_val_str:
+                numeric_part = clean_val_str.replace('B', '').strip()
+                multiplier = 10**9
+            
             try:
-                return float(clean_val)
+                return float(numeric_part) * multiplier
             except ValueError:
                 return np.nan
 
@@ -149,8 +160,8 @@ def load_sheet() -> pd.DataFrame:
                     df[col] = s.apply(parse_market_cap_value)
                 else:
                     # For all other numeric columns, remove common non-numeric characters
-                    s = s.str.replace(r"[₹,$€£%]", "", regex=True) # Remove currency symbols and percentage signs
-                    s = s.str.replace(",", "") # Remove thousands separator
+                    # Note: percentage sign is removed here too, as normalization happens later based on value
+                    s = re.sub(r"[₹,$€£%,]", "", s) # Use re.sub directly on the series content
                     s = s.replace({"nan": np.nan, "": np.nan, "-": np.nan}) # Convert common NaN strings
 
                     # Convert to numeric, coercing errors to NaN
@@ -164,8 +175,8 @@ def load_sheet() -> pd.DataFrame:
 
                 # Only divide by 100 if the values are likely integer percentages (e.g., 50 for 50%)
                 # and not already decimals (e.g., 0.50).
-                # Check if max value is > 1 and within a reasonable upper bound (e.g., 1000 for percentages)
-                if not non_na_values.empty and non_na_values.max() > 1 and non_na_values.max() <= 1000:
+                # Check if max absolute value is > 1 and within a reasonable upper bound (e.g., 1000 for percentages)
+                if not non_na_values.empty and non_na_values.abs().max() > 1 and non_na_values.abs().max() <= 1000:
                     df[col] = df[col] / 100.0
 
 
@@ -216,6 +227,8 @@ def load_sheet() -> pd.DataFrame:
         return pd.DataFrame()
     except Exception as e:
         st.error(f"Error loading or preprocessing data: {e}. Please ensure the Google Sheet data format is as expected.")
+        # Print full traceback for debugging in Streamlit logs
+        st.exception(e)
         return pd.DataFrame()
 
 
@@ -270,7 +283,7 @@ def score_vol_accel(row: pd.Series) -> float:
     if (
         delta >= 0.20 # 20% acceleration (since vol_ratio is decimal)
         and not pd.isna(row.get("from_high_pct"))
-        and row["from_high_pct"] <= -10 # Price is at least 10% below 52-week high
+        and row["from_high_pct"] <= -0.10 # Price is at least 10% below 52-week high (now in decimal)
     ):
         pct = min(pct + 5, 100) # Add a bonus, capping at 100
 
@@ -344,9 +357,9 @@ def score_fundamentals(row: pd.Series, df: pd.DataFrame) -> float:
     eps_score = np.nan
     if not pd.isna(row.get("eps_change_pct")):
         # Clip EPS change to a reasonable range (-50% to 100%) and map to 0-100
-        eps_score = np.clip(row["eps_change_pct"], -50, 100)
-        # Scale EPS score: -50 -> 0, 100 -> 100. Linear scaling for simplicity.
-        eps_score = (eps_score + 50) / 1.5 # (100 - (-50)) / 100 = 1.5
+        eps_score = np.clip(row["eps_change_pct"], -0.50, 1.00) # Now expecting decimal percentages
+        # Scale EPS score: -0.50 -> 0, 1.00 -> 100. Linear scaling for simplicity.
+        eps_score = (eps_score + 0.50) / 0.015 # (1.00 - (-0.50)) / 100 = 0.015
 
     pe_score = np.nan
     if not pd.isna(row.get("pe")) and row["pe"] > 0 and row["pe"] <= 100:
@@ -448,19 +461,21 @@ def get_eps_tier(eps: float) -> str:
     """Categorizes EPS into predefined tiers."""
     if pd.isna(eps):
         return ""
-    if eps < 5:
+    # Assuming eps is now a decimal (e.g., 0.05 for 5%)
+    # Adjusting tiers to reflect decimal EPS values
+    if eps < 0.05:
         return "5↓"
-    elif 5 <= eps < 15:
+    elif 0.05 <= eps < 0.15:
         return "5↑"
-    elif 15 <= eps < 35:
+    elif 0.15 <= eps < 0.35:
         return "15↑"
-    elif 35 <= eps < 55:
+    elif 0.35 <= eps < 0.55:
         return "35↑"
-    elif 55 <= eps < 75:
+    elif 0.55 <= eps < 0.75:
         return "55↑"
-    elif 75 <= eps < 95:
+    elif 0.75 <= eps < 0.95:
         return "75↑"
-    elif eps >= 95:
+    elif eps >= 0.95:
         return "95↑"
     return "" # Fallback for unexpected values
 
@@ -500,6 +515,7 @@ def calculate_volume_acceleration_and_classify(df: pd.DataFrame) -> pd.DataFrame
 
     # Calculate Volume Ratios (percentage change)
     # Handle division by zero by using np.where or replacing zero denominators with NaN then filling
+    # These vol_ratio_..._calc columns will be percentages (e.g., 5.0 for 5% increase)
     df['vol_ratio_30d_90d_calc'] = np.where(df['avg_vol_90d'] != 0,
                                             (df['avg_vol_30d'] / df['avg_vol_90d'] - 1) * 100, 0)
     df['vol_ratio_30d_180d_calc'] = np.where(df['avg_vol_180d'] != 0,
@@ -508,6 +524,7 @@ def calculate_volume_acceleration_and_classify(df: pd.DataFrame) -> pd.DataFrame
                                              (df['avg_vol_90d'] / df['avg_vol_180d'] - 1) * 100, 0)
 
     # Volume Acceleration: Checks if recent accumulation (30d) is accelerating faster than longer periods (90d, 180d)
+    # This difference will also be in percentage points
     df['volume_acceleration'] = df['vol_ratio_30d_90d_calc'] - df['vol_ratio_30d_180d_calc']
 
     # Classify based on volume acceleration and current ratios
@@ -565,7 +582,7 @@ def plot_volume_acceleration_scatter(df: pd.DataFrame):
                      }
                     )
     fig.update_traces(marker=dict(line=dict(width=1, color='DarkSlateGrey')))
-    fig.add_vline(x=-10, line_dash="dash", line_color="green", annotation_text="< -10% from High (Consolidation Zone)")
+    fig.add_vline(x=-0.10, line_dash="dash", line_color="green", annotation_text="< -10% from High (Consolidation Zone)") # Adjusted to decimal
     fig.add_hline(y=20, line_dash="dash", line_color="red", annotation_text="> 20% Volume Acceleration (Strong)")
 
     st.plotly_chart(fig, use_container_width=True)
@@ -865,7 +882,7 @@ def render_ui():
                 }
             )
             fig2.update_traces(marker=dict(line=dict(width=1, color='DarkSlateGrey')))
-            fig2.add_vline(x=-10, line_dash="dash", line_color="green", annotation_text="< -10% from High (Consolidation Zone)")
+            fig2.add_vline(x=-0.10, line_dash="dash", line_color="green", annotation_text="< -10% from High (Consolidation Zone)") # Adjusted to decimal
             fig2.add_hline(y=20, line_dash="dash", line_color="red", annotation_text="> 20% Volume Acceleration (Strong)")
 
             st.plotly_chart(fig2, use_container_width=True)
