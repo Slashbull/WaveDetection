@@ -106,12 +106,19 @@ def load_sheet() -> pd.DataFrame:
             'eps_current', 'eps_last_qtr', 'eps_change_pct', 'year'
         ]
 
-        # Define columns that are percentages and should be divided by 100 if > 1
+        # Define columns that are percentages and should be divided by 100 if their value is > 1
+        # This list should include all columns that represent percentages but might be stored as integers (e.g., 50 for 50%)
         percentage_value_cols = [
             'ret_1d', 'from_low_pct', 'from_high_pct', 'ret_3d', 'ret_7d', 'ret_30d', 'ret_3m',
             'ret_6m', 'ret_1y', 'ret_3y', 'ret_5y', 'eps_change_pct',
+            # Note: vol_ratio_..._180d are handled separately below if they contain '%'
             'vol_ratio_1d_90d', 'vol_ratio_7d_90d', 'vol_ratio_30d_90d',
-            'vol_ratio_1d_180d', 'vol_ratio_7d_180d', 'vol_ratio_30d_180d', 'vol_ratio_90d_180d'
+            'vol_ratio_90d_180d' # This one might also be just numbers
+        ]
+
+        # Columns that might contain '%' and need specific string cleaning before numeric conversion
+        percentage_string_cols = [
+            'vol_ratio_1d_180d', 'vol_ratio_7d_180d', 'vol_ratio_30d_180d'
         ]
 
 
@@ -143,15 +150,21 @@ def load_sheet() -> pd.DataFrame:
                             return float(val_str.replace('B', '')) * 10**9
                         return float(val_str) # Assume it's a direct number if no suffix
                     df[col] = s.apply(parse_market_cap)
+                elif col in percentage_string_cols:
+                    # Specific handling for percentage strings (e.g., '-60.55%')
+                    s = s.str.replace("%", "", regex=False)
+                    df[col] = pd.to_numeric(s, errors="coerce") / 100.0 # Convert to numeric and then to decimal
                 else:
-                    # For other columns, convert to numeric after cleaning
+                    # For all other numeric columns, convert to numeric after cleaning
                     df[col] = pd.to_numeric(s, errors="coerce")
 
-                # Handle percentage columns: divide by 100 if the value is > 1 (e.g., 50 for 50%)
+                # After initial conversion, for relevant percentage columns,
+                # check if values need to be divided by 100 (e.g., 50 -> 0.50)
                 if col in percentage_value_cols and pd.api.types.is_numeric_dtype(df[col]):
                     # Only divide if the value is clearly an integer percentage (e.g., 50 for 50%)
-                    # and not already a decimal (e.g., 0.50)
-                    df[col] = np.where(df[col].notna() & (df[col].abs() > 1) & (df[col].abs() <= 1000), df[col] / 100.0, df[col]) # Added upper bound to prevent dividing already large numbers
+                    # and not already a decimal (e.g., 0.50). Check if abs value is > 1 and <= 1000
+                    # This avoids dividing large non-percentage numbers.
+                    df[col] = np.where(df[col].notna() & (df[col].abs() > 1) & (df[col].abs() <= 1000), df[col] / 100.0, df[col])
 
 
         # Winsorise numeric columns to handle extreme outliers
@@ -276,7 +289,7 @@ def score_momentum(row: pd.Series, df: pd.DataFrame) -> float:
     mean, std, n = sector_stats(df, row["sector"])
     
     # Ensure standard deviation is not zero to prevent division errors
-    # Filter for columns that exist in both row and mean/std before calculation
+    # Filter for columns that exist in both row and mean and std before calculation
     valid_ret_cols = [col for col in ret_cols if col in row and col in mean and col in std]
     if not valid_ret_cols:
         return np.nan
