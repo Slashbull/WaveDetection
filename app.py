@@ -91,21 +91,8 @@ def load_sheet() -> pd.DataFrame:
 
         df = raw.copy()
 
-        # Clean and convert numeric columns that might contain non-numeric characters
-        for col in df.columns:
-            if df[col].dtype == object: # Only process object (string) columns
-                df[col] = (
-                    df[col]
-                    .astype(str)
-                    .str.replace(r"[₹,%]", "", regex=True) # Remove currency, percentage, and comma symbols
-                    .str.replace(",", "")
-                    .replace({"nan": np.nan, "": np.nan}) # Convert 'nan' string and empty strings to actual NaN
-                )
-                # Attempt to convert to numeric, coercing errors to NaN
-                df[col] = pd.to_numeric(df[col], errors="coerce") # Use 'coerce' to turn non-numeric into NaN
-
-        # Ensure all relevant columns are numeric after cleaning
-        numeric_cols_to_convert = [
+        # Explicitly define columns that should be numeric and handle non-numeric values
+        numeric_cols = [
             'market_cap', 'volume_1d', 'volume_7d', 'volume_30d', 'volume_90d', 'volume_180d',
             'vol_ratio_1d_90d', 'vol_ratio_7d_90d', 'vol_ratio_30d_90d',
             'vol_ratio_1d_180d', 'vol_ratio_7d_180d', 'vol_ratio_30d_180d', 'vol_ratio_90d_180d',
@@ -114,19 +101,26 @@ def load_sheet() -> pd.DataFrame:
             'ret_6m', 'ret_1y', 'ret_3y', 'ret_5y', 'rvol', 'prev_close', 'pe',
             'eps_current', 'eps_last_qtr', 'eps_change_pct', 'year'
         ]
-        for col in numeric_cols_to_convert:
+
+        for col in numeric_cols:
             if col in df.columns:
-                # Ensure it's numeric, coercing errors
-                df[col] = pd.to_numeric(df[col], errors='coerce')
+                # First, clean string representations that might prevent numeric conversion
+                if df[col].dtype == object: # Only process object (string) columns
+                    df[col] = (
+                        df[col]
+                        .astype(str)
+                        .str.replace(r"[₹,%]", "", regex=True) # Remove currency, percentage, and comma symbols
+                        .str.replace(",", "")
+                        .replace({"nan": np.nan, "": np.nan}) # Convert 'nan' string and empty strings to actual NaN
+                    )
+                # Then, convert to numeric, coercing errors to NaN
+                df[col] = pd.to_numeric(df[col], errors="coerce")
 
         # For percentage ratios that were cleaned (e.g., 'vol_ratio_1d_180d'), convert to decimal
-        # These columns were already converted to numeric, now ensure they are decimals if they represent percentages
+        # Only divide by 100 if the values are large (e.g., >1 or < -1) indicating percentage
         pct_ratio_cols = ['vol_ratio_1d_180d', 'vol_ratio_7d_180d', 'vol_ratio_30d_180d', 'vol_ratio_90d_180d']
         for col in pct_ratio_cols:
-            if col in df.columns:
-                # Assuming the numeric value is still in percentage form (e.g., 50 for 50%)
-                # Only divide by 100 if the values are large (e.g., >1 or < -1) indicating percentage
-                # This is a heuristic, adjust if your raw data format is different
+            if col in df.columns and pd.api.types.is_numeric_dtype(df[col]):
                 df[col] = np.where(df[col].abs() > 1, df[col] / 100.0, df[col])
 
 
@@ -164,18 +158,11 @@ def load_sheet() -> pd.DataFrame:
         # rvol is used in momentum scoring, 1.0 is a neutral default if missing (relative volume of 1 means average).
         df['rvol'] = df['rvol'].fillna(1.0)
 
-        # For other columns like 'market_cap', 'pe', 'eps_current', 'eps_last_qtr', 'eps_change_pct',
-        # 'low_52w', 'high_52w', 'from_low_pct', 'from_high_pct', 'sma_20d', 'sma_50d', 'sma_200d',
-        # and all 'ret_XXd' columns:
-        # We will *not* explicitly fillna here. The scoring functions are designed to handle NaNs
-        # by returning NaN for that specific score component, and the adaptive weighting will
-        # redistribute the weight. This adheres to the user's request to keep blanks as blanks.
-        
-        # Ensure 'sector' and 'category' are strings, fillna with empty string for consistent grouping/filtering
+        # Ensure 'sector' and 'category' are strings, fillna with "Unknown" for consistent grouping/filtering
         if 'sector' in df.columns:
-            df['sector'] = df['sector'].astype(str).fillna("")
+            df['sector'] = df['sector'].astype(str).fillna("Unknown")
         if 'category' in df.columns:
-            df['category'] = df['category'].astype(str).fillna("")
+            df['category'] = df['category'].astype(str).fillna("Unknown")
 
 
         # Derived columns
@@ -269,11 +256,16 @@ def score_momentum(row: pd.Series, df: pd.DataFrame) -> float:
     mean, std, n = sector_stats(df, row["sector"])
     
     # Ensure standard deviation is not zero to prevent division errors
-    valid_std = std[ret_cols].replace(0, 1e-6)
+    # Filter for columns that exist in both row and mean/std before calculation
+    valid_ret_cols = [col for col in ret_cols if col in row and col in mean and col in std]
+    if not valid_ret_cols:
+        return np.nan
+
+    valid_std = std[valid_ret_cols].replace(0, 1e-6)
 
     # Calculate Z-scores for returns relative to sector mean
     # Z-score measures how many standard deviations an observation is from the mean.
-    z_scores = (row[ret_cols] - mean[ret_cols]) / valid_std
+    z_scores = (row[valid_ret_cols] - mean[valid_ret_cols]) / valid_std
 
     # Calculate the mean of Z-scores for overall momentum
     raw_momentum_score = z_scores.mean()
@@ -296,7 +288,7 @@ def score_risk_reward(row: pd.Series) -> float:
     downside = row["price"] - row["low_52w"]
 
     # Use ATR to normalize the risk/reward difference. ATR is a measure of volatility.
-    atr = row["atr_20"] if row["atr_20"] and row["atr_20"] > 0 else 1 # Avoid division by zero
+    atr = row["atr_20"] if pd.notna(row["atr_20"]) and row["atr_20"] > 0 else 1 # Avoid division by zero
 
     # Risk/Reward metric: (Upside - Downside) / ATR
     # A higher positive value indicates a more favorable risk/reward.
@@ -322,7 +314,7 @@ def score_fundamentals(row: pd.Series, df: pd.DataFrame) -> float:
         eps_score = (eps_score + 50) / 1.5 # (100 - (-50)) / 100 = 1.5
 
     pe_score = np.nan
-    if not pd.isna(row.get("pe")) and 0 < row["pe"] <= 100:
+    if not pd.isna(row.get("pe")) and row["pe"] > 0 and row["pe"] <= 100:
         # Lower PE is generally better for value. Map PE 0-100 to score 100-0.
         pe_score = 100 - (row["pe"] / 100 * 100)
     elif not pd.isna(row.get("pe")) and row["pe"] > 100: # Very high PE, score very low
@@ -404,9 +396,9 @@ def compute_scores(df: pd.DataFrame, weights: Tuple[float, float, float, float])
     df['target2'] = df['price'] * 1.10 # 10% above current price
 
     # Ensure stop is not below 52w low, and targets are not above 52w high
-    df['dynamic_stop'] = np.maximum(df['dynamic_stop'], df['low_52w'])
-    df['target1'] = np.minimum(df['target1'], df['high_52w'])
-    df['target2'] = np.minimum(df['target2'], df['high_52w'])
+    df['dynamic_stop'] = np.maximum(df['dynamic_stop'], df['low_52w'].fillna(-np.inf)) # Fill NaN with -inf to ensure comparison works
+    df['target1'] = np.minimum(df['target1'], df['high_52w'].fillna(np.inf)) # Fill NaN with inf to ensure comparison works
+    df['target2'] = np.minimum(df['target2'], df['high_52w'].fillna(np.inf))
 
 
     return df
@@ -473,11 +465,11 @@ def calculate_volume_acceleration_and_classify(df: pd.DataFrame) -> pd.DataFrame
     # Calculate Volume Ratios (percentage change)
     # Handle division by zero by using np.where or replacing zero denominators with NaN then filling
     df['vol_ratio_30d_90d_calc'] = np.where(df['avg_vol_90d'] != 0,
-                                           (df['avg_vol_30d'] / df['avg_vol_90d'] - 1) * 100, 0)
+                                            (df['avg_vol_30d'] / df['avg_vol_90d'] - 1) * 100, 0)
     df['vol_ratio_30d_180d_calc'] = np.where(df['avg_vol_180d'] != 0,
-                                            (df['avg_vol_30d'] / df['avg_vol_180d'] - 1) * 100, 0)
+                                             (df['avg_vol_30d'] / df['avg_vol_180d'] - 1) * 100, 0)
     df['vol_ratio_90d_180d_calc'] = np.where(df['avg_vol_180d'] != 0,
-                                            (df['avg_vol_90d'] / df['avg_vol_180d'] - 1) * 100, 0)
+                                             (df['avg_vol_90d'] / df['avg_vol_180d'] - 1) * 100, 0)
 
     # Volume Acceleration: Checks if recent accumulation (30d) is accelerating faster than longer periods (90d, 180d)
     df['volume_acceleration'] = df['vol_ratio_30d_90d_calc'] - df['vol_ratio_30d_180d_calc']
@@ -515,9 +507,9 @@ def plot_volume_acceleration_scatter(df: pd.DataFrame):
     df['tag'] = pd.Categorical(df['tag'], categories=order, ordered=True)
     df = df.sort_values('tag')
 
-    # Ensure 'volume_acceleration' and 'from_high_pct' exist
-    if "volume_acceleration" not in df.columns or "from_high_pct" not in df.columns:
-        st.warning("Volume acceleration or 'from_high_pct' column missing for scatter plot.")
+    # Ensure 'volume_acceleration' and 'from_high_pct' exist and are not all NaN
+    if "volume_acceleration" not in df.columns or "from_high_pct" not in df.columns or df["volume_acceleration"].isnull().all() or df["from_high_pct"].isnull().all():
+        st.warning("Volume acceleration or 'from_high_pct' column missing or all NaN for scatter plot.")
         return
 
     fig = px.scatter(df, x="from_high_pct", y="volume_acceleration",
@@ -548,13 +540,16 @@ def plot_stock_radar_chart(df_row: pd.Series):
     Plots a radar chart for an individual stock's EDGE components. [cite: ⚡ EDGE Protocol System - COMPLETE]
     """
     categories = ['Volume Acceleration', 'Momentum Divergence', 'Risk/Reward', 'Fundamentals']
-    # Ensure scores exist before plotting
+    # Ensure scores exist and handle NaN values for plotting
     scores = [
         df_row.get('vol_score', 0),
         df_row.get('mom_score', 0),
         df_row.get('rr_score', 0),
         df_row.get('fund_score', 0)
     ]
+    # Replace NaN scores with 0 for plotting purposes
+    scores = [0 if pd.isna(s) else s for s in scores]
+
 
     fig = go.Figure()
 
@@ -611,9 +606,18 @@ def render_ui():
         st.error("No data available to process. Please check the data source and try again.")
         return # Exit if data loading failed
 
+    # Ensure 'ticker', 'sector', 'category' are strings early for consistent filtering
+    if 'ticker' in df.columns:
+        df['ticker'] = df['ticker'].astype(str)
+    if 'sector' in df.columns:
+        df['sector'] = df['sector'].astype(str).fillna("Unknown") # Fill NaN sectors for grouping
+    if 'category' in df.columns:
+        df['category'] = df['category'].astype(str).fillna("Unknown") # Fill NaN categories for filtering
+
+
     # Filter out small/micro caps if checkbox is unchecked
     if not show_smallcaps and "category" in df.columns:
-        df = df[~df["category"].astype(str).str.contains("nano|micro", case=False, na=False)]
+        df = df[~df["category"].str.contains("nano|micro", case=False, na=False)]
 
     # Filter out stocks with very low 30-day rupee volume (liquidity filter)
     # Assumes 'rs_volume_30d' is in Rupees and 1e7 is 1 Crore (10 million)
@@ -623,6 +627,10 @@ def render_ui():
     else:
         st.warning("Column 'rs_volume_30d' not found. Liquidity filter skipped.")
 
+    # Check if df is empty after initial filters
+    if df.empty:
+        st.info("No stocks remain after initial filtering criteria. Please adjust settings.")
+        return
 
     # Ensure volume acceleration and classification are calculated *before* computing overall scores
     # as these columns are used in the display_df and stock deep dive.
@@ -636,7 +644,7 @@ def render_ui():
     df_scored = compute_scores(df_processed, weights)
 
     # Filter by minimum EDGE score set by the user
-    df_filtered_by_min_edge = df_scored[df_scored["EDGE"] >= min_edge].copy()
+    df_filtered_by_min_edge = df_scored[df_scored["EDGE"].notna() & (df_scored["EDGE"] >= min_edge)].copy()
 
 
     # Low‑N alert for concentrated EDGE signals
@@ -650,7 +658,7 @@ def render_ui():
         
         if len(explosive_df) > 0 and len(low_n_explosive) / len(explosive_df) > 0.4:
             st.sidebar.warning(
-                f"⚠️  Edge concentration alert: {len(low_n_explosive)} / {len(explosive_df)} EXPLOSIVE signals come from thin sectors (less than {MIN_STOCKS_PER_SECTOR} stocks)."
+                f"⚠️ Edge concentration alert: {len(low_n_explosive)} / {len(explosive_df)} EXPLOSIVE signals come from thin sectors (less than {MIN_STOCKS_PER_SECTOR} stocks)."
             )
 
     # Tabs for different analysis views
@@ -670,7 +678,7 @@ def render_ui():
             # EDGE Classification Filter (always available)
             all_edge_class_options = ["EXPLOSIVE", "STRONG", "MODERATE", "WATCH"]
             # Ensure only relevant options are shown if current_filtered_df is already filtered
-            available_edge_classes = current_filtered_df['tag'].unique().tolist()
+            available_edge_classes = current_filtered_df['tag'].dropna().unique().tolist()
             # Filter all_edge_class_options to only show those present in current_filtered_df
             display_edge_options = [opt for opt in all_edge_class_options if opt in available_edge_classes]
             
@@ -690,7 +698,7 @@ def render_ui():
             selected_sectors = st.multiselect("Filter by Sector:", options=unique_sectors, default=unique_sectors)
             if selected_sectors:
                 # Filter, also keeping rows where 'sector' might be NaN if not explicitly selected
-                current_filtered_df = current_filtered_df[current_filtered_df["sector"].isin(selected_sectors) | (current_filtered_df["sector"].isna() & ("" in selected_sectors))]
+                current_filtered_df = current_filtered_df[current_filtered_df["sector"].isin(selected_sectors)]
 
         with filter_cols_1[2]:
             # Category Filter (options based on current_filtered_df)
@@ -700,7 +708,7 @@ def render_ui():
             selected_categories = st.multiselect("Filter by Category:", options=unique_categories, default=unique_categories)
             if selected_categories:
                 # Filter, also keeping rows where 'category' might be NaN if not explicitly selected
-                current_filtered_df = current_filtered_df[current_filtered_df["category"].isin(selected_categories) | (current_filtered_df["category"].isna() & ("" in selected_categories))]
+                current_filtered_df = current_filtered_df[current_filtered_df["category"].isin(selected_categories)]
 
         with filter_cols_1[3]:
             # Volume Classification Filter (options based on current_filtered_df)
@@ -710,7 +718,7 @@ def render_ui():
             selected_volume_classifications = st.multiselect("Filter by Volume Classification:", options=unique_volume_classifications, default=unique_volume_classifications)
             if selected_volume_classifications:
                 # Filter, also keeping rows where 'volume_classification' might be NaN if not explicitly selected
-                current_filtered_df = current_filtered_df[current_filtered_df["volume_classification"].isin(selected_volume_classifications) | (current_filtered_df["volume_classification"].isna() & ("" in selected_volume_classifications))]
+                current_filtered_df = current_filtered_df[current_filtered_df["volume_classification"].isin(selected_volume_classifications)]
 
         filter_cols_2 = st.columns(3)
         with filter_cols_2[0]:
@@ -721,7 +729,7 @@ def render_ui():
             sorted_eps_tiers = [tier for tier in eps_tier_order if tier in unique_eps_tiers]
             selected_eps_tiers = st.multiselect("Filter by EPS Tier:", options=sorted_eps_tiers, default=sorted_eps_tiers)
             if selected_eps_tiers:
-                current_filtered_df = current_filtered_df[current_filtered_df["eps_tier"].isin(selected_eps_tiers) | (current_filtered_df["eps_tier"].isna() & ("" in selected_eps_tiers))]
+                current_filtered_df = current_filtered_df[current_filtered_df["eps_tier"].isin(selected_eps_tiers)]
 
         with filter_cols_2[1]:
             # Price Tier Filter (options based on current_filtered_df)
@@ -731,7 +739,7 @@ def render_ui():
             sorted_price_tiers = [tier for tier in price_tier_order if tier in unique_price_tiers]
             selected_price_tiers = st.multiselect("Filter by Price Tier:", options=sorted_price_tiers, default=sorted_price_tiers)
             if selected_price_tiers:
-                current_filtered_df = current_filtered_df[current_filtered_df["price_tier"].isin(selected_price_tiers) | (current_filtered_df["price_tier"].isna() & ("" in selected_price_tiers))]
+                current_filtered_df = current_filtered_df[current_filtered_df["price_tier"].isin(selected_price_tiers)]
 
         with filter_cols_2[2]:
             # PE Ratio Slider Filter (min/max based on current_filtered_df)
@@ -752,7 +760,6 @@ def render_ui():
                 ]
             else:
                 st.info("PE Ratio data not available for filtering in current selection or no stocks left after previous filters.")
-                # If no PE data or no stocks after previous filters, ensure the dataframe is empty for PE filtering
                 current_filtered_df = pd.DataFrame(columns=current_filtered_df.columns) # Effectively clear the df if no PE data
 
         # Final filtered DataFrame for display in this tab
@@ -796,10 +803,14 @@ def render_ui():
         st.markdown("Visualize the relationship between Volume Acceleration (difference in 30d/90d and 30d/180d ratios) and Distance from 52-Week High. [cite: ⚡ EDGE Protocol System - COMPLETE]")
         st.markdown("Look for stocks with high positive `Volume Acceleration` and negative `% from 52W High` (i.e., consolidating price with accelerating accumulation) – this is where the 'gold' is found. [cite: ⚡ EDGE Protocol System - COMPLETE]")
 
-        if "volume_acceleration" in df_scored.columns and "from_high_pct" in df_scored.columns:
-            # Use the already calculated 'volume_acceleration' column directly for the y-axis
+        if "volume_acceleration" in df_scored.columns and "from_high_pct" in df_scored.columns and not df_scored.empty:
+            # Ensure 'tag' column is categorical for consistent coloring
+            order = ["EXPLOSIVE", "STRONG", "MODERATE", "WATCH"]
+            df_scored['tag'] = pd.Categorical(df_scored['tag'], categories=order, ordered=True)
+            df_scored_plot = df_scored.sort_values('tag') # Sort for consistent plotting order
+
             fig2 = px.scatter(
-                df_scored,
+                df_scored_plot,
                 x="from_high_pct",
                 y="volume_acceleration", # Use the existing volume_acceleration column
                 color="tag",
@@ -823,7 +834,7 @@ def render_ui():
 
             st.plotly_chart(fig2, use_container_width=True)
         else:
-            st.info("Required columns for Volume Acceleration Scatter plot are missing.")
+            st.info("Required columns for Volume Acceleration Scatter plot are missing or data is empty after processing.")
 
     with tab3:
         st.header("Sector Heatmap (Average EDGE Score)")
@@ -839,21 +850,33 @@ def render_ui():
         agg.dropna(subset=['edge_mean'], inplace=True)
 
         if not agg.empty:
-            # Add opacity based on number of stocks in sector
-            agg["opacity"] = np.where(agg["n"] < MIN_STOCKS_PER_SECTOR, 0.4, 1.0)
+            # Ensure 'edge_mean' and 'n' are numeric for plotly
+            agg['edge_mean'] = pd.to_numeric(agg['edge_mean'], errors='coerce')
+            agg['n'] = pd.to_numeric(agg['n'], errors='coerce')
+            agg.dropna(subset=['edge_mean', 'n'], inplace=True) # Drop again if coercion created NaNs
 
-            fig = px.treemap(agg, path=["sector"], values="n", color="edge_mean",
-                             range_color=(0, 100), # Ensure color scale is 0-100 for EDGE scores
-                             color_continuous_scale=px.colors.sequential.Viridis, # Choose a color scale
-                             title="Average EDGE Score by Sector"
-                             )
-            # FIX: opacity is a direct property of the trace, not within marker for treemaps
-            # Iterate through traces and set opacity
-            for i, trace in enumerate(fig.data):
-                if i < len(agg["opacity"]): # Ensure index is within bounds
-                    trace.opacity = agg["opacity"].iloc[i]
+            # Filter out sectors with no valid data after numeric conversion
+            if agg.empty:
+                st.info("No sectors with valid average EDGE scores to display in the heatmap after numeric conversion.")
+            else:
+                # Add opacity based on number of stocks in sector
+                agg["opacity"] = np.where(agg["n"] < MIN_STOCKS_PER_SECTOR, 0.4, 1.0)
 
-            st.plotly_chart(fig, use_container_width=True)
+                fig = px.treemap(agg, path=["sector"], values="n", color="edge_mean",
+                                 range_color=(0, 100), # Ensure color scale is 0-100 for EDGE scores
+                                 color_continuous_scale=px.colors.sequential.Viridis, # Choose a color scale
+                                 title="Average EDGE Score by Sector"
+                                 )
+                # Apply opacity and consistent color mapping for treemap
+                for i, trace in enumerate(fig.data):
+                    if i < len(agg["opacity"]): # Ensure index is within bounds
+                        # For treemaps, color is handled by `color` argument, opacity is a trace property
+                        # We need to ensure the color mapping is correct and then apply opacity.
+                        # The `color_continuous_scale` handles the color mapping based on 'edge_mean'.
+                        trace.marker.colorbar = dict(title="Avg. EDGE Score")
+                        trace.opacity = agg["opacity"].iloc[i] # Apply opacity directly to the trace
+
+                st.plotly_chart(fig, use_container_width=True)
         else:
             st.info("No sectors with valid average EDGE scores to display in the heatmap after filtering.")
 
@@ -862,18 +885,22 @@ def render_ui():
         st.markdown("Select an individual stock to see its detailed EDGE component breakdown and all raw metrics. [cite: ⚡ EDGE Protocol System - COMPLETE]")
         
         # Ensure only stocks with valid calculated scores are available for selection
-        available_stocks = df_scored[df_scored['EDGE'].notnull()].sort_values('company_name')['ticker'].tolist()
+        # Convert 'ticker' to string to avoid potential type issues in selectbox options
+        available_stocks = df_scored[df_scored['EDGE'].notnull()]['ticker'].astype(str).tolist()
         
         if available_stocks:
-            # FIX: Check if selected_ticker is actually in the available_stocks list
-            # If not, default to the first available stock to prevent IndexError
+            # Ensure the default selected ticker is valid if it exists in session_state,
+            # otherwise default to the first available stock.
             if 'selected_ticker' not in st.session_state or st.session_state.selected_ticker not in available_stocks:
-                st.session_state.selected_ticker = available_stocks[0] if available_stocks else None
+                st.session_state.selected_ticker = available_stocks[0]
 
             selected_ticker = st.selectbox("Select Ticker:", available_stocks, key='selected_ticker')
             
-            if selected_ticker: # Ensure a ticker is actually selected
-                selected_stock_row = df_scored[df_scored['ticker'] == selected_ticker].iloc[0]
+            # Ensure a ticker is actually selected and present in the filtered df_scored
+            # Use .loc for label-based indexing, which is safer with string tickers
+            selected_stock_row_df = df_scored[df_scored['ticker'] == selected_ticker]
+            if not selected_stock_row_df.empty:
+                selected_stock_row = selected_stock_row_df.iloc[0] # Get the first row if multiple matches (shouldn't happen with unique tickers)
                 
                 # Plot radar chart for selected stock
                 plot_stock_radar_chart(selected_stock_row)
@@ -883,17 +910,17 @@ def render_ui():
                 # Display key metrics using st.metric
                 col1, col2, col3 = st.columns(3)
                 with col1:
-                    st.metric("Current Price", f"₹{selected_stock_row['price']:.2f}")
-                    st.metric("EDGE Score", f"{selected_stock_row['EDGE']:.2f}")
-                    st.metric("Classification", selected_stock_row['tag'])
+                    st.metric("Current Price", f"₹{selected_stock_row.get('price', 0):.2f}")
+                    st.metric("EDGE Score", f"{selected_stock_row.get('EDGE', 0):.2f}")
+                    st.metric("Classification", selected_stock_row.get('tag', 'N/A'))
                 with col2:
-                    st.metric("Volume Accel. Diff", f"{selected_stock_row['volume_acceleration']:.2f}%") # [cite: ⚡ EDGE Protocol System - COMPLETE]
-                    st.metric("Volume Classification", selected_stock_row['volume_classification']) # This column should now exist
-                    st.metric("Position Size", f"{selected_stock_row['position_size_pct']:.2%}") # [cite: ⚡ EDGE Protocol System - COMPLETE]
+                    st.metric("Volume Accel. Diff", f"{selected_stock_row.get('volume_acceleration', 0):.2f}%") # [cite: ⚡ EDGE Protocol System - COMPLETE]
+                    st.metric("Volume Classification", selected_stock_row.get('volume_classification', 'N/A')) # This column should now exist
+                    st.metric("Position Size", f"{selected_stock_row.get('position_size_pct', 0):.2%}") # [cite: ⚡ EDGE Protocol System - COMPLETE]
                 with col3:
-                    st.metric("Dynamic Stop", f"₹{selected_stock_row['dynamic_stop']:.2f}") # [cite: ⚡ EDGE Protocol System - COMPLETE]
-                    st.metric("Target 1", f"₹{selected_stock_row['target1']:.2f}") # [cite: ⚡ EDGE Protocol System - COMPLETE]
-                    st.metric("Target 2", f"₹{selected_stock_row['target2']:.2f}") # [cite: ⚡ EDGE Protocol System - COMPLETE]
+                    st.metric("Dynamic Stop", f"₹{selected_stock_row.get('dynamic_stop', 0):.2f}") # [cite: ⚡ EDGE Protocol System - COMPLETE]
+                    st.metric("Target 1", f"₹{selected_stock_row.get('target1', 0):.2f}") # [cite: ⚡ EDGE Protocol System - COMPLETE]
+                    st.metric("Target 2", f"₹{selected_stock_row.get('target2', 0):.2f}") # [cite: ⚡ EDGE Protocol System - COMPLETE]
 
                 st.markdown("---")
                 st.subheader("All Raw & Calculated Data")
@@ -924,13 +951,12 @@ def render_ui():
                             'dynamic_stop': "₹{:.2f}", 'target1': "₹{:.2f}", 'target2': "₹{:.2f}",
                             'volume_acceleration': "{:.2f}%",
                             'volume_classification': "{}",
-                            'delta_accel': "{:.2f}%" # Assuming this is the delta_accel for the plot
                         }
                     ),
                     use_container_width=True
                 )
             else:
-                st.info("No stock selected or available after filters. Please adjust filters or ensure data is loaded.")
+                st.info("Selected ticker not found in the processed data. It might have been filtered out.")
 
         else:
             st.info("No stocks available for deep dive after current filters. Please adjust filters or ensure data is loaded.")
@@ -954,8 +980,10 @@ def render_ui():
             * **Risk/Reward Mathematics ({weights[2]*100:.0f}%)**: Ensuring favorable trade setups. [cite: ⚡ EDGE Protocol System - COMPLETE]
             * **Fundamentals ({weights[3]*100:.0f}%)**: Adaptive weighting. Redistributed if EPS/PE data is missing. [cite: ⚡ EDGE Protocol System - COMPLETE]
         """)
-        if weights[3] == 0: # If fundamental weight became 0 due to adaptive weighting
-            st.warning("Note: Fundamental (EPS/PE) data was largely missing or invalid, so its weight has been redistributed.")
+        # Check if the effective fundamental weight is zero due to adaptive weighting
+        effective_fund_weight = sum(w for i, w in enumerate(weights) if not df_scored[block_cols[i]].isna().all())
+        if weights[3] > 0 and effective_fund_weight == 0:
+             st.warning("Note: Fundamental (EPS/PE) data was largely missing or invalid, so its weight has been redistributed.")
 
         st.subheader("Full Processed Data (First 5 Rows)")
         st.dataframe(df_scored.head(5), use_container_width=True)
