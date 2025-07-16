@@ -34,7 +34,7 @@ warnings.filterwarnings("ignore")
 SHEET_ID = "1Wa4-4K7hyTTCrqJ0pUzS-NaLFiRQpBgI8KBdHx9obKk"
 GID_WATCHLIST = "2026492216" # This GID corresponds to a specific sheet/tab within your Google Sheet
 SHEET_URL = (
-    f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid={GID_WATCHLIST}"
+    f"https://docs.google.com/sheets/d/{SHEET_ID}/export?format=csv&gid={GID_WATCHLIST}"
 )
 
 # UI CONSTANTS
@@ -149,35 +149,57 @@ def load_sheet() -> pd.DataFrame:
         num_cols = df.select_dtypes(include=[np.number]).columns
         df[num_cols] = df[num_cols].apply(winsorise_series, axis=0)
 
-        # Fill remaining NaNs for critical columns with sensible defaults
-        df.fillna({
-            'price': df['prev_close'].fillna(1.0), # Fallback to prev_close, then 1.0
-            'prev_close': df['price'].fillna(1.0), # Fallback to price, then 1.0
-            'low_52w': df['price'] * 0.5, # Assume 50% below current price if missing
-            'high_52w': df['price'] * 1.5, # Assume 50% above current price if missing
-            'sma_20d': df['price'], 'sma_50d': df['price'], 'sma_200d': df['price'],
-            'volume_1d': 0, 'volume_7d': 0, 'volume_30d': 0, 'volume_90d': 0, 'volume_180d': 0,
-            'vol_ratio_1d_90d': 0.0, 'vol_ratio_7d_90d': 0.0, 'vol_ratio_30d_90d': 0.0,
-            'vol_ratio_1d_180d': 0.0, 'vol_ratio_7d_180d': 0.0, 'vol_ratio_30d_180d': 0.0, 'vol_ratio_90d_180d': 0.0,
-            'rvol': 1.0, # Neutral relative volume
-            'pe': df['pe'].median() if not df['pe'].isnull().all() else 30.0, # Use median or default
-            'eps_current': 0.0, 'eps_last_qtr': 0.0, 'eps_change_pct': 0.0,
-            'market_cap': df['market_cap'].median() if not df['market_cap'].isnull().all() else 1000.0, # Default to 1000 Cr
-            'year': df['year'].median() if not df['year'].isnull().all() else 2000.0,
-            'from_low_pct': 0.0, 'from_high_pct': 0.0,
-            'ret_1d': 0.0, 'ret_3d': 0.0, 'ret_7d': 0.0, 'ret_30d': 0.0,
-            'ret_3m': 0.0, 'ret_6m': 0.0, 'ret_1y': 0.0, 'ret_3y': 0.0, 'ret_5y': 0.0,
-        }, inplace=True)
+        # --- Revised Fillna Strategy ---
+        # Only fill if necessary for subsequent calculations to avoid errors,
+        # otherwise let NaNs persist as per user request ("if blank than be it be blank").
+        # Columns not explicitly listed here will retain their NaN values if they exist.
+
+        # Price and previous close are critical for ATR and other price-based calculations.
+        # Fill with each other, then a default if both are missing.
+        df['price'] = df['price'].fillna(df['prev_close']).fillna(1.0)
+        df['prev_close'] = df['prev_close'].fillna(df['price']).fillna(1.0)
+
+        # Volume columns need to be numeric for volume acceleration calculations.
+        # 0 is a reasonable default for missing volume.
+        df['volume_1d'] = df['volume_1d'].fillna(0).astype(int)
+        df['volume_7d'] = df['volume_7d'].fillna(0)
+        df['volume_30d'] = df['volume_30d'].fillna(0)
+        df['volume_90d'] = df['volume_90d'].fillna(0)
+        df['volume_180d'] = df['volume_180d'].fillna(0)
+
+        # Volume ratio columns also need to be numeric for calculations.
+        # 0.0 is a neutral default for missing ratios.
+        df['vol_ratio_1d_90d'] = df['vol_ratio_1d_90d'].fillna(0.0)
+        df['vol_ratio_7d_90d'] = df['vol_ratio_7d_90d'].fillna(0.0)
+        df['vol_ratio_30d_90d'] = df['vol_ratio_30d_90d'].fillna(0.0)
+        df['vol_ratio_1d_180d'] = df['vol_ratio_1d_180d'].fillna(0.0)
+        df['vol_ratio_7d_180d'] = df['vol_ratio_7d_180d'].fillna(0.0)
+        df['vol_ratio_30d_180d'] = df['vol_ratio_30d_180d'].fillna(0.0)
+        df['vol_ratio_90d_180d'] = df['vol_ratio_90d_180d'].fillna(0.0)
+
+        # rvol is used in momentum scoring, 1.0 is a neutral default if missing.
+        df['rvol'] = df['rvol'].fillna(1.0)
+
+        # market_cap is used in rs_volume_30d calculation.
+        # If market_cap is NaN, rs_volume_30d will be NaN, which is handled by the liquidity filter.
+        # So, no explicit fillna for market_cap needed here.
+
+        # Other columns like SMA, returns, PE, EPS are handled by the individual scoring functions
+        # which return NaN for the score component if inputs are missing, and adaptive weighting
+        # then redistributes the weight. So, no explicit fillna needed for them here.
+
 
         # Derived columns
         if "price" in df.columns:
             df["atr_20"] = calc_atr20(df["price"]) # Calculate ATR proxy
+        else:
+            df["atr_20"] = np.nan # If price is missing, ATR will be NaN
 
-        # 30‑day ₹ volume proxy (price*volume_30d) if missing
+        # 30‑day ₹ volume proxy (price*volume_30d)
         if "volume_30d" in df.columns and "price" in df.columns:
             df["rs_volume_30d"] = df["volume_30d"] * df["price"]
         else:
-            df["rs_volume_30d"] = 0 # Default if columns are missing
+            df["rs_volume_30d"] = np.nan # Default to NaN if columns are missing
 
         return df
 
@@ -609,7 +631,10 @@ def render_ui():
     # Filter out stocks with very low 30-day rupee volume (liquidity filter)
     # Assumes 'rs_volume_30d' is in Rupees and 1e7 is 1 Crore (10 million)
     if "rs_volume_30d" in df.columns:
-        df = df[df["rs_volume_30d"] >= 1e7] # Filter for sufficient liquidity
+        # Only apply filter if rs_volume_30d is not NaN and meets criteria
+        df = df[df["rs_volume_30d"].notna() & (df["rs_volume_30d"] >= 1e7)]
+    else:
+        st.warning("Column 'rs_volume_30d' not found. Liquidity filter skipped.")
 
 
     # Ensure volume acceleration and classification are calculated *before* computing overall scores
@@ -648,60 +673,104 @@ def render_ui():
         st.header("Daily EDGE Signals")
         st.markdown("Find the highest conviction trades here based on the EDGE Protocol's comprehensive scoring. [cite: ⚡ EDGE Protocol System - COMPLETE]")
 
-        # --- New Filtering Options ---
-        filter_cols = st.columns(4)
-        with filter_cols[0]:
+        # --- Dynamic Filtering Options ---
+        # Start with df_filtered_by_min_edge as the base for all filters
+        current_filtered_df = df_filtered_by_min_edge.copy()
+
+        # Place filters in columns for better layout
+        filter_cols_1 = st.columns(4)
+        with filter_cols_1[0]:
+            # EDGE Classification Filter (always available)
+            all_edge_class_options = ["EXPLOSIVE", "STRONG", "MODERATE", "WATCH"]
+            # Ensure only relevant options are shown if current_filtered_df is already filtered
+            available_edge_classes = current_filtered_df['tag'].unique().tolist()
+            # Filter all_edge_class_options to only show those present in current_filtered_df
+            display_edge_options = [opt for opt in all_edge_class_options if opt in available_edge_classes]
+            
             selected_edge_class_display = st.multiselect(
                 "Filter by EDGE Classification:",
-                options=["EXPLOSIVE", "STRONG", "MODERATE", "WATCH"], # Explicit order
-                default=["EXPLOSIVE", "STRONG"] # Default to high conviction [cite: ⚡ EDGE Protocol System - COMPLETE]
+                options=display_edge_options,
+                default=display_edge_options # Default to all available
             )
-        with filter_cols[1]:
-            # Ensure unique values for filter options
-            unique_sectors = df_filtered_by_min_edge['sector'].unique().tolist()
+            if selected_edge_class_display:
+                current_filtered_df = current_filtered_df[current_filtered_df["tag"].isin(selected_edge_class_display)]
+
+        with filter_cols_1[1]:
+            # Sector Filter (options based on current_filtered_df)
+            unique_sectors = current_filtered_df['sector'].unique().tolist()
+            # Handle potential NaN in sector, remove it from options if it exists
+            if np.nan in unique_sectors:
+                unique_sectors.remove(np.nan)
             selected_sectors = st.multiselect("Filter by Sector:", options=unique_sectors, default=unique_sectors)
-        with filter_cols[2]:
-            unique_categories = df_filtered_by_min_edge['category'].unique().tolist()
+            if selected_sectors:
+                current_filtered_df = current_filtered_df[current_filtered_df["sector"].isin(selected_sectors)]
+
+        with filter_cols_1[2]:
+            # Category Filter (options based on current_filtered_df)
+            unique_categories = current_filtered_df['category'].unique().tolist()
+            # Handle potential NaN in category
+            if np.nan in unique_categories:
+                unique_categories.remove(np.nan)
             selected_categories = st.multiselect("Filter by Category:", options=unique_categories, default=unique_categories)
-        with filter_cols[3]:
-            unique_volume_classifications = df_filtered_by_min_edge['volume_classification'].unique().tolist()
+            if selected_categories:
+                current_filtered_df = current_filtered_df[current_filtered_df["category"].isin(selected_categories)]
+
+        with filter_cols_1[3]:
+            # Volume Classification Filter (options based on current_filtered_df)
+            unique_volume_classifications = current_filtered_df['volume_classification'].unique().tolist()
+            # Handle potential NaN in volume_classification
+            if np.nan in unique_volume_classifications:
+                unique_volume_classifications.remove(np.nan)
             selected_volume_classifications = st.multiselect("Filter by Volume Classification:", options=unique_volume_classifications, default=unique_volume_classifications)
+            if selected_volume_classifications:
+                current_filtered_df = current_filtered_df[current_filtered_df["volume_classification"].isin(selected_volume_classifications)]
 
         filter_cols_2 = st.columns(3)
         with filter_cols_2[0]:
-            unique_eps_tiers = df_filtered_by_min_edge['eps_tier'].unique().tolist()
-            # Sort EPS tiers for better display order
+            # EPS Tier Filter (options based on current_filtered_df)
+            unique_eps_tiers = current_filtered_df['eps_tier'].unique().tolist()
+            # Sort EPS tiers for better display order, ensuring "" (blank) is last
             eps_tier_order = ["5↓", "5↑", "15↑", "35↑", "55↑", "75↑", "95↑", ""]
             sorted_eps_tiers = [tier for tier in eps_tier_order if tier in unique_eps_tiers]
             selected_eps_tiers = st.multiselect("Filter by EPS Tier:", options=sorted_eps_tiers, default=sorted_eps_tiers)
+            if selected_eps_tiers:
+                current_filtered_df = current_filtered_df[current_filtered_df["eps_tier"].isin(selected_eps_tiers)]
+
         with filter_cols_2[1]:
-            unique_price_tiers = df_filtered_by_min_edge['price_tier'].unique().tolist()
-            # Sort Price tiers for better display order
+            # Price Tier Filter (options based on current_filtered_df)
+            unique_price_tiers = current_filtered_df['price_tier'].unique().tolist()
+            # Sort Price tiers for better display order, ensuring "" (blank) is last
             price_tier_order = ["100↓", "100↑", "200↑", "500↑", "1K↑", "2K↑", "5K↑", ""]
             sorted_price_tiers = [tier for tier in price_tier_order if tier in unique_price_tiers]
             selected_price_tiers = st.multiselect("Filter by Price Tier:", options=sorted_price_tiers, default=sorted_price_tiers)
+            if selected_price_tiers:
+                current_filtered_df = current_filtered_df[current_filtered_df["price_tier"].isin(selected_price_tiers)]
+
         with filter_cols_2[2]:
-            min_pe, max_pe = float(df_filtered_by_min_edge['pe'].min()), float(df_filtered_by_min_edge['pe'].max())
-            selected_pe_range = st.slider(
-                "Filter by PE Ratio:",
-                min_value=min_pe,
-                max_value=max_pe,
-                value=(min_pe, max_pe),
-                step=0.1,
-                format="%.1f"
-            )
-        
-        # Apply all filters
-        display_df = df_filtered_by_min_edge[
-            (df_filtered_by_min_edge["tag"].isin(selected_edge_class_display)) &
-            (df_filtered_by_min_edge["sector"].isin(selected_sectors)) &
-            (df_filtered_by_min_edge["category"].isin(selected_categories)) &
-            (df_filtered_by_min_edge["volume_classification"].isin(selected_volume_classifications)) &
-            (df_filtered_by_min_edge["eps_tier"].isin(selected_eps_tiers)) &
-            (df_filtered_by_min_edge["price_tier"].isin(selected_price_tiers)) &
-            (df_filtered_by_min_edge["pe"] >= selected_pe_range[0]) &
-            (df_filtered_by_min_edge["pe"] <= selected_pe_range[1])
-        ].sort_values("EDGE", ascending=False)
+            # PE Ratio Slider Filter (min/max based on current_filtered_df)
+            # Only show slider if there's valid PE data in the current selection
+            if not current_filtered_df.empty and 'pe' in current_filtered_df.columns and current_filtered_df['pe'].notna().any():
+                min_pe, max_pe = float(current_filtered_df['pe'].min()), float(current_filtered_df['pe'].max())
+                selected_pe_range = st.slider(
+                    "Filter by PE Ratio:",
+                    min_value=min_pe,
+                    max_value=max_pe,
+                    value=(min_pe, max_pe), # Default to full range
+                    step=0.1,
+                    format="%.1f"
+                )
+                current_filtered_df = current_filtered_df[
+                    (current_filtered_df["pe"] >= selected_pe_range[0]) &
+                    (current_filtered_df["pe"] <= selected_pe_range[1])
+                ]
+            else:
+                st.info("PE Ratio data not available for filtering in current selection.")
+                # If no PE data or no stocks after previous filters, ensure the dataframe is empty for PE filtering
+                # This prevents errors if the slider tries to operate on an empty or NaN-only series
+                current_filtered_df = pd.DataFrame(columns=current_filtered_df.columns) # Effectively clear the df if no PE data
+
+        # Final filtered DataFrame for display in this tab
+        display_df = current_filtered_df.sort_values("EDGE", ascending=False)
 
 
         if not display_df.empty:
