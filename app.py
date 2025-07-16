@@ -1,3 +1,12 @@
+"""
+EDGE Protocol – Final Locked Implementation
+==========================================
+Single‑file Streamlit application that realises the final strategy agreed
+on 16 Jul 2025.  Drop this file in your project root, run
+    streamlit run edge_protocol_app.py
+and enjoy!  Requires pandas, numpy, requests, plotly, streamlit 1.33+ .
+"""
+
 from __future__ import annotations
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -611,7 +620,12 @@ def render_ui():
                          color_continuous_scale=px.colors.sequential.Viridis, # Choose a color scale
                          title="Average EDGE Score by Sector"
                         )
-        fig.update_traces(marker=dict(opacity=agg["opacity"]))
+        # FIX: opacity is a direct property of the trace, not within marker for treemaps
+        # Iterate through traces and set opacity
+        for i, trace in enumerate(fig.data):
+            if i < len(agg["opacity"]): # Ensure index is within bounds
+                trace.opacity = agg["opacity"].iloc[i]
+
         st.plotly_chart(fig, use_container_width=True)
 
     with tab4:
