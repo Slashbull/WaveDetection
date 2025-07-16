@@ -483,56 +483,54 @@ def plot_stock_radar_chart(df_row: pd.Series):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Streamlit UI - Renders the web application
+# Helper functions for new filters (EPS Tier, Price Tier)
 # ─────────────────────────────────────────────────────────────────────────────
 
-# New function to calculate volume acceleration and classification
-def calculate_volume_acceleration_and_classify(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Calculates volume acceleration metrics and classifies accumulation/distribution.
-    This was previously embedded in the main scoring function but is needed earlier.
-    """
-    df = df.copy() # Work on a copy
+def get_eps_tier(eps: float) -> str:
+    """Categorizes EPS into predefined tiers."""
+    if pd.isna(eps):
+        return ""
+    if eps < 5:
+        return "5↓"
+    elif 5 <= eps < 15:
+        return "5↑"
+    elif 15 <= eps < 35:
+        return "15↑"
+    elif 35 <= eps < 55:
+        return "35↑"
+    elif 55 <= eps < 75:
+        return "55↑"
+    elif 75 <= eps < 95:
+        return "75↑"
+    elif eps >= 95:
+        return "95↑"
+    return "" # Fallback for unexpected values
 
-    # Calculate Average Daily Volume for respective periods
-    df['avg_vol_30d'] = df['volume_30d'] / 30.0
-    df['avg_vol_90d'] = df['volume_90d'] / 90.0
-    df['avg_vol_180d'] = df['volume_180d'] / 180.0
 
-    # Calculate Volume Ratios (percentage change)
-    # Handle division by zero by using np.where or replacing zero denominators with NaN then filling
-    df['vol_ratio_30d_90d_calc'] = np.where(df['avg_vol_90d'] != 0,
-                                         (df['avg_vol_30d'] / df['avg_vol_90d'] - 1) * 100, 0)
-    df['vol_ratio_30d_180d_calc'] = np.where(df['avg_vol_180d'] != 0,
-                                          (df['avg_vol_30d'] / df['avg_vol_180d'] - 1) * 100, 0)
-    df['vol_ratio_90d_180d_calc'] = np.where(df['avg_vol_180d'] != 0,
-                                          (df['avg_vol_90d'] / df['avg_vol_180d'] - 1) * 100, 0)
+def get_price_tier(price: float) -> str:
+    """Categorizes Price into predefined tiers."""
+    if pd.isna(price):
+        return ""
+    if price >= 5000:
+        return "5K↑"
+    elif 2000 <= price < 5000:
+        return "2K↑"
+    elif 1000 <= price < 2000:
+        return "1K↑"
+    elif 500 <= price < 1000:
+        return "500↑"
+    elif 200 <= price < 500:
+        return "200↑"
+    elif 100 <= price < 200:
+        return "100↑"
+    elif price < 100:
+        return "100↓"
+    return "" # Fallback for unexpected values
 
-    # Volume Acceleration: Checks if recent accumulation (30d) is accelerating faster than longer periods (90d, 180d)
-    df['volume_acceleration'] = df['vol_ratio_30d_90d_calc'] - df['vol_ratio_30d_180d_calc']
 
-    # Classify based on volume acceleration and current ratios
-    def classify_volume(row):
-        ratio_30_90 = row['vol_ratio_30d_90d_calc']
-        ratio_30_180 = row['vol_ratio_30d_180d_calc']
-        acceleration = row['volume_acceleration']
-
-        if acceleration > 20 and ratio_30_90 > 5 and ratio_30_180 > 5:
-            return "Institutional Loading"
-        elif acceleration > 5 and ratio_30_90 > 0 and ratio_30_180 > 0:
-            return "Heavy Accumulation"
-        elif ratio_30_90 > 0 and ratio_30_180 > 0:
-            return "Accumulation"
-        elif ratio_30_90 < 0 and ratio_30_180 < 0 and acceleration < -5:
-            return "Exodus"
-        elif ratio_30_90 < 0 and ratio_30_180 < 0:
-            return "Distribution"
-        else:
-            return "Neutral"
-
-    df['volume_classification'] = df.apply(classify_volume, axis=1)
-    return df
-
+# ─────────────────────────────────────────────────────────────────────────────
+# Streamlit UI - Renders the web application
+# ─────────────────────────────────────────────────────────────────────────────
 
 def render_ui():
     """
@@ -572,11 +570,14 @@ def render_ui():
         df = df[df["rs_volume_30d"] >= 1e7] # Filter for sufficient liquidity
 
 
-    # --- IMPORTANT FIX ---
     # Ensure volume acceleration and classification are calculated *before* computing overall scores
     # as these columns are used in the display_df and stock deep dive.
     df_processed = calculate_volume_acceleration_and_classify(df.copy())
     
+    # Apply EPS and Price Tiers
+    df_processed['eps_tier'] = df_processed['eps_current'].apply(get_eps_tier)
+    df_processed['price_tier'] = df_processed['price'].apply(get_price_tier)
+
     # Compute all EDGE scores and classifications
     df_scored = compute_scores(df_processed, weights)
 
@@ -605,31 +606,78 @@ def render_ui():
         st.header("Daily EDGE Signals")
         st.markdown("Find the highest conviction trades here based on the EDGE Protocol's comprehensive scoring. [cite: ⚡ EDGE Protocol System - COMPLETE]")
 
-        # Filter by EDGE Classification for display in this tab
-        selected_edge_class_display = st.multiselect(
-            "Filter by EDGE Classification for Display:",
-            options=["EXPLOSIVE", "STRONG", "MODERATE", "WATCH"], # Explicit order
-            default=["EXPLOSIVE", "STRONG"] # Default to high conviction [cite: ⚡ EDGE Protocol System - COMPLETE]
-        )
+        # --- New Filtering Options ---
+        filter_cols = st.columns(4)
+        with filter_cols[0]:
+            selected_edge_class_display = st.multiselect(
+                "Filter by EDGE Classification:",
+                options=["EXPLOSIVE", "STRONG", "MODERATE", "WATCH"], # Explicit order
+                default=["EXPLOSIVE", "STRONG"] # Default to high conviction [cite: ⚡ EDGE Protocol System - COMPLETE]
+            )
+        with filter_cols[1]:
+            # Ensure unique values for filter options
+            unique_sectors = df_filtered_by_min_edge['sector'].unique().tolist()
+            selected_sectors = st.multiselect("Filter by Sector:", options=unique_sectors, default=unique_sectors)
+        with filter_cols[2]:
+            unique_categories = df_filtered_by_min_edge['category'].unique().tolist()
+            selected_categories = st.multiselect("Filter by Category:", options=unique_categories, default=unique_categories)
+        with filter_cols[3]:
+            unique_volume_classifications = df_filtered_by_min_edge['volume_classification'].unique().tolist()
+            selected_volume_classifications = st.multiselect("Filter by Volume Classification:", options=unique_volume_classifications, default=unique_volume_classifications)
 
-        display_df = df_filtered_by_min_edge[df_filtered_by_min_edge["tag"].isin(selected_edge_class_display)].sort_values("EDGE", ascending=False)
+        filter_cols_2 = st.columns(3)
+        with filter_cols_2[0]:
+            unique_eps_tiers = df_filtered_by_min_edge['eps_tier'].unique().tolist()
+            # Sort EPS tiers for better display order
+            eps_tier_order = ["5↓", "5↑", "15↑", "35↑", "55↑", "75↑", "95↑", ""]
+            sorted_eps_tiers = [tier for tier in eps_tier_order if tier in unique_eps_tiers]
+            selected_eps_tiers = st.multiselect("Filter by EPS Tier:", options=sorted_eps_tiers, default=sorted_eps_tiers)
+        with filter_cols_2[1]:
+            unique_price_tiers = df_filtered_by_min_edge['price_tier'].unique().tolist()
+            # Sort Price tiers for better display order
+            price_tier_order = ["100↓", "100↑", "200↑", "500↑", "1K↑", "2K↑", "5K↑", ""]
+            sorted_price_tiers = [tier for tier in price_tier_order if tier in unique_price_tiers]
+            selected_price_tiers = st.multiselect("Filter by Price Tier:", options=sorted_price_tiers, default=sorted_price_tiers)
+        with filter_cols_2[2]:
+            min_pe, max_pe = float(df_filtered_by_min_edge['pe'].min()), float(df_filtered_by_min_edge['pe'].max())
+            selected_pe_range = st.slider(
+                "Filter by PE Ratio:",
+                min_value=min_pe,
+                max_value=max_pe,
+                value=(min_pe, max_pe),
+                step=0.1,
+                format="%.1f"
+            )
+        
+        # Apply all filters
+        display_df = df_filtered_by_min_edge[
+            (df_filtered_by_min_edge["tag"].isin(selected_edge_class_display)) &
+            (df_filtered_by_min_edge["sector"].isin(selected_sectors)) &
+            (df_filtered_by_min_edge["category"].isin(selected_categories)) &
+            (df_filtered_by_min_edge["volume_classification"].isin(selected_volume_classifications)) &
+            (df_filtered_by_min_edge["eps_tier"].isin(selected_eps_tiers)) &
+            (df_filtered_by_min_edge["price_tier"].isin(selected_price_tiers)) &
+            (df_filtered_by_min_edge["pe"] >= selected_pe_range[0]) &
+            (df_filtered_by_min_edge["pe"] <= selected_pe_range[1])
+        ].sort_values("EDGE", ascending=False)
+
 
         if not display_df.empty:
             st.dataframe(
                 display_df[[
-                    "ticker", "company_name", "sector", "tag", "EDGE",
+                    "ticker", "company_name", "sector", "category", "tag", "EDGE",
                     "vol_score", "mom_score", "rr_score", "fund_score",
-                    "price", "position_size_pct", "dynamic_stop", "target1", "target2",
-                    "vol_ratio_30d_90d_calc", "vol_ratio_30d_180d_calc", # Use the calculated % diffs
-                    "volume_acceleration", # This column should now exist
-                    "volume_classification" # This column should now exist
+                    "price", "price_tier", "eps_current", "eps_tier", "pe",
+                    "position_size_pct", "dynamic_stop", "target1", "target2",
+                    "volume_acceleration", "volume_classification"
                 ]].style.background_gradient(cmap='RdYlGn', subset=['EDGE']).format({
                     "EDGE": "{:.2f}",
                     "vol_score": "{:.2f}", "mom_score": "{:.2f}", "rr_score": "{:.2f}", "fund_score": "{:.2f}",
                     "price": "₹{:.2f}",
+                    "eps_current": "{:.2f}",
+                    "pe": "{:.2f}",
                     "position_size_pct": "{:.2%}", # [cite: ⚡ EDGE Protocol System - COMPLETE]
                     "dynamic_stop": "₹{:.2f}", "target1": "₹{:.2f}", "target2": "₹{:.2f}", # [cite: ⚡ EDGE Protocol System - COMPLETE]
-                    "vol_ratio_30d_90d_calc": "{:.2f}%", "vol_ratio_30d_180d_calc": "{:.2f}%", # Format as percentage
                     "volume_acceleration": "{:.2f}%" # [cite: ⚡ EDGE Protocol System - COMPLETE]
                 }),
                 use_container_width=True
@@ -644,7 +692,7 @@ def render_ui():
                 mime="text/csv",
             )
         else:
-            st.info("No stocks match the selected EDGE Classification filters or minimum EDGE score.")
+            st.info("No stocks match the selected filters. Try adjusting your criteria.")
 
     with tab2:
         st.header("Volume Acceleration Insights")
