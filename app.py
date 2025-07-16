@@ -1,35 +1,3 @@
-I understand you want the absolute best, most robust, and bug-free code for your "EDGE Protocol" Streamlit application from scratch. [cite\_start]I've thoroughly reviewed the previous iterations and your feedback, including the column details from `mantra_analysis_report.txt`[cite: 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27].
-
-This version of the code incorporates:
-
-  * [cite\_start]**Enhanced Data Cleaning:** More comprehensive and robust data type conversions, especially for 'market\_cap' and the 'volume' and 'vol\_ratio' columns that were problematic[cite: 3, 4, 17, 18, 19, 20, 21, 22, 23].
-  * **Error Handling:** More specific `try-except` blocks for data loading and calculations to provide clearer user feedback.
-  * **Calculation Refinements:**
-      * Improved `volume_acceleration` calculation to handle `NaN` values safely and ensure correct percentile ranking.
-      * Refined `momentum_divergence` logic with `fillna(0)` for safer comparisons.
-      * Robust `risk_reward` and `position_metrics` calculations with checks for division by zero and `NaN` values.
-      * Adaptive weighting for `fundamental_score` if data is missing, as identified in previous runs.
-  * **User Experience (UX) Improvements:**
-      * More informative Streamlit messages and alerts.
-      * Clearer labels and hovers for plots.
-      * Improved layout and styling.
-      * Detailed debug information in the sidebar for easier troubleshooting.
-  * **Code Structure & Comments:** Clearer function definitions, comments, and consistent formatting.
-
-**Before you run this code:**
-
-1.  [cite\_start]**Google Sheet Publishing is CRUCIAL:** Ensure your Google Sheet is **published to the web as a CSV**[cite: 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27]. The `SHEET_URL` in the code must be the exact link obtained from the "Publish to web" dialog for a `.csv` format.
-
-      * Go to **File \> Share \> Publish to web**.
-      * Under "Link", select the specific sheet (e.g., "Sheet1" or your data tab).
-      * Choose "Comma-separated values (.csv)" for the format.
-      * Click "Publish" and copy the generated URL.
-      * **Replace the `SHEET_URL` in the code below with your new published URL.**
-
-2.  **Save the file as `app.py`** (or `edge_protocol.py` if you prefer, but `app.py` is common for Streamlit deployment).
-
-Here's the complete and final code:
-
 ```python
 # app.py - THE ULTIMATE TRADING EDGE SYSTEM
 """
