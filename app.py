@@ -118,9 +118,9 @@ def load_sheet() -> pd.DataFrame:
                     .replace({"nan": np.nan, "": np.nan}) # Convert 'nan' string and empty strings to actual NaN
                 )
                 # Attempt to convert to numeric, coercing errors to NaN
-                df[col] = pd.to_numeric(df[col], errors="ignore") # 'ignore' keeps non-numeric as object
+                df[col] = pd.to_numeric(df[col], errors="coerce") # Use 'coerce' to turn non-numeric into NaN
 
-        # Convert specific columns to numeric after cleaning
+        # Ensure all relevant columns are numeric after cleaning
         numeric_cols_to_convert = [
             'market_cap', 'volume_1d', 'volume_7d', 'volume_30d', 'volume_90d', 'volume_180d',
             'vol_ratio_1d_90d', 'vol_ratio_7d_90d', 'vol_ratio_30d_90d',
@@ -132,6 +132,7 @@ def load_sheet() -> pd.DataFrame:
         ]
         for col in numeric_cols_to_convert:
             if col in df.columns:
+                # Ensure it's numeric, coercing errors
                 df[col] = pd.to_numeric(df[col], errors='coerce')
 
         # For percentage ratios that were cleaned (e.g., 'vol_ratio_1d_180d'), convert to decimal
@@ -149,10 +150,9 @@ def load_sheet() -> pd.DataFrame:
         num_cols = df.select_dtypes(include=[np.number]).columns
         df[num_cols] = df[num_cols].apply(winsorise_series, axis=0)
 
-        # --- Revised Fillna Strategy ---
-        # Only fill if necessary for subsequent calculations to avoid errors,
-        # otherwise let NaNs persist as per user request ("if blank than be it be blank").
-        # Columns not explicitly listed here will retain their NaN values if they exist.
+        # --- Revised Fillna Strategy (Adhering to "if blank then be it blank" where possible) ---
+        # Fill only critical columns that would break calculations if NaN.
+        # Other NaNs will propagate and be handled by adaptive weighting in compute_scores.
 
         # Price and previous close are critical for ATR and other price-based calculations.
         # Fill with each other, then a default if both are missing.
@@ -160,7 +160,7 @@ def load_sheet() -> pd.DataFrame:
         df['prev_close'] = df['prev_close'].fillna(df['price']).fillna(1.0)
 
         # Volume columns need to be numeric for volume acceleration calculations.
-        # 0 is a reasonable default for missing volume.
+        # 0 is a reasonable default for missing volume as it implies no activity.
         df['volume_1d'] = df['volume_1d'].fillna(0).astype(int)
         df['volume_7d'] = df['volume_7d'].fillna(0)
         df['volume_30d'] = df['volume_30d'].fillna(0)
@@ -168,7 +168,7 @@ def load_sheet() -> pd.DataFrame:
         df['volume_180d'] = df['volume_180d'].fillna(0)
 
         # Volume ratio columns also need to be numeric for calculations.
-        # 0.0 is a neutral default for missing ratios.
+        # 0.0 is a neutral default for missing ratios, implying no change.
         df['vol_ratio_1d_90d'] = df['vol_ratio_1d_90d'].fillna(0.0)
         df['vol_ratio_7d_90d'] = df['vol_ratio_7d_90d'].fillna(0.0)
         df['vol_ratio_30d_90d'] = df['vol_ratio_30d_90d'].fillna(0.0)
@@ -177,29 +177,25 @@ def load_sheet() -> pd.DataFrame:
         df['vol_ratio_30d_180d'] = df['vol_ratio_30d_180d'].fillna(0.0)
         df['vol_ratio_90d_180d'] = df['vol_ratio_90d_180d'].fillna(0.0)
 
-        # rvol is used in momentum scoring, 1.0 is a neutral default if missing.
+        # rvol is used in momentum scoring, 1.0 is a neutral default if missing (relative volume of 1 means average).
         df['rvol'] = df['rvol'].fillna(1.0)
 
-        # market_cap is used in rs_volume_30d calculation.
-        # If market_cap is NaN, rs_volume_30d will be NaN, which is handled by the liquidity filter.
-        # So, no explicit fillna for market_cap needed here.
-
-        # Other columns like SMA, returns, PE, EPS are handled by the individual scoring functions
-        # which return NaN for the score component if inputs are missing, and adaptive weighting
-        # then redistributes the weight. So, no explicit fillna needed for them here.
+        # For other columns like 'market_cap', 'pe', 'eps_current', 'eps_last_qtr', 'eps_change_pct',
+        # 'low_52w', 'high_52w', 'from_low_pct', 'from_high_pct', 'sma_20d', 'sma_50d', 'sma_200d',
+        # and all 'ret_XXd' columns:
+        # We will *not* explicitly fillna here. The scoring functions are designed to handle NaNs
+        # by returning NaN for that specific score component, and the adaptive weighting will
+        # redistribute the weight. This adheres to the user's request to keep blanks as blanks.
 
 
         # Derived columns
-        if "price" in df.columns:
-            df["atr_20"] = calc_atr20(df["price"]) # Calculate ATR proxy
-        else:
-            df["atr_20"] = np.nan # If price is missing, ATR will be NaN
+        # ATR calculation needs 'price' which is now filled.
+        df["atr_20"] = calc_atr20(df["price"])
 
         # 30‑day ₹ volume proxy (price*volume_30d)
-        if "volume_30d" in df.columns and "price" in df.columns:
-            df["rs_volume_30d"] = df["volume_30d"] * df["price"]
-        else:
-            df["rs_volume_30d"] = np.nan # Default to NaN if columns are missing
+        # This will be NaN if 'volume_30d' or 'price' were originally NaN and not filled above.
+        # However, 'price' and 'volume_30d' are now filled, so this should always be a number.
+        df["rs_volume_30d"] = df["volume_30d"] * df["price"]
 
         return df
 
@@ -479,6 +475,7 @@ def calculate_volume_acceleration_and_classify(df: pd.DataFrame) -> pd.DataFrame
     df = df.copy() # Work on a copy
 
     # Calculate Average Daily Volume for respective periods
+    # Ensure volume columns are numeric before division
     df['avg_vol_30d'] = df['volume_30d'] / 30.0
     df['avg_vol_90d'] = df['volume_90d'] / 90.0
     df['avg_vol_180d'] = df['volume_180d'] / 180.0
@@ -697,54 +694,54 @@ def render_ui():
 
         with filter_cols_1[1]:
             # Sector Filter (options based on current_filtered_df)
-            unique_sectors = current_filtered_df['sector'].unique().tolist()
-            # Handle potential NaN in sector, remove it from options if it exists
-            if np.nan in unique_sectors:
-                unique_sectors.remove(np.nan)
+            # Get unique sectors from the current filtered data, remove NaN, then sort
+            unique_sectors = current_filtered_df['sector'].dropna().unique().tolist()
+            unique_sectors.sort()
             selected_sectors = st.multiselect("Filter by Sector:", options=unique_sectors, default=unique_sectors)
             if selected_sectors:
-                current_filtered_df = current_filtered_df[current_filtered_df["sector"].isin(selected_sectors)]
+                # Filter, also keeping rows where 'sector' might be NaN if not explicitly selected
+                current_filtered_df = current_filtered_df[current_filtered_df["sector"].isin(selected_sectors) | current_filtered_df["sector"].isna()]
 
         with filter_cols_1[2]:
             # Category Filter (options based on current_filtered_df)
-            unique_categories = current_filtered_df['category'].unique().tolist()
-            # Handle potential NaN in category
-            if np.nan in unique_categories:
-                unique_categories.remove(np.nan)
+            # Get unique categories from the current filtered data, remove NaN, then sort
+            unique_categories = current_filtered_df['category'].dropna().unique().tolist()
+            unique_categories.sort()
             selected_categories = st.multiselect("Filter by Category:", options=unique_categories, default=unique_categories)
             if selected_categories:
-                current_filtered_df = current_filtered_df[current_filtered_df["category"].isin(selected_categories)]
+                # Filter, also keeping rows where 'category' might be NaN if not explicitly selected
+                current_filtered_df = current_filtered_df[current_filtered_df["category"].isin(selected_categories) | current_filtered_df["category"].isna()]
 
         with filter_cols_1[3]:
             # Volume Classification Filter (options based on current_filtered_df)
-            unique_volume_classifications = current_filtered_df['volume_classification'].unique().tolist()
-            # Handle potential NaN in volume_classification
-            if np.nan in unique_volume_classifications:
-                unique_volume_classifications.remove(np.nan)
+            # Get unique volume classifications from the current filtered data, remove NaN, then sort
+            unique_volume_classifications = current_filtered_df['volume_classification'].dropna().unique().tolist()
+            unique_volume_classifications.sort()
             selected_volume_classifications = st.multiselect("Filter by Volume Classification:", options=unique_volume_classifications, default=unique_volume_classifications)
             if selected_volume_classifications:
-                current_filtered_df = current_filtered_df[current_filtered_df["volume_classification"].isin(selected_volume_classifications)]
+                # Filter, also keeping rows where 'volume_classification' might be NaN if not explicitly selected
+                current_filtered_df = current_filtered_df[current_filtered_df["volume_classification"].isin(selected_volume_classifications) | current_filtered_df["volume_classification"].isna()]
 
         filter_cols_2 = st.columns(3)
         with filter_cols_2[0]:
             # EPS Tier Filter (options based on current_filtered_df)
-            unique_eps_tiers = current_filtered_df['eps_tier'].unique().tolist()
+            unique_eps_tiers = current_filtered_df['eps_tier'].dropna().unique().tolist()
             # Sort EPS tiers for better display order, ensuring "" (blank) is last
             eps_tier_order = ["5↓", "5↑", "15↑", "35↑", "55↑", "75↑", "95↑", ""]
             sorted_eps_tiers = [tier for tier in eps_tier_order if tier in unique_eps_tiers]
             selected_eps_tiers = st.multiselect("Filter by EPS Tier:", options=sorted_eps_tiers, default=sorted_eps_tiers)
             if selected_eps_tiers:
-                current_filtered_df = current_filtered_df[current_filtered_df["eps_tier"].isin(selected_eps_tiers)]
+                current_filtered_df = current_filtered_df[current_filtered_df["eps_tier"].isin(selected_eps_tiers) | current_filtered_df["eps_tier"].isna()]
 
         with filter_cols_2[1]:
             # Price Tier Filter (options based on current_filtered_df)
-            unique_price_tiers = current_filtered_df['price_tier'].unique().tolist()
+            unique_price_tiers = current_filtered_df['price_tier'].dropna().unique().tolist()
             # Sort Price tiers for better display order, ensuring "" (blank) is last
             price_tier_order = ["100↓", "100↑", "200↑", "500↑", "1K↑", "2K↑", "5K↑", ""]
             sorted_price_tiers = [tier for tier in price_tier_order if tier in unique_price_tiers]
             selected_price_tiers = st.multiselect("Filter by Price Tier:", options=sorted_price_tiers, default=sorted_price_tiers)
             if selected_price_tiers:
-                current_filtered_df = current_filtered_df[current_filtered_df["price_tier"].isin(selected_price_tiers)]
+                current_filtered_df = current_filtered_df[current_filtered_df["price_tier"].isin(selected_price_tiers) | current_filtered_df["price_tier"].isna()]
 
         with filter_cols_2[2]:
             # PE Ratio Slider Filter (min/max based on current_filtered_df)
@@ -764,9 +761,8 @@ def render_ui():
                     (current_filtered_df["pe"] <= selected_pe_range[1])
                 ]
             else:
-                st.info("PE Ratio data not available for filtering in current selection.")
+                st.info("PE Ratio data not available for filtering in current selection or no stocks left after previous filters.")
                 # If no PE data or no stocks after previous filters, ensure the dataframe is empty for PE filtering
-                # This prevents errors if the slider tries to operate on an empty or NaN-only series
                 current_filtered_df = pd.DataFrame(columns=current_filtered_df.columns) # Effectively clear the df if no PE data
 
         # Final filtered DataFrame for display in this tab
