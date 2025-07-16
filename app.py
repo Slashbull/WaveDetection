@@ -108,63 +108,65 @@ def load_sheet() -> pd.DataFrame:
 
         # Define columns that are percentages and should be divided by 100 if their value is > 1
         # This list should include all columns that represent percentages but might be stored as integers (e.g., 50 for 50%)
-        percentage_value_cols = [
+        percentage_cols_to_normalize = [
             'ret_1d', 'from_low_pct', 'from_high_pct', 'ret_3d', 'ret_7d', 'ret_30d', 'ret_3m',
             'ret_6m', 'ret_1y', 'ret_3y', 'ret_5y', 'eps_change_pct',
-            # Note: vol_ratio_..._180d are handled separately below if they contain '%'
             'vol_ratio_1d_90d', 'vol_ratio_7d_90d', 'vol_ratio_30d_90d',
-            'vol_ratio_90d_180d' # This one might also be just numbers
+            'vol_ratio_1d_180d', 'vol_ratio_7d_180d', 'vol_ratio_30d_180d', 'vol_ratio_90d_180d'
         ]
 
-        # Columns that might contain '%' and need specific string cleaning before numeric conversion
-        percentage_string_cols = [
-            'vol_ratio_1d_180d', 'vol_ratio_7d_180d', 'vol_ratio_30d_180d'
-        ]
+        # Helper function to parse market cap values
+        def parse_market_cap_value(val):
+            if pd.isna(val) or not isinstance(val, str):
+                return np.nan
+            val_str = val.strip()
+            if 'Cr' in val_str:
+                return float(val_str.replace('Cr', '').replace(',', '')) * 10**7
+            elif 'L' in val_str:
+                return float(val_str.replace('L', '').replace(',', '')) * 10**5
+            elif 'K' in val_str:
+                return float(val_str.replace('K', '').replace(',', '')) * 10**3
+            elif 'M' in val_str:
+                return float(val_str.replace('M', '').replace(',', '')) * 10**6
+            elif 'B' in val_str:
+                return float(val_str.replace('B', '').replace(',', '')) * 10**9
+            
+            # Remove any remaining non-numeric characters before final conversion
+            clean_val = re.sub(r"[₹,$€£,]", "", val_str)
+            try:
+                return float(clean_val)
+            except ValueError:
+                return np.nan
 
 
         for col in numeric_cols:
             if col in df.columns:
-                # Convert to string to handle various formats
+                # Convert to string to handle various formats and ensure replace methods work
                 s = df[col].astype(str)
                 
-                # Remove common non-numeric characters (except for percentage sign initially)
-                s = s.str.replace(r"[₹,$€£]", "", regex=True) # Remove currency symbols
-                s = s.str.replace(",", "") # Remove thousands separator
-                s = s.replace({"nan": np.nan, "": np.nan}) # Convert 'nan' string and empty strings to actual NaN
-
-                # Handle market_cap suffixes specifically
+                # Handle market_cap specifically first due to its unique suffixes
                 if col == 'market_cap':
-                    def parse_market_cap(val):
-                        if pd.isna(val):
-                            return np.nan
-                        val_str = str(val).strip()
-                        if 'Cr' in val_str:
-                            return float(val_str.replace('Cr', '')) * 10**7
-                        elif 'L' in val_str:
-                            return float(val_str.replace('L', '')) * 10**5
-                        elif 'K' in val_str:
-                            return float(val_str.replace('K', '')) * 10**3
-                        elif 'M' in val_str:
-                            return float(val_str.replace('M', '')) * 10**6
-                        elif 'B' in val_str:
-                            return float(val_str.replace('B', '')) * 10**9
-                        return float(val_str) # Assume it's a direct number if no suffix
-                    df[col] = s.apply(parse_market_cap)
-                elif col in percentage_string_cols:
-                    # Specific handling for percentage strings (e.g., '-60.55%')
-                    s = s.str.replace("%", "", regex=False)
-                    df[col] = pd.to_numeric(s, errors="coerce") / 100.0 # Convert to numeric and then to decimal
+                    df[col] = s.apply(parse_market_cap_value)
                 else:
-                    # For all other numeric columns, convert to numeric after cleaning
+                    # For all other numeric columns, remove common non-numeric characters
+                    s = s.str.replace(r"[₹,$€£%]", "", regex=True) # Remove currency symbols and percentage signs
+                    s = s.str.replace(",", "") # Remove thousands separator
+                    s = s.replace({"nan": np.nan, "": np.nan, "-": np.nan}) # Convert common NaN strings
+
+                    # Convert to numeric, coercing errors to NaN
                     df[col] = pd.to_numeric(s, errors="coerce")
 
-                # After initial conversion, for relevant percentage columns,
-                # check if values need to be divided by 100 (e.g., 50 -> 0.50)
-                if col in percentage_value_cols and pd.api.types.is_numeric_dtype(df[col]):
-                    # Only divide if the value is clearly an integer percentage (e.g., 50 for 50%)
-                    # and not already a decimal (e.g., 0.50). Check if abs value is > 1 and <= 1000
-                    # This avoids dividing large non-percentage numbers.
-                    df[col] = np.where(df[col].notna() & (df[col].abs() > 1) & (df[col].abs() <= 1000), df[col] / 100.0, df[col])
+        # Second pass for percentage columns to normalize values (e.g., 50 -> 0.50)
+        for col in percentage_cols_to_normalize:
+            if col in df.columns and pd.api.types.is_numeric_dtype(df[col]):
+                # Get non-NA values to check their range
+                non_na_values = df[col].dropna()
+
+                # Only divide by 100 if the values are likely integer percentages (e.g., 50 for 50%)
+                # and not already decimals (e.g., 0.50).
+                # Check if max value is > 1 and within a reasonable upper bound (e.g., 1000 for percentages)
+                if not non_na_values.empty and non_na_values.max() > 1 and non_na_values.max() <= 1000:
+                    df[col] = df[col] / 100.0
 
 
         # Winsorise numeric columns to handle extreme outliers
