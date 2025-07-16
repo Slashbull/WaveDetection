@@ -261,8 +261,8 @@ class EdgeSystemAnalyzer:
             'null_percentage': f"{null_pct:.1f}%",
             'key_columns_coverage': key_coverage,
             'date_range': {
-                'min_year': int(self.df['year'].min()) if 'year' in self.df.columns else 'N/A',
-                'max_year': int(self.df['year'].max()) if 'year' in self.df.columns else 'N/A'
+                'min_year': int(self.df['year'].min()) if 'year' in self.df.columns and self.df['year'].notna().any() else 'N/A',
+                'max_year': int(self.df['year'].max()) if 'year' in self.df.columns and self.df['year'].notna().any() else 'N/A'
             }
         }
     
@@ -293,8 +293,8 @@ class EdgeSystemAnalyzer:
             'distribution': distribution,
             'triple_alignment_analysis': {
                 'count': len(triple_stocks),
-                'avg_volume_acceleration': f"{triple_stocks['volume_acceleration'].mean():.2f}%" if len(triple_stocks) > 0 else 'N/A',
-                'avg_pe': f"{triple_stocks['pe'].mean():.2f}" if len(triple_stocks) > 0 else 'N/A',
+                'avg_volume_acceleration': f"{triple_stocks['volume_acceleration'].mean():.2f}%" if len(triple_stocks) > 0 and 'volume_acceleration' in triple_stocks.columns and triple_stocks['volume_acceleration'].notna().any() else 'N/A',
+                'avg_pe': f"{triple_stocks[triple_stocks['pe'] > 0]['pe'].mean():.2f}" if len(triple_stocks) > 0 and 'pe' in triple_stocks.columns and (triple_stocks['pe'] > 0).any() else 'N/A',
                 'sectors': triple_stocks['sector'].value_counts().head(5).to_dict() if 'sector' in triple_stocks.columns and len(triple_stocks) > 0 else {}
             }
         }
@@ -329,8 +329,11 @@ class EdgeSystemAnalyzer:
                     }
                 
                 # Top stocks
-                top_stocks = signal_df.nlargest(5, 'conviction_score')[['ticker', 'conviction_score', 'volume_acceleration', 'price']]
-                metrics['top_5_stocks'] = top_stocks.to_dict('records')
+                if len(signal_df) > 0:
+                    top_stocks = signal_df.nlargest(min(5, len(signal_df)), 'conviction_score')[['ticker', 'conviction_score', 'volume_acceleration', 'price']]
+                    metrics['top_5_stocks'] = top_stocks.to_dict('records')
+                else:
+                    metrics['top_5_stocks'] = []
                 
                 quality_metrics[signal_type] = metrics
         
@@ -370,11 +373,11 @@ class EdgeSystemAnalyzer:
                     'expected_value': f"{expected_value:.2f}%",
                     'best_performer': {
                         'ticker': signal_df.nlargest(1, 'ret_30d')['ticker'].iloc[0] if len(signal_df) > 0 else 'N/A',
-                        'return': f"{signal_df['ret_30d'].max():.2f}%"
+                        'return': f"{signal_df['ret_30d'].max():.2f}%" if len(signal_df) > 0 else 'N/A'
                     },
                     'worst_performer': {
                         'ticker': signal_df.nsmallest(1, 'ret_30d')['ticker'].iloc[0] if len(signal_df) > 0 else 'N/A',
-                        'return': f"{signal_df['ret_30d'].min():.2f}%"
+                        'return': f"{signal_df['ret_30d'].min():.2f}%" if len(signal_df) > 0 else 'N/A'
                     }
                 }
         
@@ -385,40 +388,45 @@ class EdgeSystemAnalyzer:
         opportunities = {}
         
         # Best Triple Alignment
-        triple = self.df[self.df['EDGE_SIGNAL'] == 'TRIPLE_ALIGNMENT'].nlargest(3, 'conviction_score')
+        triple = self.df[self.df['EDGE_SIGNAL'] == 'TRIPLE_ALIGNMENT']
         if len(triple) > 0:
+            triple = triple.nlargest(min(3, len(triple)), 'conviction_score')
             opportunities['best_triple_alignment'] = []
             for _, stock in triple.iterrows():
                 opportunities['best_triple_alignment'].append({
                     'ticker': stock['ticker'],
-                    'price': f"₹{stock['price']:.2f}",
-                    'conviction': int(stock['conviction_score']),
-                    'volume_accel': f"{stock['volume_acceleration']:.1f}%",
-                    'pe': f"{stock['pe']:.1f}" if stock['pe'] > 0 else 'N/A',
+                    'price': f"₹{stock['price']:.2f}" if pd.notna(stock['price']) else 'N/A',
+                    'conviction': int(stock['conviction_score']) if pd.notna(stock['conviction_score']) else 0,
+                    'volume_accel': f"{stock['volume_acceleration']:.1f}%" if pd.notna(stock['volume_acceleration']) else 'N/A',
+                    'pe': f"{stock['pe']:.1f}" if pd.notna(stock['pe']) and stock['pe'] > 0 else 'N/A',
                     'sector': stock.get('sector', 'N/A')
                 })
         
         # Volume Leaders
-        vol_leaders = self.df[self.df['volume_acceleration'] > 20].nlargest(5, 'volume_acceleration')
-        if len(vol_leaders) > 0:
-            opportunities['volume_leaders'] = []
-            for _, stock in vol_leaders.iterrows():
-                opportunities['volume_leaders'].append({
-                    'ticker': stock['ticker'],
-                    'volume_accel': f"{stock['volume_acceleration']:.1f}%",
-                    'signal': stock['EDGE_SIGNAL']
-                })
+        if 'volume_acceleration' in self.df.columns:
+            vol_leaders = self.df[self.df['volume_acceleration'] > 20]
+            if len(vol_leaders) > 0:
+                vol_leaders = vol_leaders.nlargest(min(5, len(vol_leaders)), 'volume_acceleration')
+                opportunities['volume_leaders'] = []
+                for _, stock in vol_leaders.iterrows():
+                    opportunities['volume_leaders'].append({
+                        'ticker': stock['ticker'],
+                        'volume_accel': f"{stock['volume_acceleration']:.1f}%",
+                        'signal': stock['EDGE_SIGNAL']
+                    })
         
         # High Conviction Plays
-        high_conviction = self.df[self.df['conviction_score'] >= 80].nlargest(5, 'conviction_score')
-        if len(high_conviction) > 0:
-            opportunities['high_conviction'] = []
-            for _, stock in high_conviction.iterrows():
-                opportunities['high_conviction'].append({
-                    'ticker': stock['ticker'],
-                    'conviction': int(stock['conviction_score']),
-                    'signal': stock['EDGE_SIGNAL']
-                })
+        if 'conviction_score' in self.df.columns:
+            high_conviction = self.df[self.df['conviction_score'] >= 80]
+            if len(high_conviction) > 0:
+                high_conviction = high_conviction.nlargest(min(5, len(high_conviction)), 'conviction_score')
+                opportunities['high_conviction'] = []
+                for _, stock in high_conviction.iterrows():
+                    opportunities['high_conviction'].append({
+                        'ticker': stock['ticker'],
+                        'conviction': int(stock['conviction_score']),
+                        'signal': stock['EDGE_SIGNAL']
+                    })
         
         self.report['current_opportunities'] = opportunities
     
@@ -437,18 +445,33 @@ class EdgeSystemAnalyzer:
         scores.append(('Signal Rate', signal_score))
         
         # Triple alignment score (should be rare: <2%)
-        triple_rate = self.report['signal_analysis']['distribution']['TRIPLE_ALIGNMENT']['percentage'].strip('%')
-        triple_rate = float(triple_rate)
-        triple_score = 100 if triple_rate <= 2 else 70
+        if 'TRIPLE_ALIGNMENT' in self.report['signal_analysis']['distribution']:
+            triple_rate = self.report['signal_analysis']['distribution']['TRIPLE_ALIGNMENT']['percentage'].strip('%')
+            triple_rate = float(triple_rate)
+            triple_score = 100 if triple_rate <= 2 else 70
+        else:
+            # No triple alignments is actually good (very selective)
+            triple_rate = 0
+            triple_score = 100
         scores.append(('Triple Rarity', triple_score))
         
         # Win rate score (from backtest)
         win_rates = []
         for signal, metrics in self.report['historical_backtest'].items():
             if 'win_rate' in metrics:
-                win_rates.append(float(metrics['win_rate'].strip('%')))
-        avg_win_rate = sum(win_rates) / len(win_rates) if win_rates else 0
-        win_score = min(100, avg_win_rate * 2)  # 50% win rate = 100 score
+                try:
+                    win_rate = float(metrics['win_rate'].strip('%'))
+                    win_rates.append(win_rate)
+                except:
+                    pass
+        
+        if win_rates:
+            avg_win_rate = sum(win_rates) / len(win_rates)
+            win_score = min(100, avg_win_rate * 2)  # 50% win rate = 100 score
+        else:
+            # No win rate data available
+            avg_win_rate = 0
+            win_score = 50  # Neutral score
         scores.append(('Win Rate', win_score))
         
         # Calculate overall
@@ -474,13 +497,14 @@ class EdgeSystemAnalyzer:
             })
         
         # Check triple alignment rate
-        triple_pct = float(self.report['signal_analysis']['distribution']['TRIPLE_ALIGNMENT']['percentage'].strip('%'))
-        if triple_pct > 2:
-            recs.append({
-                'issue': 'Too many Triple Alignments',
-                'impact': 'Signal not selective enough',
-                'action': 'Make stricter: from_high_pct < -30, ret_30d.abs() < 3, volume_acceleration > 15'
-            })
+        if 'TRIPLE_ALIGNMENT' in self.report['signal_analysis']['distribution']:
+            triple_pct = float(self.report['signal_analysis']['distribution']['TRIPLE_ALIGNMENT']['percentage'].strip('%'))
+            if triple_pct > 2:
+                recs.append({
+                    'issue': 'Too many Triple Alignments',
+                    'impact': 'Signal not selective enough',
+                    'action': 'Make stricter: from_high_pct < -30, ret_30d.abs() < 3, volume_acceleration > 15'
+                })
         
         # Check win rates
         for signal, metrics in self.report['historical_backtest'].items():
@@ -573,13 +597,19 @@ def create_performance_dashboard(report):
     signals = []
     win_rates = []
     for signal, metrics in report['historical_backtest'].items():
-        signals.append(signal)
-        win_rates.append(float(metrics['win_rate'].strip('%')))
+        if 'win_rate' in metrics:
+            signals.append(signal)
+            try:
+                win_rate = float(metrics['win_rate'].strip('%'))
+                win_rates.append(win_rate)
+            except:
+                win_rates.append(0)
     
-    fig.add_trace(
-        go.Bar(x=signals, y=win_rates, marker_color=['green' if wr > 50 else 'red' for wr in win_rates]),
-        row=1, col=3
-    )
+    if signals and win_rates:
+        fig.add_trace(
+            go.Bar(x=signals, y=win_rates, marker_color=['green' if wr > 50 else 'red' for wr in win_rates]),
+            row=1, col=3
+        )
     
     # Update layout
     fig.update_layout(
@@ -640,13 +670,31 @@ def generate_html_report(report):
             win_rate = backtest.get('win_rate', 'N/A')
             exp_value = backtest.get('expected_value', 'N/A')
             
+            # Determine CSS class for win rate
+            win_class = ''
+            if win_rate != 'N/A':
+                try:
+                    win_rate_num = float(win_rate.strip('%'))
+                    win_class = 'good' if win_rate_num > 50 else 'bad'
+                except:
+                    win_class = ''
+            
+            # Determine CSS class for expected value
+            exp_class = ''
+            if exp_value != 'N/A':
+                try:
+                    exp_value_num = float(exp_value.strip('%'))
+                    exp_class = 'good' if exp_value_num > 0 else 'bad'
+                except:
+                    exp_class = ''
+            
             html += f"""
                 <tr>
                     <td>{signal}</td>
                     <td>{dist['count']}</td>
                     <td>{dist['percentage']}</td>
-                    <td class="{'good' if win_rate != 'N/A' and float(win_rate.strip('%')) > 50 else 'bad'}">{win_rate}</td>
-                    <td class="{'good' if exp_value != 'N/A' and float(exp_value.strip('%')) > 0 else 'bad'}">{exp_value}</td>
+                    <td class="{win_class}">{win_rate}</td>
+                    <td class="{exp_class}">{exp_value}</td>
                 </tr>
             """
     
@@ -780,17 +828,17 @@ def main():
         # Current opportunities
         st.subheader("🎯 Current Trading Opportunities")
         
-        if 'best_triple_alignment' in report['current_opportunities']:
+        if 'best_triple_alignment' in report['current_opportunities'] and report['current_opportunities']['best_triple_alignment']:
             st.write("### 🔥 Best Triple Alignments")
             triple_df = pd.DataFrame(report['current_opportunities']['best_triple_alignment'])
             st.dataframe(triple_df)
         
-        if 'volume_leaders' in report['current_opportunities']:
+        if 'volume_leaders' in report['current_opportunities'] and report['current_opportunities']['volume_leaders']:
             st.write("### 📊 Volume Acceleration Leaders")
             vol_df = pd.DataFrame(report['current_opportunities']['volume_leaders'])
             st.dataframe(vol_df)
         
-        if 'high_conviction' in report['current_opportunities']:
+        if 'high_conviction' in report['current_opportunities'] and report['current_opportunities']['high_conviction']:
             st.write("### ⭐ High Conviction Plays")
             conv_df = pd.DataFrame(report['current_opportunities']['high_conviction'])
             st.dataframe(conv_df)
@@ -827,17 +875,22 @@ def main():
             )
         
         with col3:
-            # Current signals CSV
-            signals_df = df[df['EDGE_SIGNAL'] != 'NONE'][
-                ['ticker', 'EDGE_SIGNAL', 'conviction_score', 'volume_acceleration', 'price', 'pe', 'sector']
-            ].sort_values('conviction_score', ascending=False)
+        # Current signals CSV
+        signals_df = df[df['EDGE_SIGNAL'] != 'NONE']
+        if len(signals_df) > 0:
+            export_cols = ['ticker', 'EDGE_SIGNAL', 'conviction_score', 'volume_acceleration', 'price', 'pe', 'sector']
+            available_export_cols = [col for col in export_cols if col in signals_df.columns]
+            signals_df = signals_df[available_export_cols].sort_values('conviction_score', ascending=False)
             csv = signals_df.to_csv(index=False)
-            st.download_button(
-                "📊 Download Signals CSV",
-                csv,
-                f"mantra_signals_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                "text/csv"
-            )
+        else:
+            csv = "No signals found"
+        
+        st.download_button(
+            "📊 Download Signals CSV",
+            csv,
+            f"mantra_signals_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+            "text/csv"
+        )
     
     # Recommendations
     if report['recommendations']:
