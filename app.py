@@ -921,7 +921,6 @@ def render_ui():
                 with col2:
                     st.metric("Volume Accel. Diff", f"{selected_stock_row.get('volume_acceleration', 0):.2f}%") # [cite: ⚡ EDGE Protocol System - COMPLETE]
                     st.metric("Volume Classification", selected_stock_row.get('volume_classification', 'N/A')) # This column should now exist
-                    st.metric("Position Size", f"{selected_stock_row.get('position_size_pct', 0):.2%}") # [cite: ⚡ EDGE Protocol System - COMPLETE]
                 with col3:
                     st.metric("Dynamic Stop", f"₹{selected_stock_row.get('dynamic_stop', 0):.2f}") # [cite: ⚡ EDGE Protocol System - COMPLETE]
                     st.metric("Target 1", f"₹{selected_stock_row.get('target1', 0):.2f}") # [cite: ⚡ EDGE Protocol System - COMPLETE]
@@ -953,6 +952,7 @@ def render_ui():
                             'atr_20': "₹{:.2f}", 'rs_volume_30d': "₹{:,.0f}",
                             'vol_score': "{:.2f}", 'mom_score': "{:.2f}", 'rr_score': "{:.2f}", 'fund_score': "{:.2f}",
                             'EDGE': "{:.2f}",
+                            'position_size_pct': "{:.2%}", # Added position_size_pct to formatting
                             'dynamic_stop': "₹{:.2f}", 'target1': "₹{:.2f}", 'target2': "₹{:.2f}",
                             'volume_acceleration': "{:.2f}%",
                             'volume_classification': "{}",
