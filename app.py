@@ -399,6 +399,54 @@ def compute_scores(df: pd.DataFrame, weights: Tuple[float, float, float, float])
 # Streamlit UI - Renders the web application
 # ─────────────────────────────────────────────────────────────────────────────
 
+# New function to calculate volume acceleration and classification
+def calculate_volume_acceleration_and_classify(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Calculates volume acceleration metrics and classifies accumulation/distribution.
+    This was previously embedded in the main scoring function but is needed earlier.
+    """
+    df = df.copy() # Work on a copy
+
+    # Calculate Average Daily Volume for respective periods
+    df['avg_vol_30d'] = df['volume_30d'] / 30.0
+    df['avg_vol_90d'] = df['volume_90d'] / 90.0
+    df['avg_vol_180d'] = df['volume_180d'] / 180.0
+
+    # Calculate Volume Ratios (percentage change)
+    # Handle division by zero by using np.where or replacing zero denominators with NaN then filling
+    df['vol_ratio_30d_90d_calc'] = np.where(df['avg_vol_90d'] != 0,
+                                         (df['avg_vol_30d'] / df['avg_vol_90d'] - 1) * 100, 0)
+    df['vol_ratio_30d_180d_calc'] = np.where(df['avg_vol_180d'] != 0,
+                                          (df['avg_vol_30d'] / df['avg_vol_180d'] - 1) * 100, 0)
+    df['vol_ratio_90d_180d_calc'] = np.where(df['avg_vol_180d'] != 0,
+                                          (df['avg_vol_90d'] / df['avg_vol_180d'] - 1) * 100, 0)
+
+    # Volume Acceleration: Checks if recent accumulation (30d) is accelerating faster than longer periods (90d, 180d)
+    df['volume_acceleration'] = df['vol_ratio_30d_90d_calc'] - df['vol_ratio_30d_180d_calc']
+
+    # Classify based on volume acceleration and current ratios
+    def classify_volume(row):
+        ratio_30_90 = row['vol_ratio_30d_90d_calc']
+        ratio_30_180 = row['vol_ratio_30d_180d_calc']
+        acceleration = row['volume_acceleration']
+
+        if acceleration > 20 and ratio_30_90 > 5 and ratio_30_180 > 5:
+            return "Institutional Loading"
+        elif acceleration > 5 and ratio_30_90 > 0 and ratio_30_180 > 0:
+            return "Heavy Accumulation"
+        elif ratio_30_90 > 0 and ratio_30_180 > 0:
+            return "Accumulation"
+        elif ratio_30_90 < 0 and ratio_30_180 < 0 and acceleration < -5:
+            return "Exodus"
+        elif ratio_30_90 < 0 and ratio_30_180 < 0:
+            return "Distribution"
+        else:
+            return "Neutral"
+
+    df['volume_classification'] = df.apply(classify_volume, axis=1)
+    return df
+
+
 def render_ui():
     """
     Renders the Streamlit user interface for the EDGE Protocol application.
@@ -436,8 +484,14 @@ def render_ui():
     if "rs_volume_30d" in df.columns:
         df = df[df["rs_volume_30d"] >= 1e7] # Filter for sufficient liquidity
 
+
+    # --- IMPORTANT FIX ---
+    # Ensure volume acceleration and classification are calculated *before* computing overall scores
+    # as these columns are used in the display_df and stock deep dive.
+    df_processed = calculate_volume_acceleration_and_classify(df.copy())
+    
     # Compute all EDGE scores and classifications
-    df_scored = compute_scores(df, weights)
+    df_scored = compute_scores(df_processed, weights)
 
     # Filter by minimum EDGE score set by the user
     df_filtered_by_min_edge = df_scored[df_scored["EDGE"] >= min_edge].copy()
@@ -479,17 +533,16 @@ def render_ui():
                     "ticker", "company_name", "sector", "tag", "EDGE",
                     "vol_score", "mom_score", "rr_score", "fund_score",
                     "price", "position_size_pct", "dynamic_stop", "target1", "target2",
-                    "vol_ratio_30d_90d", "vol_ratio_30d_180d", # These are the original decimal ratios
-                    "vol_ratio_30d_90d_calc", "vol_ratio_30d_180d_calc", # These are the calculated % diff
-                    "volume_acceleration"
+                    "vol_ratio_30d_90d_calc", "vol_ratio_30d_180d_calc", # Use the calculated % diffs
+                    "volume_acceleration", # This column should now exist
+                    "volume_classification" # This column should now exist
                 ]].style.background_gradient(cmap='RdYlGn', subset=['EDGE']).format({
                     "EDGE": "{:.2f}",
                     "vol_score": "{:.2f}", "mom_score": "{:.2f}", "rr_score": "{:.2f}", "fund_score": "{:.2f}",
                     "price": "₹{:.2f}",
                     "position_size_pct": "{:.2%}", # [cite: ⚡ EDGE Protocol System - COMPLETE]
                     "dynamic_stop": "₹{:.2f}", "target1": "₹{:.2f}", "target2": "₹{:.2f}", # [cite: ⚡ EDGE Protocol System - COMPLETE]
-                    "vol_ratio_30d_90d": "{:.2%}", "vol_ratio_30d_180d": "{:.2%}",
-                    "vol_ratio_30d_90d_calc": "{:.2f}%", "vol_ratio_30d_180d_calc": "{:.2f}%",
+                    "vol_ratio_30d_90d_calc": "{:.2f}%", "vol_ratio_30d_180d_calc": "{:.2f}%", # Format as percentage
                     "volume_acceleration": "{:.2f}%" # [cite: ⚡ EDGE Protocol System - COMPLETE]
                 }),
                 use_container_width=True
@@ -511,21 +564,19 @@ def render_ui():
         st.markdown("Visualize the relationship between Volume Acceleration (difference in 30d/90d and 30d/180d ratios) and Distance from 52-Week High. [cite: ⚡ EDGE Protocol System - COMPLETE]")
         st.markdown("Look for stocks with high positive `Volume Acceleration` and negative `% from 52W High` (i.e., consolidating price with accelerating accumulation) – this is where the 'gold' is found. [cite: ⚡ EDGE Protocol System - COMPLETE]")
 
-        if "vol_ratio_30d_90d" in df_scored.columns and "vol_ratio_30d_180d" in df_scored.columns and "from_high_pct" in df_scored.columns:
-            # Re-calculate delta_accel for clarity in plot, though it's similar to volume_acceleration
-            df_scored["delta_accel"] = (df_scored["vol_ratio_30d_90d"] - df_scored["vol_ratio_30d_180d"]) * 100 # Display as percentage
-
+        if "volume_acceleration" in df_scored.columns and "from_high_pct" in df_scored.columns:
+            # Use the already calculated 'volume_acceleration' column directly for the y-axis
             fig2 = px.scatter(
                 df_scored,
                 x="from_high_pct",
-                y="delta_accel",
+                y="volume_acceleration", # Use the existing volume_acceleration column
                 color="tag",
                 size="EDGE", # Size points by overall EDGE score
-                hover_data=["ticker", "company_name", "sector", "EDGE", "vol_score", "mom_score"],
+                hover_data=["ticker", "company_name", "sector", "EDGE", "vol_score", "mom_score", "volume_classification"],
                 title="Volume Acceleration vs. Distance from 52-Week High",
                 labels={
                     "from_high_pct": "% From 52-Week High (Lower is better for consolidation)",
-                    "delta_accel": "Volume Acceleration (30d/90d - 30d/180d % Diff)"
+                    "volume_acceleration": "Volume Acceleration (30d/90d - 30d/180d % Diff)"
                 },
                 color_discrete_map={ # Consistent colors
                     "EXPLOSIVE": "#FF4B4B", # Red
@@ -587,7 +638,7 @@ def render_ui():
                 st.metric("Classification", selected_stock_row['tag'])
             with col2:
                 st.metric("Volume Accel. Diff", f"{selected_stock_row['volume_acceleration']:.2f}%") # [cite: ⚡ EDGE Protocol System - COMPLETE]
-                st.metric("Volume Classification", selected_stock_row['volume_classification']) # This is not directly calculated in the provided code, but can be derived from vol_accel
+                st.metric("Volume Classification", selected_stock_row['volume_classification']) # This column should now exist
                 st.metric("Position Size", f"{selected_stock_row['position_size_pct']:.2%}") # [cite: ⚡ EDGE Protocol System - COMPLETE]
             with col3:
                 st.metric("Dynamic Stop", f"₹{selected_stock_row['dynamic_stop']:.2f}") # [cite: ⚡ EDGE Protocol System - COMPLETE]
@@ -612,6 +663,7 @@ def render_ui():
                         'volume_90d': "{:,.0f}", 'volume_180d': "{:,.0f}",
                         'vol_ratio_1d_90d': "{:.2%}", 'vol_ratio_7d_90d': "{:.2%}", 'vol_ratio_30d_90d': "{:.2%}",
                         'vol_ratio_1d_180d': "{:.2%}", 'vol_ratio_7d_180d': "{:.2%}", 'vol_ratio_30d_180d': "{:.2%}", 'vol_ratio_90d_180d': "{:.2%}",
+                        'vol_ratio_30d_90d_calc': "{:.2f}%", 'vol_ratio_30d_180d_calc': "{:.2f}%",
                         'rvol': "{:.2f}",
                         'prev_close': "₹{:.2f}",
                         'pe': "{:.2f}",
@@ -621,6 +673,7 @@ def render_ui():
                         'EDGE': "{:.2f}",
                         'dynamic_stop': "₹{:.2f}", 'target1': "₹{:.2f}", 'target2': "₹{:.2f}",
                         'volume_acceleration': "{:.2f}%",
+                        'volume_classification': "{}",
                         'delta_accel': "{:.2f}%" # Assuming this is the delta_accel for the plot
                     }
                 ),
