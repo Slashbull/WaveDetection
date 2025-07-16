@@ -113,10 +113,21 @@ def load_sheet() -> pd.DataFrame:
                     df[col] = (
                         df[col]
                         .astype(str)
-                        .str.replace(r"[₹,%]", "", regex=True) # Remove currency, percentage, and comma symbols
-                        .str.replace(",", "")
+                        .str.replace(r"[₹,$€£]", "", regex=True) # Remove currency symbols
+                        .str.replace(",", "") # Remove thousands separator
                         .replace({"nan": np.nan, "": np.nan}) # Convert 'nan' string and empty strings to actual NaN
                     )
+                    # Handle common suffixes for large numbers (Crore, Lakh, Million, Billion, Thousand)
+                    # Apply this only if the column is 'market_cap' or similar where these suffixes are expected
+                    if col == 'market_cap':
+                        df[col] = df[col].astype(str).apply(
+                            lambda x: float(x.replace('Cr', '')) * 10**7 if 'Cr' in x else \
+                                      (float(x.replace('L', '')) * 10**5 if 'L' in x else \
+                                      (float(x.replace('K', '')) * 10**3 if 'K' in x else \
+                                      (float(x.replace('M', '')) * 10**6 if 'M' in x else \
+                                      (float(x.replace('B', '')) * 10**9 if 'B' in x else x))))
+                        )
+
                 # Then, convert to numeric, coercing errors to NaN
                 df[col] = pd.to_numeric(df[col], errors="coerce")
 
@@ -891,7 +902,7 @@ def render_ui():
         
         # Ensure only stocks with valid calculated scores are available for selection
         # Convert 'ticker' to string to avoid potential type issues in selectbox options
-        available_stocks = df_scored[df_scored['EDGE'].notnull()]['ticker'].astype(str).tolist()
+        available_stocks = df_scored[df_scored['EDGE'].notnull()]['ticker'].dropna().astype(str).tolist()
         
         if available_stocks:
             # Ensure the default selected ticker is valid if it exists in session_state,
