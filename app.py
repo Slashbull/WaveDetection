@@ -44,6 +44,10 @@ EDGE_THRESHOLDS = {
 
 MIN_STOCKS_PER_SECTOR = 4 # Minimum number of stocks in a sector to avoid thin sector alerts
 
+# Define the columns that hold the component scores globally
+# This fixes the NameError when trying to access block_cols in render_ui
+GLOBAL_BLOCK_COLS = ["vol_score", "mom_score", "rr_score", "fund_score"]
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Utility helpers
 # ─────────────────────────────────────────────────────────────────────────────
@@ -346,6 +350,7 @@ def compute_scores(df: pd.DataFrame, weights: Tuple[float, float, float, float])
     df["fund_score"] = df.apply(score_fundamentals, axis=1, df=df)
 
     # Define the columns that hold the component scores
+    # This is now a local variable, but GLOBAL_BLOCK_COLS will be used in render_ui
     block_cols = ["vol_score", "mom_score", "rr_score", "fund_score"]
 
     # Adaptive weighting: Renormalise weights row-wise based on available scores
@@ -981,7 +986,8 @@ def render_ui():
             * **Fundamentals ({weights[3]*100:.0f}%)**: Adaptive weighting. Redistributed if EPS/PE data is missing. [cite: ⚡ EDGE Protocol System - COMPLETE]
         """)
         # Check if the effective fundamental weight is zero due to adaptive weighting
-        effective_fund_weight = sum(w for i, w in enumerate(weights) if not df_scored[block_cols[i]].isna().all())
+        # Use GLOBAL_BLOCK_COLS here
+        effective_fund_weight = sum(w for i, w in enumerate(weights) if not df_scored[GLOBAL_BLOCK_COLS[i]].isna().all())
         if weights[3] > 0 and effective_fund_weight == 0:
              st.warning("Note: Fundamental (EPS/PE) data was largely missing or invalid, so its weight has been redistributed.")
 
@@ -992,7 +998,7 @@ def render_ui():
         csv_full = df_scored.to_csv(index=False).encode('utf-8')
         st.download_button("Download Full Processed CSV", csv_full, "edge_protocol_full_output.csv", "text/csv")
         
-        st.write(f"Data last processed: {pd.Timestamp.utcnow().strftime('%Y‑%m‑%d %H:%M:%S UTC')}")
+        st.write(f"Data last processed: {pd.Timestamp.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}")
 
 
 if __name__ == "__main__":
