@@ -89,13 +89,13 @@ def load_sheet() -> pd.DataFrame:
         raw.columns = (
             raw.columns.str.strip()
             .str.lower()
-            .str.replace("%", "pct")
+            .str.replace("%", "pct") # Replace % with pct in column names
             .str.replace(" ", "_")
         )
 
         df = raw.copy()
 
-        # Explicitly define columns that should be numeric and handle non-numeric values
+        # Define columns that are expected to be numeric
         numeric_cols = [
             'market_cap', 'volume_1d', 'volume_7d', 'volume_30d', 'volume_90d', 'volume_180d',
             'vol_ratio_1d_90d', 'vol_ratio_7d_90d', 'vol_ratio_30d_90d',
@@ -106,37 +106,52 @@ def load_sheet() -> pd.DataFrame:
             'eps_current', 'eps_last_qtr', 'eps_change_pct', 'year'
         ]
 
+        # Define columns that are percentages and should be divided by 100 if > 1
+        percentage_value_cols = [
+            'ret_1d', 'from_low_pct', 'from_high_pct', 'ret_3d', 'ret_7d', 'ret_30d', 'ret_3m',
+            'ret_6m', 'ret_1y', 'ret_3y', 'ret_5y', 'eps_change_pct',
+            'vol_ratio_1d_90d', 'vol_ratio_7d_90d', 'vol_ratio_30d_90d',
+            'vol_ratio_1d_180d', 'vol_ratio_7d_180d', 'vol_ratio_30d_180d', 'vol_ratio_90d_180d'
+        ]
+
+
         for col in numeric_cols:
             if col in df.columns:
-                # First, clean string representations that might prevent numeric conversion
-                if df[col].dtype == object: # Only process object (string) columns
-                    df[col] = (
-                        df[col]
-                        .astype(str)
-                        .str.replace(r"[₹,$€£]", "", regex=True) # Remove currency symbols
-                        .str.replace(",", "") # Remove thousands separator
-                        .replace({"nan": np.nan, "": np.nan}) # Convert 'nan' string and empty strings to actual NaN
-                    )
-                    # Handle common suffixes for large numbers (Crore, Lakh, Million, Billion, Thousand)
-                    # Apply this only if the column is 'market_cap' or similar where these suffixes are expected
-                    if col == 'market_cap':
-                        df[col] = df[col].astype(str).apply(
-                            lambda x: float(x.replace('Cr', '')) * 10**7 if 'Cr' in x else \
-                                      (float(x.replace('L', '')) * 10**5 if 'L' in x else \
-                                      (float(x.replace('K', '')) * 10**3 if 'K' in x else \
-                                      (float(x.replace('M', '')) * 10**6 if 'M' in x else \
-                                      (float(x.replace('B', '')) * 10**9 if 'B' in x else x))))
-                        )
+                # Convert to string to handle various formats
+                s = df[col].astype(str)
+                
+                # Remove common non-numeric characters (except for percentage sign initially)
+                s = s.str.replace(r"[₹,$€£]", "", regex=True) # Remove currency symbols
+                s = s.str.replace(",", "") # Remove thousands separator
+                s = s.replace({"nan": np.nan, "": np.nan}) # Convert 'nan' string and empty strings to actual NaN
 
-                # Then, convert to numeric, coercing errors to NaN
-                df[col] = pd.to_numeric(df[col], errors="coerce")
+                # Handle market_cap suffixes specifically
+                if col == 'market_cap':
+                    def parse_market_cap(val):
+                        if pd.isna(val):
+                            return np.nan
+                        val_str = str(val).strip()
+                        if 'Cr' in val_str:
+                            return float(val_str.replace('Cr', '')) * 10**7
+                        elif 'L' in val_str:
+                            return float(val_str.replace('L', '')) * 10**5
+                        elif 'K' in val_str:
+                            return float(val_str.replace('K', '')) * 10**3
+                        elif 'M' in val_str:
+                            return float(val_str.replace('M', '')) * 10**6
+                        elif 'B' in val_str:
+                            return float(val_str.replace('B', '')) * 10**9
+                        return float(val_str) # Assume it's a direct number if no suffix
+                    df[col] = s.apply(parse_market_cap)
+                else:
+                    # For other columns, convert to numeric after cleaning
+                    df[col] = pd.to_numeric(s, errors="coerce")
 
-        # For percentage ratios that were cleaned (e.g., 'vol_ratio_1d_180d'), convert to decimal
-        # Only divide by 100 if the values are large (e.g., >1 or < -1) indicating percentage
-        pct_ratio_cols = ['vol_ratio_1d_180d', 'vol_ratio_7d_180d', 'vol_ratio_30d_180d', 'vol_ratio_90d_180d']
-        for col in pct_ratio_cols:
-            if col in df.columns and pd.api.types.is_numeric_dtype(df[col]):
-                df[col] = np.where(df[col].abs() > 1, df[col] / 100.0, df[col])
+                # Handle percentage columns: divide by 100 if the value is > 1 (e.g., 50 for 50%)
+                if col in percentage_value_cols and pd.api.types.is_numeric_dtype(df[col]):
+                    # Only divide if the value is clearly an integer percentage (e.g., 50 for 50%)
+                    # and not already a decimal (e.g., 0.50)
+                    df[col] = np.where(df[col].notna() & (df[col].abs() > 1) & (df[col].abs() <= 1000), df[col] / 100.0, df[col]) # Added upper bound to prevent dividing already large numbers
 
 
         # Winsorise numeric columns to handle extreme outliers
@@ -159,16 +174,6 @@ def load_sheet() -> pd.DataFrame:
         df['volume_30d'] = df['volume_30d'].fillna(0)
         df['volume_90d'] = df['volume_90d'].fillna(0)
         df['volume_180d'] = df['volume_180d'].fillna(0)
-
-        # Volume ratio columns also need to be numeric for calculations.
-        # 0.0 is a neutral default for missing ratios, implying no change.
-        df['vol_ratio_1d_90d'] = df['vol_ratio_1d_90d'].fillna(0.0)
-        df['vol_ratio_7d_90d'] = df['vol_ratio_7d_90d'].fillna(0.0)
-        df['vol_ratio_30d_90d'] = df['vol_ratio_30d_90d'].fillna(0.0)
-        df['vol_ratio_1d_180d'] = df['vol_ratio_1d_180d'].fillna(0.0)
-        df['vol_ratio_7d_180d'] = df['vol_ratio_7d_180d'].fillna(0.0)
-        df['vol_ratio_30d_180d'] = df['vol_ratio_30d_180d'].fillna(0.0)
-        df['vol_ratio_90d_180d'] = df['vol_ratio_90d_180d'].fillna(0.0)
 
         # rvol is used in momentum scoring, 1.0 is a neutral default if missing (relative volume of 1 means average).
         df['rvol'] = df['rvol'].fillna(1.0)
