@@ -28,6 +28,7 @@ from typing import Dict, List, Tuple, Optional, Union
 from dataclasses import dataclass
 from enum import Enum
 import logging
+import io
 
 # Suppress warnings for cleaner output
 warnings.filterwarnings('ignore')
@@ -175,16 +176,33 @@ def load_data() -> Tuple[pd.DataFrame, Dict[str, any]]:
         # Construct URL
         url = f"https://docs.google.com/spreadsheets/d/{SHEET_CONFIG['SHEET_ID']}/export?format=csv&gid={SHEET_CONFIG['GID']}"
         
-        # Fetch data
+        # Log the URL for debugging
+        logger.info(f"Fetching data from: {url}")
+        
+        # Fetch data with proper error handling
         response = requests.get(url, timeout=SHEET_CONFIG['REQUEST_TIMEOUT'])
         response.raise_for_status()
         
-        # Load into DataFrame
-        df = pd.read_csv(pd.io.common.StringIO(response.text))
+        # Check if we got valid CSV data
+        if not response.text or response.text.startswith('<!DOCTYPE'):
+            raise ValueError("Received HTML instead of CSV data. Check sheet permissions.")
+        
+        # Load into DataFrame using StringIO properly
+        df = pd.read_csv(io.StringIO(response.text))
+        
+        # Validate we got actual data
+        if df.empty:
+            raise ValueError("Loaded DataFrame is empty")
+            
         diagnostics['rows_loaded'] = len(df)
         
-        # Clean column names
-        df.columns = df.columns.str.strip().str.lower().str.replace(' ', '_')
+        # Clean column names - handle special characters and standardize
+        df.columns = (df.columns.str.strip()
+                      .str.lower()
+                      .str.replace(r'[()₹]', '', regex=True)  # Remove parentheses and currency symbols
+                      .str.replace(r'\s+', '_', regex=True)   # Replace spaces with underscores
+                      .str.replace(r'_+', '_', regex=True)    # Remove multiple underscores
+                      .str.strip('_'))                        # Remove leading/trailing underscores
         
         # Define critical columns
         critical_cols = [
@@ -215,19 +233,58 @@ def load_data() -> Tuple[pd.DataFrame, Dict[str, any]]:
         
         return df, diagnostics
         
+    except requests.exceptions.Timeout:
+        error_msg = "Request timed out. The Google Sheet might be too large or network is slow."
+        logger.error(error_msg)
+        diagnostics['warnings'].append(error_msg)
+        return pd.DataFrame(), diagnostics
+        
+    except requests.exceptions.ConnectionError:
+        error_msg = "Connection error. Please check your internet connection."
+        logger.error(error_msg)
+        diagnostics['warnings'].append(error_msg)
+        return pd.DataFrame(), diagnostics
+        
+    except requests.exceptions.HTTPError as e:
+        if e.response.status_code == 404:
+            error_msg = "Sheet not found. Please check the Sheet ID and GID are correct."
+        elif e.response.status_code == 403:
+            error_msg = "Access denied. Make sure the Google Sheet is publicly accessible."
+        else:
+            error_msg = f"HTTP error {e.response.status_code}: {str(e)}"
+        logger.error(error_msg)
+        diagnostics['warnings'].append(error_msg)
+        return pd.DataFrame(), diagnostics
+        
+    except pd.errors.EmptyDataError:
+        error_msg = "The Google Sheet appears to be empty."
+        logger.error(error_msg)
+        diagnostics['warnings'].append(error_msg)
+        return pd.DataFrame(), diagnostics
+        
     except Exception as e:
-        logger.error(f"Data loading failed: {str(e)}")
-        diagnostics['warnings'].append(f"Critical error: {str(e)}")
+        error_msg = f"Unexpected error loading data: {str(e)}"
+        logger.error(error_msg)
+        diagnostics['warnings'].append(error_msg)
         return pd.DataFrame(), diagnostics
 
 def clean_and_convert_data(df: pd.DataFrame) -> pd.DataFrame:
     """Clean and convert data types properly"""
     
-    # Price and numeric columns
+    # Volume columns need special handling for large numbers with commas
+    volume_cols = ['volume_1d', 'volume_7d', 'volume_30d', 'volume_90d', 'volume_180d']
+    for col in volume_cols:
+        if col in df.columns:
+            # Remove commas and convert
+            df[col] = pd.to_numeric(
+                df[col].astype(str).str.replace(',', '').str.strip(),
+                errors='coerce'
+            )
+    
+    # Price and other numeric columns
     numeric_cols = [
         'price', 'low_52w', 'high_52w', 'prev_close',
         'sma_20d', 'sma_50d', 'sma_200d',
-        'volume_1d', 'volume_7d', 'volume_30d', 'volume_90d',
         'rvol', 'pe', 'eps_current', 'eps_last_qtr', 'eps_change_pct'
     ]
     
@@ -235,11 +292,11 @@ def clean_and_convert_data(df: pd.DataFrame) -> pd.DataFrame:
         if col in df.columns:
             # Remove currency symbols and convert
             df[col] = pd.to_numeric(
-                df[col].astype(str).str.replace('[₹,$,]', '', regex=True),
+                df[col].astype(str).str.replace('[₹,$,]', '', regex=True).str.strip(),
                 errors='coerce'
             )
     
-    # Percentage columns
+    # Percentage columns - handle both with and without % sign
     pct_cols = [
         'ret_1d', 'ret_3d', 'ret_7d', 'ret_30d', 'ret_3m', 'ret_6m', 'ret_1y',
         'from_high_pct', 'from_low_pct', 'eps_change_pct',
@@ -249,18 +306,27 @@ def clean_and_convert_data(df: pd.DataFrame) -> pd.DataFrame:
     
     for col in pct_cols:
         if col in df.columns:
-            df[col] = pd.to_numeric(
-                df[col].astype(str).str.replace('%', ''),
-                errors='coerce'
-            )
+            # First convert to string, then remove % if present
+            df[col] = df[col].astype(str).str.replace('%', '').str.strip()
+            # Handle negative percentages that might have been stored as strings
+            df[col] = df[col].str.replace('−', '-')  # Replace unicode minus
+            df[col] = pd.to_numeric(df[col], errors='coerce')
     
-    # Market cap special handling
-    if 'market_cap' in df.columns:
-        df['market_cap_cr'] = df['market_cap'].apply(parse_market_cap)
+    # Market cap special handling - look for the column with various possible names
+    market_cap_col = None
+    for possible_name in ['market_cap', 'market_cap_(₹_cr)', 'market_cap_cr', 'market_cap_(cr)']:
+        if possible_name in df.columns:
+            market_cap_col = possible_name
+            break
+    
+    if market_cap_col:
+        df['market_cap_cr'] = df[market_cap_col].apply(parse_market_cap)
+    else:
+        logger.warning("Market cap column not found - category assignment will default to 'Unknown'")
+        df['market_cap_cr'] = np.nan
     
     # Category assignment based on market cap
-    if 'market_cap_cr' in df.columns:
-        df['category'] = df['market_cap_cr'].apply(assign_market_category)
+    df['category'] = df['market_cap_cr'].apply(assign_market_category)
     
     return df
 
@@ -832,6 +898,22 @@ def render_filters_sidebar(df: pd.DataFrame) -> Dict[str, any]:
     
     st.sidebar.header("🎯 Filters")
     
+    # Test connection button
+    if st.sidebar.button("🔌 Test Data Connection"):
+        with st.spinner("Testing connection..."):
+            test_url = f"https://docs.google.com/spreadsheets/d/{SHEET_CONFIG['SHEET_ID']}/export?format=csv&gid={SHEET_CONFIG['GID']}"
+            try:
+                response = requests.get(test_url, timeout=5)
+                if response.status_code == 200:
+                    st.sidebar.success("✅ Connection successful!")
+                    st.sidebar.info(f"Data size: {len(response.text)} bytes")
+                else:
+                    st.sidebar.error(f"❌ HTTP {response.status_code}")
+            except Exception as e:
+                st.sidebar.error(f"❌ Connection failed: {str(e)}")
+    
+    st.sidebar.markdown("---")
+    
     filters = {}
     
     # Strategy selection
@@ -1062,8 +1144,69 @@ def main():
         df, diagnostics = load_data()
     
     if df.empty:
-        st.error("❌ Unable to load data. Please check your connection and try again.")
-        st.stop()
+        st.error("❌ Unable to load data from Google Sheets")
+        
+        # Show specific error details
+        if diagnostics['warnings']:
+            st.error(f"**Error Details:** {diagnostics['warnings'][0]}")
+            
+            # Provide helpful suggestions
+            with st.expander("🔧 Troubleshooting Guide", expanded=True):
+                st.markdown("""
+                **Common Issues and Solutions:**
+                
+                1. **"Access denied" or "403 error"**
+                   - The Google Sheet must be publicly accessible
+                   - Go to Google Sheets → Share → Change to "Anyone with the link can view"
+                
+                2. **"Sheet not found" or "404 error"**
+                   - Check the Sheet ID in the URL is correct
+                   - Current Sheet ID: `1Wa4-4K7hyTTCrqJ0pUzS-NaLFiRQpBgI8KBdHx9obKk`
+                   - Current GID: `2026492216`
+                
+                3. **"Connection error"**
+                   - Check your internet connection
+                   - Try refreshing the page
+                
+                4. **"HTML instead of CSV"**
+                   - The sheet might be private or deleted
+                   - The GID might be incorrect
+                
+                **Direct Sheet Link:**
+                [Open Google Sheet](https://docs.google.com/spreadsheets/d/1Wa4-4K7hyTTCrqJ0pUzS-NaLFiRQpBgI8KBdHx9obKk)
+                """)
+        
+        # Offer manual upload option
+        st.markdown("---")
+        st.subheader("📤 Alternative: Upload Data Manually")
+        
+        uploaded_file = st.file_uploader(
+            "Upload your watchlist CSV file",
+            type=['csv'],
+            help="Download the data from Google Sheets as CSV and upload here"
+        )
+        
+        if uploaded_file is not None:
+            try:
+                df = pd.read_csv(uploaded_file)
+                st.success(f"✅ Successfully loaded {len(df)} rows from uploaded file")
+                
+                # Clean column names (same as in load_data)
+                df.columns = df.columns.str.strip().str.lower().str.replace(' ', '_')
+                
+                # Apply same data cleaning
+                df = clean_and_convert_data(df)
+                df, quality_score = validate_data_quality(df)
+                df = add_derived_columns(df)
+                
+                diagnostics['rows_loaded'] = len(df)
+                diagnostics['data_quality_score'] = quality_score
+                
+            except Exception as e:
+                st.error(f"Error reading uploaded file: {str(e)}")
+                st.stop()
+        else:
+            st.stop()
     
     # Display diagnostics in sidebar
     with st.sidebar:
@@ -1074,6 +1217,14 @@ def main():
                 st.warning(f"{len(diagnostics['warnings'])} warnings")
                 for warning in diagnostics['warnings'][:3]:
                     st.caption(warning)
+        
+        # Debug mode
+        if st.checkbox("🐛 Debug Mode", key="debug_mode"):
+            st.code(f"""
+Sheet ID: {SHEET_CONFIG['SHEET_ID']}
+GID: {SHEET_CONFIG['GID']}
+Full URL: https://docs.google.com/spreadsheets/d/{SHEET_CONFIG['SHEET_ID']}/export?format=csv&gid={SHEET_CONFIG['GID']}
+            """, language="text")
     
     # Get filters
     filters = render_filters_sidebar(df)
