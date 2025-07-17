@@ -30,13 +30,14 @@ PAGE_TITLE = "EDGE Protocol – Ultimate Trading Intelligence"
 
 # Define different trading profiles with their respective weights for the four components:
 # (Volume, Momentum, Risk/Reward, Fundamentals)
+# Total weights for each profile should sum to 1.0 (100%)
 PROFILE_PRESETS = {
-    "Balanced": (0.30, 0.25, 0.20, 0.25),  # Balanced approach across all factors
-    "Swing": (0.40, 0.35, 0.15, 0.10),     # Higher emphasis on Volume and Momentum for short-term trades
-    "Positional": (0.25, 0.20, 0.30, 0.25), # More weight on Risk/Reward and Fundamentals for longer holds
+    "Balanced": (0.30, 0.25, 0.25, 0.20),  # Balanced approach across all factors (Fund 20%)
+    "Swing": (0.40, 0.35, 0.15, 0.10),     # Higher emphasis on Volume and Momentum for short-term trades (Fund 10%)
+    "Positional": (0.25, 0.20, 0.35, 0.20), # More weight on Risk/Reward and Fundamentals for longer holds (Fund 20%)
     "Momentum-only": (0.45, 0.45, 0.10, 0.00), # Pure momentum play, less on long-term factors (Fundamentals set to 0)
-    "Breakout": (0.35, 0.40, 0.20, 0.05),  # Strong emphasis on Volume and Momentum for breakouts
-    "Long-Term": (0.15, 0.15, 0.35, 0.35), # Focus on Risk/Reward and strong Fundamentals for long-term investments
+    "Breakout": (0.35, 0.40, 0.20, 0.05),  # Strong emphasis on Volume and Momentum for breakouts (Fund 5%)
+    "Long-Term": (0.15, 0.15, 0.35, 0.35), # Focus on Risk/Reward and strong Fundamentals for long-term investments (Fund 35%)
 }
 
 # EDGE Scoring Thresholds for classification
@@ -266,6 +267,12 @@ def load_and_validate_data() -> Tuple[pd.DataFrame, Dict[str, any]]:
         df["atr_20"] = calc_atr20(df["price"])
         # rs_volume_30d is a rough proxy for 30-day average dollar volume
         df["rs_volume_30d"] = df.get("volume_30d", pd.Series(0, index=df.index)) * df["price"]
+
+        # Add is_sweet_spot column
+        if 'from_high_pct' in df.columns:
+            df['is_sweet_spot'] = (df['from_high_pct'] >= -30) & (df['from_high_pct'] <= -15)
+        else:
+            df['is_sweet_spot'] = False # Default if column is missing
 
         # Apply winsorization to critical numeric columns to handle extreme outliers
         for col in ['ret_1d', 'ret_3d', 'ret_7d', 'ret_30d', 'ret_3m', 'ret_6m', 'ret_1y', 'ret_3y', 'ret_5y',
@@ -1414,7 +1421,7 @@ def render_sidebar_diagnostics(diagnostics: Dict):
             key="diag_download"
         )
 
-def render_sector_leaderboard(df: pd.DataFrame):
+def render_sector_leaderboard(df: pd.DataFrame, sector_metrics_for_ui: pd.DataFrame):
     """Renders a detailed sector leaderboard."""
     st.header("🏆 Sector EDGE Leaderboard")
 
@@ -1422,32 +1429,8 @@ def render_sector_leaderboard(df: pd.DataFrame):
         st.info("Sector data or EDGE scores not available for analysis.")
         return
 
-    # Calculate sector metrics
-    agg_dict = {
-        'ticker': 'count',
-        'EDGE': 'mean',
-        'volume_acceleration': 'mean',
-        'tag': lambda x: (x == 'SUPER_EDGE').sum() # Count SUPER_EDGE stocks
-    }
-
-    sector_metrics = df.groupby('sector').agg(agg_dict).reset_index()
-
-    # Rename columns for display
-    sector_metrics.rename(columns={
-        'ticker': 'Total Stocks',
-        'EDGE': 'Avg EDGE Score',
-        'volume_acceleration': 'Avg Vol Accel %',
-        'tag': 'SUPER EDGE Count'
-    }, inplace=True)
-
-    # Filter out sectors with very few stocks for meaningful averages
-    sector_metrics = sector_metrics[sector_metrics['Total Stocks'] >= MIN_STOCKS_PER_SECTOR]
-
-    # Sort by Avg EDGE Score and then by SUPER EDGE Count
-    sector_metrics = sector_metrics.sort_values(
-        by=['Avg EDGE Score', 'SUPER EDGE Count'],
-        ascending=[False, False]
-    ).round(1)
+    # Use the pre-calculated sector_metrics_for_ui
+    sector_metrics = sector_metrics_for_ui
 
     if sector_metrics.empty:
         st.info("No sectors meet the criteria for a meaningful leaderboard.")
@@ -1765,6 +1748,28 @@ def render_ui():
         "📋 Raw Data"
     ])
 
+    # Pre-calculate sector metrics for the leaderboard tab to avoid NameError in slider
+    sector_metrics_for_ui = pd.DataFrame()
+    if 'sector' in df_analyzed.columns and 'EDGE' in df_analyzed.columns:
+        sector_metrics_for_ui = df_analyzed.groupby('sector').agg(
+            avg_edge=('EDGE', 'mean'),
+            total_stocks=('ticker', 'count'),
+            super_edge_count=('tag', lambda x: (x == 'SUPER_EDGE').sum())
+        ).reset_index()
+        sector_metrics_for_ui = sector_metrics_for_ui[sector_metrics_for_ui['total_stocks'] >= MIN_STOCKS_PER_SECTOR]
+        sector_metrics_for_ui.rename(columns={
+            'avg_edge': 'Avg EDGE Score',
+            'total_stocks': 'Total Stocks',
+            'super_edge_count': 'SUPER EDGE Count',
+            'volume_acceleration': 'Avg Vol Accel %' # Ensure this is renamed if used
+        }, inplace=True)
+        # Add Avg Vol Accel % if it exists in df_analyzed
+        if 'volume_acceleration' in df_analyzed.columns:
+            temp_vol_accel_agg = df_analyzed.groupby('sector')['volume_acceleration'].mean().reset_index()
+            sector_metrics_for_ui = pd.merge(sector_metrics_for_ui, temp_vol_accel_agg, on='sector', how='left')
+            sector_metrics_for_ui.rename(columns={'volume_acceleration': 'Avg Vol Accel %'}, inplace=True)
+
+
     # Tab 1: Daily Signals
     with tabs[0]:
         st.header("📊 Daily EDGE Signals")
@@ -1825,29 +1830,38 @@ def render_ui():
             display_cols_order = [
                 'ticker', 'company_name', 'sector', 'tag', 'EDGE', 'decision',
                 'price', 'position_size', 'stop_loss', 'stop_loss_pct',
-                'target1', 'target2', 'volume_acceleration', 'rvol',
-                'volume_classification', 'top_pattern_name', 'top_pattern_score', 'pattern_confluence_score', 'vp_divergence_score',
-                'vol_score', 'mom_score', 'rr_score', 'fund_score' # Show individual scores
+                'target1', 'target2',
+                'pattern_detected', 'pattern_strength', 'pattern_signals' # New pattern columns
             ]
             # Ensure only existing columns are included
             display_cols = [col for col in display_cols_order if col in current_display_df.columns]
+
+            # Add new pattern-related columns for display and styling
+            current_display_df['pattern_detected'] = current_display_df['top_pattern_name'].apply(
+                lambda x: f"🎯 {x}" if x else ""
+            )
+            current_display_df['pattern_strength'] = current_display_df['top_pattern_score']
+            current_display_df['pattern_signals'] = current_display_df['pattern_analysis'].apply(
+                lambda x: ', '.join(x['top_pattern']['signals']) if x and x['top_pattern'] else ''
+            )
+            
+            # Add confluence icon
+            current_display_df['pattern_detected'] = current_display_df.apply(
+                lambda row: f"🔥🔥 {row['pattern_detected']}" if row['pattern_confluence_score'] >= 85 else row['pattern_detected'],
+                axis=1
+            )
 
             # Custom styling for the DataFrame
             def style_signals_dataframe(df_to_style):
                 s = df_to_style.style.format({
                     'EDGE': '{:.1f}',
-                    'vol_score': '{:.0f}', 'mom_score': '{:.0f}', 'rr_score': '{:.0f}', 'fund_score': '{:.0f}',
                     'price': '₹{:.2f}',
                     'position_size': '{:.1%}',
                     'stop_loss': '₹{:.2f}',
                     'stop_loss_pct': '{:.1f}%',
                     'target1': '₹{:.2f}',
                     'target2': '₹{:.2f}',
-                    'volume_acceleration': '{:.1f}%',
-                    'rvol': '{:.1f}x',
-                    'top_pattern_score': '{:.0f}',
-                    'pattern_confluence_score': '{:.0f}',
-                    'vp_divergence_score': '{:.1f}'
+                    'pattern_strength': '{:.0f}' # Format pattern strength as integer
                 })
                 
                 # Conditional styling for 'tag' column
@@ -1873,9 +1887,9 @@ def render_ui():
                 if 'EDGE' in df_to_style.columns:
                     s = s.background_gradient(cmap='Greens', subset=['EDGE'], vmin=50, vmax=100)
                 
-                # Gradient for volume_acceleration (blue for higher)
-                if 'volume_acceleration' in df_to_style.columns:
-                    s = s.background_gradient(cmap='Blues', subset=['volume_acceleration'], vmin=0, vmax=100)
+                # Gradient for pattern_strength (green for higher strength)
+                if 'pattern_strength' in df_to_style.columns:
+                    s = s.background_gradient(cmap='YlGn', subset=['pattern_strength'], vmin=50, vmax=100)
 
                 return s
 
@@ -2191,54 +2205,7 @@ def render_ui():
     
     # Tab 5: Sector Heatmap
     with tabs[4]:
-        st.header("🔥 Sector Heatmap & Leaderboard")
-        
-        # Aggregate by sector for treemap and leaderboard
-        sector_agg = df_analyzed.groupby('sector').agg(
-            avg_edge=('EDGE', 'mean'),
-            total_stocks=('ticker', 'count'),
-            super_edge_count=('tag', lambda x: (x == 'SUPER_EDGE').sum())
-        ).reset_index()
-        
-        # Filter out sectors with very few stocks for meaningful averages
-        sector_agg = sector_agg[sector_agg['total_stocks'] >= MIN_STOCKS_PER_SECTOR]
-        
-        if not sector_agg.empty:
-            # Create treemap
-            fig = px.treemap(
-                sector_agg,
-                path=[px.Constant("All Sectors"), 'sector'], # Add a constant root for better hierarchy
-                values='total_stocks', # Size of box by number of stocks
-                color='avg_edge',      # Color by average EDGE score
-                hover_data={
-                    'avg_edge': ':.1f',
-                    'total_stocks': True,
-                    'super_edge_count': True
-                },
-                color_continuous_scale='RdYlGn', # Red-Yellow-Green scale
-                range_color=[0, 100], # Ensure color scale covers full range of EDGE scores
-                title="Sector EDGE Heatmap (Size by Stocks, Color by Avg EDGE Score)"
-            )
-            
-            fig.update_layout(height=500, margin=dict(t=50, l=10, r=10, b=10))
-            st.plotly_chart(fig, use_container_width=True)
-            
-            st.subheader("Top Sectors Table")
-            # Display top N sectors in a table
-            display_limit = st.slider("Show Top N Sectors in Table", 5, len(sector_metrics), min(10, len(sector_metrics)))
-            display_sectors = sector_metrics.head(display_limit)
-
-            st.dataframe(
-                display_sectors.style.format({
-                    'Avg EDGE Score': '{:.1f}',
-                    'Avg Vol Accel %': '{:.1f}%',
-                    'SUPER EDGE Count': '{:.0f}'
-                }).background_gradient(subset=['Avg EDGE Score'], cmap='RdYlGn'),
-                use_container_width=True,
-                hide_index=True
-            )
-        else:
-            st.info("Insufficient data for sector analysis. Ensure at least 3 stocks per sector.")
+        render_sector_leaderboard(df_analyzed, sector_metrics_for_ui) # Pass df_analyzed and pre-calculated sector_metrics_for_ui
     
     # Tab 6: Deep Dive (Individual Stock Analysis)
     with tabs[5]:
