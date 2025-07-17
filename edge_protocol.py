@@ -208,7 +208,6 @@ def load_and_validate_data() -> Tuple[pd.DataFrame, Dict[str, any]]:
             df['category'] = df['category'].astype(str).fillna("Unknown")
 
         # Calculate ATR after price is cleaned
-        # Changed math.sqrt(2) to np.sqrt(2) for consistency with numpy operations
         df["atr_20"] = df['price'].rolling(20, min_periods=1).std().fillna(method="bfill").fillna(0) * np.sqrt(2)
         df["rs_volume_30d"] = df["volume_30d"] * df["price"]
 
@@ -326,220 +325,438 @@ def calculate_volume_metrics(df: pd.DataFrame) -> pd.DataFrame:
 # ============================================================================
 # ENHANCED PATTERN DETECTION (TOP 3 ONLY)
 # ============================================================================
-def detect_top_patterns(row: pd.Series) -> Dict:
-    """Detect only the TOP 3 most effective patterns"""
-    patterns = []
+def detect_accumulation_under_resistance(row: pd.Series) -> dict:
+    """Pattern 1: Volume explodes but price stays flat near resistance"""
+    score = 0
+    signals = []
     
-    # Pattern 1: Accumulation Under Resistance (BEST)
-    # Ensure columns exist and are numeric before accessing
-    vol_ratio_30d_90d = row.get('vol_ratio_30d_90d', np.nan)
-    from_high_pct = row.get('from_high_pct', np.nan)
+    vol_ratio = row.get('vol_ratio_30d_90d', np.nan)
+    ret_30d = row.get('ret_30d', np.nan)
+    from_high = row.get('from_high_pct', np.nan)
     rvol = row.get('rvol', np.nan)
     
-    if pd.notna(vol_ratio_30d_90d) and pd.notna(from_high_pct) and pd.notna(rvol):
-        score = 0
-        signals = []
-        
-        # Volume explosion with price near resistance
-        if vol_ratio_30d_90d > 0.40 and -0.20 <= from_high_pct <= -0.05: # Now expecting decimal percentages
-            score = 70 + min(vol_ratio_30d_90d * 100 / 2, 20) # Scale vol_ratio back to percentage for scoring
-            signals.append(f"Volume +{vol_ratio_30d_90d*100:.0f}% near resistance")
-            
-            if rvol > 2.0:
-                score = min(score * 1.2, 100)
-                signals.append(f"RVOL {rvol:.1f}x confirms")
-        
-        if score > 50:
-            patterns.append({
-                'name': 'Accumulation Under Resistance',
-                'score': score,
-                'signals': signals
-            })
+    if pd.isna(vol_ratio) or pd.isna(ret_30d) or pd.isna(from_high) or pd.isna(rvol):
+        return {'pattern': 'Accumulation Under Resistance', 'score': 0, 'signals': [], 'target': np.nan}
+
+    # Volume explosion (vol_ratio is now decimal)
+    if vol_ratio > 0.50: # 50%
+        score += 40
+        signals.append(f"Volume +{vol_ratio*100:.0f}%")
+    elif vol_ratio > 0.30: # 30%
+        score += 25
+        signals.append(f"Volume +{vol_ratio*100:.0f}%")
     
-    # Pattern 2: Failed Breakdown Reversal
-    from_low_pct = row.get('from_low_pct', np.nan)
-    volume_acceleration = row.get('volume_acceleration', np.nan)
-    ret_7d = row.get('ret_7d', np.nan)
+    # Price flat (ret_30d is now decimal)
+    if abs(ret_30d) < 0.05: # 5%
+        score += 30
+        signals.append(f"Price flat ({ret_30d*100:.1f}%)")
     
-    if pd.notna(from_low_pct) and pd.notna(volume_acceleration) and pd.notna(ret_7d):
-        score = 0
-        signals = []
-        
-        # Near 52w low with volume acceleration
-        if from_low_pct < 0.15 and volume_acceleration > 20 and ret_7d > 0: # from_low_pct now decimal
-            score = 60 + min(volume_acceleration/2, 30)
-            signals.append(f"Reversal from low +{from_low_pct*100:.0f}%")
-            signals.append(f"Volume accelerating {volume_acceleration:.0f}%")
-            
-            # Quality check
-            ret_3y = row.get('ret_3y', np.nan)
-            if pd.notna(ret_3y) and ret_3y > 2.00: # 200% return (decimal)
-                score = min(score * 1.15, 100)
-                signals.append("Quality stock reversal")
-        
-        if score > 50:
-            patterns.append({
-                'name': 'Failed Breakdown Reversal',
-                'score': score,
-                'signals': signals
-            })
+    # Near resistance (from_high is now decimal)
+    if -0.10 <= from_high <= 0: # -10% to 0%
+        score += 30
+        signals.append("At 52w high resistance")
+    elif -0.20 <= from_high < -0.10: # -20% to -10%
+        score += 20
+        signals.append("Near resistance")
     
-    # Pattern 3: Coiled Spring
-    ret_30d = row.get('ret_30d', np.nan)
-    vol_ratio_30d_90d = row.get('vol_ratio_30d_90d', np.nan)
-    ret_7d_coiled = row.get('ret_7d', np.nan) # Using a different variable name to avoid conflict
-    
-    if pd.notna(ret_7d_coiled) and pd.notna(ret_30d) and pd.notna(vol_ratio_30d_90d):
-        score = 0
-        signals = []
-        
-        # Tight range with volume building
-        if abs(ret_7d_coiled) < 0.05 and abs(ret_30d) < 0.10 and vol_ratio_30d_90d > 0.20: # Now expecting decimal percentages
-            score = 50 + min(vol_ratio_30d_90d * 100, 40) # Scale vol_ratio back to percentage for scoring
-            signals.append(f"Tight range with vol +{vol_ratio_30d_90d*100:.0f}%")
-            
-            # Above key SMAs bonus
-            price = row.get('price', np.nan)
-            sma_200d = row.get('sma_200d', np.nan)
-            if pd.notna(price) and pd.notna(sma_200d) and price > sma_200d:
-                score += 10
-                signals.append("Above 200 SMA")
-        
-        if score > 50:
-            patterns.append({
-                'name': 'Coiled Spring',
-                'score': score,
-                'signals': signals
-            })
-    
-    # Sort by score and return top pattern
-    patterns.sort(key=lambda x: x['score'], reverse=True)
-    
-    if patterns:
-        top_pattern = patterns[0]
-        return {
-            'pattern_name': top_pattern['name'],
-            'pattern_score': top_pattern['score'],
-            'pattern_signals': ', '.join(top_pattern['signals']),
-            'pattern_count': len([p for p in patterns if p['score'] > 70])
-        }
+    # RVOL bonus
+    if rvol > 2.0:
+        score = min(score * 1.2, 100)
+        signals.append(f"RVOL: {rvol:.1f}x")
     
     return {
-        'pattern_name': '',
-        'pattern_score': 0,
-        'pattern_signals': '',
-        'pattern_count': 0
+        'pattern': 'Accumulation Under Resistance',
+        'score': score,
+        'signals': signals,
+        'target': row.get('high_52w', row.get('price', 0)) * 1.05
+    }
+
+def detect_coiled_spring(row: pd.Series) -> dict:
+    """Pattern 2: Volume up but price in tight range"""
+    score = 0
+    signals = []
+    
+    vol_ratio = row.get('vol_ratio_30d_90d', np.nan)
+    ret_7d = row.get('ret_7d', np.nan)
+    ret_30d = row.get('ret_30d', np.nan)
+    price = row.get('price', np.nan)
+    sma_50d = row.get('sma_50d', np.nan)
+    sma_200d = row.get('sma_200d', np.nan)
+    
+    if pd.isna(vol_ratio) or pd.isna(ret_7d) or pd.isna(ret_30d) or pd.isna(price) or pd.isna(sma_50d) or pd.isna(sma_200d):
+        return {'pattern': 'Coiled Spring', 'score': 0, 'signals': [], 'target': np.nan}
+
+    # Volume increase (vol_ratio is now decimal)
+    if vol_ratio > 0.30: # 30%
+        score += 35
+        signals.append(f"Volume +{vol_ratio*100:.0f}%")
+    elif vol_ratio > 0.15: # 15%
+        score += 20
+        signals.append(f"Volume +{vol_ratio*100:.0f}%")
+    
+    # Tight range (returns are now decimal)
+    if abs(ret_7d) < 0.05 and abs(ret_30d) < 0.10: # 5% and 10%
+        score += 35
+        signals.append("Tight consolidation")
+    
+    # Above SMAs
+    sma_score = 0
+    if price > sma_50d:
+        sma_score += 15
+    if price > sma_200d:
+        sma_score += 15
+    
+    score += sma_score
+    if sma_score == 30:
+        signals.append("Above key SMAs")
+    
+    return {
+        'pattern': 'Coiled Spring',
+        'score': score,
+        'signals': signals,
+        'target': price * 1.08
+    }
+
+def detect_absorption_pattern(row: pd.Series) -> dict:
+    """Pattern 3: High RVOL with price stability"""
+    score = 0
+    signals = []
+    
+    rvol = row.get('rvol', np.nan)
+    ret_7d = row.get('ret_7d', np.nan)
+    vol_1d_90d = row.get('vol_ratio_1d_90d', np.nan)
+    vol_7d_90d = row.get('vol_ratio_7d_90d', np.nan)
+    vol_30d_90d = row.get('vol_ratio_30d_90d', np.nan)
+    
+    if pd.isna(rvol) or pd.isna(ret_7d) or pd.isna(vol_1d_90d) or pd.isna(vol_7d_90d) or pd.isna(vol_30d_90d):
+        return {'pattern': 'Absorption Pattern', 'score': 0, 'signals': [], 'target': np.nan}
+
+    # High RVOL
+    if rvol > 2.5:
+        score += 50
+        signals.append(f"Extreme RVOL: {rvol:.1f}x")
+    elif rvol > 1.5:
+        score += 30
+        signals.append(f"High RVOL: {rvol:.1f}x")
+    
+    # Consistent volume (ratios are now decimal)
+    positive_ratios = sum([1 for r in [vol_1d_90d, vol_7d_90d, vol_30d_90d] if r > 0])
+    if positive_ratios == 3:
+        score += 30
+        signals.append("Sustained volume increase")
+    
+    # Price absorption (ret_7d is now decimal)
+    if abs(ret_7d) < 0.03: # 3%
+        score += 20
+        signals.append("Price absorbed")
+    
+    return {
+        'pattern': 'Absorption Pattern',
+        'score': score,
+        'signals': signals,
+        'target': row.get('price', 0) * 1.10
+    }
+
+def detect_failed_breakdown_reversal(row: pd.Series) -> dict:
+    """Pattern 4: Near 52w low but volume accelerating"""
+    score = 0
+    signals = []
+    
+    from_low = row.get('from_low_pct', np.nan)
+    vol_accel = row.get('volume_acceleration', np.nan)
+    ret_7d = row.get('ret_7d', np.nan)
+    ret_3y = row.get('ret_3y', np.nan)
+    
+    if pd.isna(from_low) or pd.isna(vol_accel) or pd.isna(ret_7d) or pd.isna(ret_3y):
+        return {'pattern': 'Failed Breakdown Reversal', 'score': 0, 'signals': [], 'target': np.nan}
+
+    # Near 52w low (from_low is now decimal)
+    if from_low < 0.10: # 10%
+        score += 40
+        signals.append(f"Near 52w low (+{from_low*100:.0f}%)")
+    elif from_low < 0.20: # 20%
+        score += 25
+        signals.append(f"Recent low (+{from_low*100:.0f}%)")
+    
+    # Volume acceleration (vol_accel is already percentage points)
+    if vol_accel > 20:
+        score += 40
+        signals.append(f"Vol accel: {vol_accel:.0f}%")
+    elif vol_accel > 10:
+        score += 25
+        signals.append(f"Vol accel: {vol_accel:.0f}%")
+    
+    # Momentum reversal (ret_7d is now decimal)
+    if ret_7d > 0:
+        score += 20
+        signals.append("Momentum positive")
+    
+    # Quality bonus (ret_3y is now decimal)
+    if ret_3y > 2.00: # 200%
+        score = min(score * 1.2, 100)
+        signals.append("Quality reversal")
+    
+    return {
+        'pattern': 'Failed Breakdown Reversal',
+        'score': score,
+        'signals': signals,
+        'target': row.get('sma_50d', row.get('price', 0) * 1.15)
+    }
+
+def detect_stealth_breakout(row: pd.Series) -> dict:
+    """Pattern 5: Quiet strength building"""
+    score = 0
+    signals = []
+    
+    price = row.get('price', np.nan)
+    sma_20d = row.get('sma_20d', np.nan)
+    sma_50d = row.get('sma_50d', np.nan)
+    sma_200d = row.get('sma_200d', np.nan)
+    vol_ratio = row.get('vol_ratio_30d_90d', np.nan)
+    ret_30d = row.get('ret_30d', np.nan)
+    
+    if pd.isna(price) or pd.isna(sma_20d) or pd.isna(sma_50d) or pd.isna(sma_200d) or pd.isna(vol_ratio) or pd.isna(ret_30d):
+        return {'pattern': 'Stealth Breakout', 'score': 0, 'signals': [], 'target': np.nan}
+
+    # Above all SMAs
+    sma_count = sum([1 for sma in [sma_20d, sma_50d, sma_200d] if price > sma])
+    if sma_count == 3:
+        score += 40
+        signals.append("Above all SMAs")
+    elif sma_count == 2:
+        score += 25
+        signals.append("Above 2 SMAs")
+    
+    # Gradual volume (vol_ratio is now decimal)
+    if 0.10 <= vol_ratio <= 0.30: # 10% to 30%
+        score += 30
+        signals.append("Gradual vol increase")
+    
+    # Steady climb (ret_30d is now decimal)
+    if 0.05 <= ret_30d <= 0.15: # 5% to 15%
+        score += 30
+        signals.append("Steady climb")
+    
+    return {
+        'pattern': 'Stealth Breakout',
+        'score': score,
+        'signals': signals,
+        'target': row.get('high_52w', price * 1.20)
+    }
+
+def detect_pre_earnings_accumulation(row: pd.Series) -> dict:
+    """Pattern 6: Unusual volume with EPS momentum"""
+    score = 0
+    signals = []
+    
+    eps_current = row.get('eps_current', np.nan)
+    eps_last = row.get('eps_last_qtr', np.nan)
+    eps_change = row.get('eps_change_pct', np.nan)
+    vol_7d_90d = row.get('vol_ratio_7d_90d', np.nan)
+    from_high = row.get('from_high_pct', np.nan)
+    
+    if pd.isna(eps_current) or pd.isna(eps_last) or pd.isna(eps_change) or pd.isna(vol_7d_90d) or pd.isna(from_high):
+        return {'pattern': 'Pre-Earnings Accumulation', 'score': 0, 'signals': [], 'target': np.nan}
+
+    # EPS momentum (eps_change is now decimal)
+    if eps_last > 0 and eps_current > 0:
+        eps_accel = safe_divide((eps_current - eps_last), eps_last)
+        if eps_accel > 0.10: # 10%
+            score += 35
+            signals.append(f"EPS accel: {eps_accel*100:.0f}%")
+    
+    # Recent volume spike (vol_7d_90d is now decimal)
+    if vol_7d_90d > 0.50: # 50%
+        score += 35
+        signals.append("Recent vol spike")
+    elif vol_7d_90d > 0.25: # 25%
+        score += 20
+        signals.append("Higher recent vol")
+    
+    # Accumulation zone (from_high is now decimal)
+    if -0.20 <= from_high <= -0.05: # -20% to -5%
+        score += 30
+        signals.append("Accumulation zone")
+    
+    # Earnings growth bonus (eps_change is now decimal)
+    if eps_change > 0.20: # 20%
+        score = min(score * 1.2, 100)
+        signals.append("Strong EPS growth")
+    
+    return {
+        'pattern': 'Pre-Earnings Accumulation',
+        'score': score,
+        'signals': signals,
+        'target': row.get('price', 0) * 1.12
+    }
+
+def detect_all_patterns(row: pd.Series) -> dict:
+    """Run all pattern detections and calculate confluence"""
+    patterns = [
+        detect_accumulation_under_resistance(row),
+        detect_coiled_spring(row),
+        detect_absorption_pattern(row),
+        detect_failed_breakdown_reversal(row),
+        detect_stealth_breakout(row),
+        detect_pre_earnings_accumulation(row)
+    ]
+    
+    # Sort by score
+    patterns.sort(key=lambda x: x['score'], reverse=True)
+    
+    # Calculate confluence
+    high_score_patterns = [p for p in patterns if p['score'] >= 70]
+    
+    confluence_score = 0
+    confluence_signals = []
+    
+    if len(high_score_patterns) >= 3:
+        confluence_score = 100
+        confluence_signals.append(f"{len(high_score_patterns)} PATTERNS ALIGNED!")
+    elif len(high_score_patterns) >= 2:
+        confluence_score = 85
+        confluence_signals.append(f"{len(high_score_patterns)} patterns converging")
+    elif len(high_score_patterns) >= 1:
+        confluence_score = 70
+        confluence_signals.append("Strong pattern detected")
+    
+    # Volume-Price Divergence
+    vol_ratio = row.get('vol_ratio_30d_90d', np.nan)
+    ret_30d = row.get('ret_30d', np.nan)
+    
+    vp_divergence = 0.0
+    if pd.notna(vol_ratio) and pd.notna(ret_30d) and abs(ret_30d) > 0.001: # Avoid division by near zero
+        vp_divergence = safe_divide(vol_ratio, abs(ret_30d)) * 2 # vol_ratio and ret_30d are decimals
+        vp_divergence = min(vp_divergence, 100)
+    
+    return {
+        'patterns': patterns,
+        'top_pattern': patterns[0] if patterns else None,
+        'confluence_score': confluence_score,
+        'confluence_signals': confluence_signals,
+        'vp_divergence': vp_divergence,
+        'high_score_patterns': high_score_patterns
     }
 
 # ============================================================================
-# EDGE SCORING ENGINE WITH STRICTER CRITERIA
+# SCORING FUNCTIONS
 # ============================================================================
-def calculate_edge_scores(df: pd.DataFrame, weights: Tuple[float, float, float]) -> pd.DataFrame:
-    """Calculate EDGE scores with enhanced criteria"""
-    df = df.copy()
+def score_vol_accel(row: pd.Series) -> float:
+    """Enhanced Volume Acceleration scoring"""
+    vol_30_90 = row.get("vol_ratio_30d_90d", np.nan)
+    vol_30_180 = row.get("vol_ratio_30d_180d", np.nan)
     
-    # Component 1: Volume Score (50% weight)
-    df['vol_score'] = 0.0
-    if 'volume_acceleration' in df.columns:
-        # Base score from acceleration (volume_acceleration is already % points)
-        df['vol_score'] = 50 + df['volume_acceleration'].clip(-50, 50)
-        
-        # RVOL multiplier
-        if 'rvol' in df.columns:
-            rvol_mult = df['rvol'].clip(0.5, 3.0)
-            df.loc[df['volume_acceleration'] > 0, 'vol_score'] *= rvol_mult / 1.5
-        
-        # Volume consistency bonus
-        if 'volume_consistency' in df.columns:
-            df['vol_score'] += df['volume_consistency'] * 20
-        
-        df['vol_score'] = df['vol_score'].clip(0, 100)
+    if pd.isna(vol_30_90) or pd.isna(vol_30_180):
+        return 50.0 # Default neutral score
     
-    # Component 2: Momentum Score (30% weight)
-    df['mom_score'] = 50.0  # Start neutral
+    delta = vol_30_90 - vol_30_180 # delta is already a decimal difference
+    base_score = 50 + (delta * 200)  # Scale to 0-100, assuming delta is small decimal
+    base_score = np.clip(base_score, 0, 100)
     
-    # Short-term momentum (ret_1d, ret_3d, ret_7d are now decimals)
-    if all(col in df.columns for col in ['ret_1d', 'ret_3d', 'ret_7d']):
-        short_momentum = (df['ret_1d'] * 0.5 + df['ret_3d'] * 0.3 + df['ret_7d'] * 0.2)
-        df['mom_score'] += short_momentum * 300 # Scale up since returns are decimals now
-        
-        # Momentum consistency bonus
-        momentum_aligned = (df['ret_1d'] > 0) & (df['ret_3d'] > 0) & (df['ret_7d'] > 0)
-        df.loc[momentum_aligned, 'mom_score'] += 10
+    # RVOL bonus
+    rvol = row.get("rvol", 1)
+    if rvol > 2.0 and delta > 0.20: # 20% acceleration
+        base_score = min(base_score * 1.5, 100)
+    elif rvol > 1.5:
+        base_score = min(base_score * 1.2, 100)
     
-    # Medium-term trend (ret_30d is now decimal)
-    if 'ret_30d' in df.columns:
-        df['mom_score'] += (df['ret_30d'] * 100).clip(-10, 10) * 1.5 # Convert to % points for clipping
+    return base_score
+
+def score_momentum(row: pd.Series, df: pd.DataFrame) -> float:
+    """Momentum scoring with consistency check"""
+    ret_1d = row.get('ret_1d', np.nan)
+    ret_3d = row.get('ret_3d', np.nan)
+    ret_7d = row.get('ret_7d', np.nan)
+    ret_30d = row.get('ret_30d', np.nan)
     
-    df['mom_score'] = df['mom_score'].clip(0, 100)
+    if pd.isna(ret_1d) or pd.isna(ret_3d) or pd.isna(ret_7d) or pd.isna(ret_30d):
+        return 50.0 # Default neutral score
+
+    # Simple momentum score (returns are now decimal)
+    short_term = (ret_1d + ret_3d + ret_7d) / 3
+    mid_term = ret_30d
     
-    # Component 3: Risk/Reward Score (20% weight)
-    df['rr_score'] = 50.0
+    momentum = (short_term * 0.6 + mid_term * 0.4)
+    base_score = 50 + (momentum * 500)  # Scale to 0-100, assuming momentum is small decimal
+    base_score = np.clip(base_score, 0, 100)
     
-    if all(col in df.columns for col in ['from_high_pct', 'from_low_pct']):
-        # Distance from high (opportunity) - check each row (from_high_pct is now decimal)
-        sweet_spot_mask = (df['from_high_pct'] >= -0.30) & (df['from_high_pct'] <= -0.10)
-        df.loc[sweet_spot_mask, 'rr_score'] += 30
-        
-        # Distance from low (risk) (from_low_pct is now decimal)
-        df['rr_score'] += (df['from_low_pct'] * 100 / 2).clip(0, 20) # Convert to % points for scaling/clipping
+    # Consistency bonus
+    if ret_1d > 0 and ret_3d > ret_1d and ret_7d > ret_3d and ret_30d > 0:
+        base_score = min(base_score * 1.3, 100)
     
-    # Quality discount (ret_3y is now decimal)
-    if 'ret_3y' in df.columns:
-        quality_stocks = df['ret_3y'] > 2.00 # 200% return (decimal)
-        df.loc[quality_stocks, 'rr_score'] *= 1.2
+    return base_score
+
+def score_risk_reward(row: pd.Series) -> float:
+    """Risk/Reward scoring"""
+    price = row.get("price", np.nan)
+    high_52w = row.get("high_52w", np.nan)
+    low_52w = row.get("low_52w", np.nan)
     
-    df['rr_score'] = df['rr_score'].clip(0, 100)
+    if pd.isna(price) or pd.isna(high_52w) or pd.isna(low_52w):
+        return 50.0 # Default neutral score
+
+    upside = safe_divide(high_52w - price, price)
+    downside = safe_divide(price - low_52w, price)
     
-    # Calculate weighted EDGE score
-    df['EDGE'] = (
-        df['vol_score'] * weights[0] +
-        df['mom_score'] * weights[1] +
-        df['rr_score'] * weights[2]
-    )
+    # Risk/Reward ratio
+    rr_ratio = safe_divide(upside, downside + 0.001) # Add small epsilon to avoid div by zero
+    base_score = min(rr_ratio * 20, 100)
     
-    # Pattern detection for top stocks only (performance optimization)
-    top_edge_stocks = df.nlargest(MAX_PATTERN_DETECTION_STOCKS, 'EDGE')
+    # Quality bonus (returns are now decimal)
+    ret_3y = row.get("ret_3y", np.nan)
+    ret_1y = row.get("ret_1y", np.nan)
+    if pd.notna(ret_3y) and pd.notna(ret_1y) and ret_3y > 3.00 and ret_1y < 0.20:  # 300% and 20%
+        base_score = min(base_score * 1.4, 100)
     
-    for idx in top_edge_stocks.index:
-        pattern_data = detect_top_patterns(df.loc[idx])
-        for key, value in pattern_data.items():
-            df.loc[idx, key] = value
+    return base_score
+
+def score_fundamentals(row: pd.Series, df: pd.DataFrame) -> float:
+    """Fundamentals scoring"""
+    scores = []
     
-    # Fill pattern columns for other stocks
-    for col in ['pattern_name', 'pattern_signals']:
-        if col not in df.columns:
-            df[col] = ''
-    for col in ['pattern_score', 'pattern_count']:
-        if col not in df.columns:
-            df[col] = 0
+    # EPS change (eps_change_pct is now decimal)
+    eps_change = row.get("eps_change_pct", np.nan)
+    if pd.notna(eps_change):
+        eps_score = 50 + (eps_change * 200)  # Scale around 50, assuming decimal eps_change
+        scores.append(np.clip(eps_score, 0, 100))
     
-    # Pattern bonus to EDGE score
-    df.loc[df['pattern_score'] > 70, 'EDGE'] *= 1.1
-    df.loc[df['pattern_count'] > 1, 'EDGE'] *= 1.05
-    df['EDGE'] = df['EDGE'].clip(0, 100)
+    # PE ratio
+    pe = row.get("pe", np.nan)
+    if pd.notna(pe) and pe > 0:
+        if pe <= 25:
+            pe_score = 100 - (pe * 2)
+        elif pe <= 50:
+            pe_score = 50 - ((pe - 25) * 1)
+        else:
+            pe_score = 25
+        scores.append(max(pe_score, 0))
     
-    return df
+    # EPS acceleration (eps_current and eps_last_qtr are raw values)
+    eps_current = row.get("eps_current", np.nan)
+    eps_last = row.get("eps_last_qtr", np.nan)
+    if pd.notna(eps_last) and pd.notna(eps_current) and eps_last > 0 and eps_current > 0:
+        eps_accel = safe_divide(eps_current - eps_last, eps_last)
+        if eps_accel > 0.10: # 10% acceleration
+            scores.append(min(eps_accel * 500, 100)) # Scale to 100
+    
+    return np.mean(scores) if scores else 50.0
 
 def detect_super_edge_strict(row: pd.Series, sector_ranks: Dict[str, int]) -> bool:
     """STRICTER SUPER EDGE detection (5 out of 6 conditions)"""
     conditions_met = 0
     
     # 1. High RVOL
-    rvol = row.get('rvol', 0)
+    rvol = row.get('rvol', np.nan)
     if pd.notna(rvol) and rvol > 2.0:
         conditions_met += 1
     
     # 2. Strong volume acceleration (already in percentage points)
-    vol_accel = row.get('volume_acceleration', 0)
+    vol_accel = row.get('volume_acceleration', np.nan)
     if pd.notna(vol_accel) and vol_accel > 30:
         conditions_met += 1
     
-    # 3. EPS acceleration (eps_current and eps_last_qtr are now raw values, eps_change_pct is decimal)
-    eps_current = row.get('eps_current', 0)
-    eps_last = row.get('eps_last_qtr', 0)
-    eps_change_pct = row.get('eps_change_pct', 0)
-
+    # 3. EPS acceleration (eps_change_pct is decimal)
+    eps_change_pct = row.get('eps_change_pct', np.nan)
     if pd.notna(eps_change_pct) and eps_change_pct > 0.15: # 15% growth (decimal)
         conditions_met += 1
     
@@ -549,9 +766,9 @@ def detect_super_edge_strict(row: pd.Series, sector_ranks: Dict[str, int]) -> bo
         conditions_met += 1
     
     # 5. Momentum alignment (ret_1d, ret_7d, ret_30d are now decimals)
-    ret_1d = row.get('ret_1d', 0)
-    ret_7d = row.get('ret_7d', 0)
-    ret_30d = row.get('ret_30d', 0)
+    ret_1d = row.get('ret_1d', np.nan)
+    ret_7d = row.get('ret_7d', np.nan)
+    ret_30d = row.get('ret_30d', np.nan)
     if (pd.notna(ret_1d) and pd.notna(ret_7d) and pd.notna(ret_30d) and
         ret_1d > 0 and ret_7d > ret_1d and ret_30d > 0):
         conditions_met += 1
@@ -569,6 +786,14 @@ def detect_super_edge_strict(row: pd.Series, sector_ranks: Dict[str, int]) -> bo
 def calculate_dynamic_stops(df: pd.DataFrame) -> pd.DataFrame:
     """Calculate intelligent stop losses based on volatility and support"""
     df = df.copy()
+    
+    # Ensure price is numeric before calculations
+    df['price'] = pd.to_numeric(df['price'], errors='coerce').fillna(1.0)
+
+    # Initialize columns to avoid KeyError if no data or conditions met
+    df['stop_loss'] = np.nan
+    df['stop_loss_pct'] = np.nan
+    df['risk_adjustment'] = 1.0
     
     for idx in df.index:
         row = df.loc[idx]
@@ -597,7 +822,7 @@ def calculate_dynamic_stops(df: pd.DataFrame) -> pd.DataFrame:
             support_levels.append(row['low_52w'] * 1.05)
         
         # Recent swing low approximation (ret_30d is now decimal)
-        ret_30d_val = row.get('ret_30d', 0)
+        ret_30d_val = row.get('ret_30d', np.nan)
         if pd.notna(ret_30d_val) and ret_30d_val < 0:
             recent_low = price * (1 + ret_30d_val * 1.2) # ret_30d_val is already decimal
             support_levels.append(recent_low * 0.98)
@@ -614,10 +839,13 @@ def calculate_dynamic_stops(df: pd.DataFrame) -> pd.DataFrame:
             df.loc[idx, 'stop_loss'] = atr_stop
         
         # Calculate stop percentage
-        df.loc[idx, 'stop_loss_pct'] = ((df.loc[idx, 'stop_loss'] - price) / price) * 100
+        if price != 0: # Avoid division by zero
+            df.loc[idx, 'stop_loss_pct'] = ((df.loc[idx, 'stop_loss'] - price) / price) * 100
+        else:
+            df.loc[idx, 'stop_loss_pct'] = np.nan
         
         # Risk-based position sizing adjustment
-        stop_distance = abs(df.loc[idx, 'stop_loss_pct'])
+        stop_distance = abs(df.loc[idx, 'stop_loss_pct']) if pd.notna(df.loc[idx, 'stop_loss_pct']) else 100 # Default to high risk if NaN
         if stop_distance > 10:
             df.loc[idx, 'risk_adjustment'] = 0.7  # Reduce position size
         elif stop_distance > 7:
@@ -756,12 +984,118 @@ def run_edge_analysis(df: pd.DataFrame, weights: Tuple[float, float, float]) -> 
         'WATCH' if x == 'MODERATE' else
         'IGNORE'
     )
+
+    # Add pattern analysis columns (initialized to default values)
+    df['pattern_analysis'] = None
+    df['top_pattern_name'] = ""
+    df['top_pattern_score'] = 0.0
+    df['pattern_confluence_score'] = 0.0
+    df['vp_divergence_score'] = 0.0
+    df['quality_consolidation'] = False
+    df['momentum_aligned'] = False
+    df['eps_qoq_acceleration'] = 0.0
+
+    # Run pattern detection for high potential stocks
+    high_potential = df[df['EDGE'] >= 30].copy()
+    for idx in high_potential.index:
+        pattern_data = detect_all_patterns(df.loc[idx])
+        df.at[idx, 'pattern_analysis'] = pattern_data
+        df.at[idx, 'top_pattern_name'] = pattern_data['top_pattern']['pattern'] if pattern_data['top_pattern'] else ""
+        df.at[idx, 'top_pattern_score'] = float(pattern_data['top_pattern']['score']) if pattern_data['top_pattern'] else 0.0
+        df.at[idx, 'pattern_confluence_score'] = float(pattern_data['confluence_score'])
+        df.at[idx, 'vp_divergence_score'] = float(pattern_data['vp_divergence'])
     
+    # Calculate additional indicators
+    df['eps_qoq_acceleration'] = np.where(
+        (df['eps_last_qtr'] > 0) & (df['eps_current'].notna()) & (df['eps_last_qtr'].notna()),
+        ((df['eps_current'] - df['eps_last_qtr']) / df['eps_last_qtr']) * 100,
+        0.0
+    )
+    
+    df['quality_consolidation'] = (
+        (df.get('ret_3y', 0) > 3.00) & # 300% (decimal)
+        (df.get('ret_1y', 0) < 0.20) & # 20% (decimal)
+        (df.get('from_high_pct', 0) >= -0.40) & # -40% (decimal)
+        (df.get('from_high_pct', 0) <= -0.15) # -15% (decimal)
+    )
+    
+    df['momentum_aligned'] = (
+        (df.get('ret_1d', 0) > 0) & 
+        (df.get('ret_3d', 0) > df.get('ret_1d', 0)) & 
+        (df.get('ret_7d', 0) > df.get('ret_3d', 0)) & 
+        (df.get('ret_30d', 0) > 0)
+    )
+
     return df
 
 # ============================================================================
 # UI COMPONENTS
 # ============================================================================
+def get_eps_tier(eps: float) -> str:
+    """Categorize EPS into tiers (assuming eps is decimal)"""
+    if pd.isna(eps):
+        return ""
+    
+    if eps >= 0.95: return "95↑"
+    elif eps >= 0.75: return "75↑"
+    elif eps >= 0.55: return "55↑"
+    elif eps >= 0.35: return "35↑"
+    elif eps >= 0.15: return "15↑"
+    elif eps >= 0.05: return "5↑"
+    else: return "5↓"
+
+def get_price_tier(price: float) -> str:
+    """Categorize price into tiers"""
+    if pd.isna(price):
+        return ""
+    
+    if price >= 5000: return "5K↑"
+    elif price >= 2000: return "2K↑"
+    elif price >= 1000: return "1K↑"
+    elif price >= 500: return "500↑"
+    elif price >= 200: return "200↑"
+    elif price >= 100: return "100↑"
+    else: return "100↓"
+
+def plot_stock_radar_chart(df_row: pd.Series):
+    """Create radar chart for stock EDGE components"""
+    categories = ['Volume Accel', 'Momentum', 'Risk/Reward', 'Fundamentals']
+    scores = [
+        df_row.get('vol_score', 0),
+        df_row.get('mom_score', 0),
+        df_row.get('rr_score', 0),
+        df_row.get('fund_score', 0)
+    ]
+    scores = [0 if pd.isna(s) else s for s in scores]
+    
+    line_color = 'gold' if df_row.get('tag') == 'SUPER_EDGE' else 'darkblue'
+    
+    fig = go.Figure(data=go.Scatterpolar(
+        r=scores,
+        theta=categories,
+        fill='toself',
+        name=df_row.get('company_name', 'Stock'),
+        line_color=line_color,
+        line_width=3
+    ))
+    
+    title = f"EDGE Components - {df_row.get('company_name', '')} ({df_row.get('ticker', '')})"
+    if df_row.get('tag') == 'SUPER_EDGE':
+        title += " ⭐ SUPER EDGE ⭐"
+    
+    fig.update_layout(
+        polar=dict(
+            radialaxis=dict(
+                visible=True,
+                range=[0, 100]
+            )),
+        showlegend=False,
+        title=title,
+        font_size=16
+    )
+    
+    return fig
+
 def render_sidebar_diagnostics(diagnostics: Dict):
     """Render system health in sidebar"""
     with st.sidebar.expander("📊 System Health", expanded=False):
@@ -1091,7 +1425,7 @@ def render_ui():
             avg_edge = df_signals['EDGE'].mean() if 'EDGE' in df_signals.columns and len(df_signals) > 0 else 0
             st.metric("Avg EDGE", f"{avg_edge:.1f}")
         with col5:
-            patterns = (df_signals['pattern_score'] > 70).sum() if 'pattern_score' in df_signals.columns else 0
+            patterns = (df_signals['top_pattern_score'] > 70).sum() if 'top_pattern_score' in df_signals.columns else 0
             st.metric("Strong Patterns", patterns)
         
         # Filters
@@ -1138,7 +1472,7 @@ def render_ui():
             display_cols = [
                 'ticker', 'company_name', 'sector', 'tag', 'EDGE', 'decision',
                 'price', 'position_size', 'stop_loss', 'stop_loss_pct',
-                'target_1', 'target_2', 'volume_pattern', 'pattern_name'
+                'target_1', 'target_2', 'volume_pattern', 'top_pattern_name' # Changed pattern_name to top_pattern_name
             ]
             display_cols = [col for col in display_cols if col in display_df.columns]
             
@@ -1259,8 +1593,8 @@ def render_ui():
                         st.write(f"**Volume:** {row.get('volume_pattern', 'N/A')}")
                         st.write(f"**Vol Accel:** {row.get('volume_acceleration', 0):.1f}%")
                         st.write(f"**RVOL:** {row.get('rvol', 0):.1f}x")
-                        if row.get('pattern_name'):
-                            st.write(f"**Pattern:** {row['pattern_name']}")
+                        if row.get('top_pattern_name'): # Changed to top_pattern_name
+                            st.write(f"**Pattern:** {row['top_pattern_name']}") # Changed to top_pattern_name
                     
                     # Why SUPER EDGE?
                     st.write("**Why SUPER EDGE?**")
@@ -1366,14 +1700,14 @@ def render_ui():
                 st.info("EDGE score data not available")
         
         # Pattern Analysis
-        if 'pattern_name' in df_analyzed.columns:
+        if 'top_pattern_name' in df_analyzed.columns: # Changed to top_pattern_name
             st.subheader("🎯 Pattern Detection Summary")
             
             # Filter out empty pattern names
-            pattern_data = df_analyzed[df_analyzed['pattern_name'].notna() & (df_analyzed['pattern_name'] != '')]
+            pattern_data = df_analyzed[df_analyzed['top_pattern_name'].notna() & (df_analyzed['top_pattern_name'] != '')] # Changed to top_pattern_name
             
             if len(pattern_data) > 0:
-                pattern_summary = pattern_data['pattern_name'].value_counts()
+                pattern_summary = pattern_data['top_pattern_name'].value_counts() # Changed to top_pattern_name
                 
                 col1, col2 = st.columns([2, 1])
                 
@@ -1395,8 +1729,8 @@ def render_ui():
                 
                 with col2:
                     st.write("**Pattern Strength:**")
-                    if 'pattern_score' in df_analyzed.columns:
-                        strong_patterns = df_analyzed[df_analyzed['pattern_score'] > 80]
+                    if 'top_pattern_score' in df_analyzed.columns: # Changed to top_pattern_score
+                        strong_patterns = df_analyzed[df_analyzed['top_pattern_score'] > 80] # Changed to top_pattern_score
                         st.metric("Score > 80", len(strong_patterns))
                     else:
                         st.metric("Score > 80", 0)
