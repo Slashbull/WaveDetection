@@ -1,18 +1,3 @@
-You've provided excellent diagnostic output\! This immediately highlights the issue.
-
-The error message: `"Fatal error during data loading: name 'math' is not defined"` tells us exactly what's wrong.
-
-Looking at the traceback (implicitly, from the error message), this error is likely occurring within the `calc_atr20` function, which uses `math.sqrt()`.
-
-The reason `math` is "not defined" is because, in your latest script (the one I modified for you), `math` was *not imported*. It was in your *old* script, but I removed redundant imports that were already present in the new version, overlooking `math`.
-
-**The Fix:**
-
-We need to add `import math` to the top of the script, alongside your other imports.
-
-**Updated Code (Focusing on the import):**
-
-```python
 #!/usr/bin/env python3
 """
 EDGE Protocol - Elite Data-Driven Growth Engine
@@ -1919,4 +1904,3 @@ def render_ui():
 # ============================================================================
 if __name__ == "__main__":
     render_ui()
-```
