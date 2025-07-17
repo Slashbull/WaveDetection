@@ -1,77 +1,107 @@
+"""
+EDGE Protocol - Ultimate Trading Intelligence System
+===================================================
+Production-ready implementation with all critical fixes:
+- Correct volume acceleration calculation
+- Portfolio risk management
+- Dynamic stop losses
+- Performance optimization
+- Robust error handling
+"""
+
 import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import io
 import requests
-import math
 import warnings
-import re
-from functools import lru_cache
-from scipy import stats
-from typing import Dict, List, Tuple, Optional
+from datetime import datetime, timedelta
+from typing import Dict, List, Tuple, Optional, Union
 import time
 
 warnings.filterwarnings("ignore")
 
 # ============================================================================
-# CONFIGURATION
+# CONFIGURATION & CONSTANTS
 # ============================================================================
 SHEET_ID = "1Wa4-4K7hyTTCrqJ0pUzS-NaLFiRQpBgI8KBdHx9obKk"
 GID_WATCHLIST = "2026492216"
 SHEET_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid={GID_WATCHLIST}"
 
-PAGE_TITLE = "EDGE Protocol – Ultimate Trading Intelligence"
+# Portfolio Risk Management
+MAX_PORTFOLIO_EXPOSURE = 0.80  # 80% max exposure
+MAX_POSITIONS = 10             # Maximum concurrent positions
+MAX_SECTOR_EXPOSURE = 0.30     # 30% max in one sector
+MAX_SUPER_EDGE_POSITIONS = 3   # Max 3 SUPER EDGE at once
 
-PROFILE_PRESETS = {
-    "Balanced": (0.40, 0.25, 0.20, 0.15),
-    "Swing": (0.50, 0.30, 0.20, 0.00),
-    "Positional": (0.40, 0.25, 0.25, 0.10),
-    "Momentum‑only": (0.60, 0.30, 0.10, 0.00),
-    "Breakout": (0.45, 0.40, 0.15, 0.00),
-    "Long‑Term": (0.25, 0.25, 0.15, 0.35),
+# Position Sizing (will be dynamically adjusted)
+BASE_POSITION_SIZES = {
+    "SUPER_EDGE": 0.15,
+    "EXPLOSIVE": 0.10,
+    "STRONG": 0.05,
+    "MODERATE": 0.02,
+    "WATCH": 0.00
 }
 
+# EDGE Thresholds
 EDGE_THRESHOLDS = {
-    "SUPER_EDGE": 90,
+    "SUPER_EDGE": 92,  # Raised from 90
     "EXPLOSIVE": 85,
     "STRONG": 70,
     "MODERATE": 50,
     "WATCH": 0
 }
 
-MIN_STOCKS_PER_SECTOR = 4
+# Performance Settings
+MAX_PATTERN_DETECTION_STOCKS = 100  # Limit pattern detection for performance
+CACHE_TTL = 300  # 5 minutes
 
 # ============================================================================
 # UTILITY FUNCTIONS
 # ============================================================================
-def safe_divide(a, b, default=0):
-    """Safe division with default value for zero denominator"""
-    return a / b if b != 0 else default
-
-def winsorise_series(s: pd.Series, lower_q: float = 0.01, upper_q: float = 0.99) -> pd.Series:
-    """Winsorises a pandas Series to cap outliers"""
-    if s.empty or not pd.api.types.is_numeric_dtype(s):
-        return s
-    lo, hi = s.quantile([lower_q, upper_q])
-    return s.clip(lo, hi)
-
-def calc_atr20(price: pd.Series) -> pd.Series:
-    """Calculate ATR proxy"""
-    rolling_std = price.rolling(20, min_periods=1).std()
-    return rolling_std.fillna(rolling_std.mean()) * math.sqrt(2)
-
-# ============================================================================
-# DATA LOADING
-# ============================================================================
-@st.cache_data(ttl=300)
-def load_sheet() -> pd.DataFrame:
-    """Load and clean data from Google Sheets"""
+def safe_divide(a: float, b: float, default: float = 0) -> float:
+    """Safe division with proper type handling"""
     try:
-        resp = requests.get(SHEET_URL, timeout=30)
-        resp.raise_for_status()
-        df = pd.read_csv(io.BytesIO(resp.content))
+        if pd.isna(a) or pd.isna(b) or b == 0:
+            return default
+        return float(a) / float(b)
+    except:
+        return default
+
+def calculate_atr(prices: pd.Series, period: int = 20) -> float:
+    """Calculate Average True Range for dynamic stops"""
+    if len(prices) < period:
+        return prices.std() * 2.0 if len(prices) > 0 else 0.0
+    
+    # Simple ATR calculation using price volatility
+    high_low_pct = prices.pct_change().abs()
+    atr = high_low_pct.rolling(window=period, min_periods=1).mean() * prices.iloc[-1]
+    return atr.iloc[-1] if not pd.isna(atr.iloc[-1]) else prices.std() * 2.0
+
+# ============================================================================
+# DATA LOADING WITH VALIDATION
+# ============================================================================
+@st.cache_data(ttl=CACHE_TTL)
+def load_and_validate_data() -> Tuple[pd.DataFrame, Dict[str, any]]:
+    """Load data with comprehensive validation and diagnostics"""
+    diagnostics = {
+        "timestamp": datetime.now(),
+        "rows_loaded": 0,
+        "data_quality_score": 0,
+        "critical_columns_missing": [],
+        "warnings": [],
+        "data_age_hours": 0
+    }
+    
+    try:
+        # Load data
+        response = requests.get(SHEET_URL, timeout=30)
+        response.raise_for_status()
+        df = pd.read_csv(io.BytesIO(response.content))
+        diagnostics["rows_loaded"] = len(df)
         
         # Standardize column names
         df.columns = (df.columns.str.strip()
@@ -79,71 +109,97 @@ def load_sheet() -> pd.DataFrame:
                      .str.replace("%", "pct")
                      .str.replace(" ", "_"))
         
-        # Define numeric columns
-        numeric_cols = [
-            'market_cap', 'volume_1d', 'volume_7d', 'volume_30d', 'volume_90d', 'volume_180d',
-            'vol_ratio_1d_90d', 'vol_ratio_7d_90d', 'vol_ratio_30d_90d',
-            'vol_ratio_1d_180d', 'vol_ratio_7d_180d', 'vol_ratio_30d_180d', 'vol_ratio_90d_180d',
-            'price', 'ret_1d', 'low_52w', 'high_52w', 'from_low_pct', 'from_high_pct',
-            'sma_20d', 'sma_50d', 'sma_200d', 'ret_3d', 'ret_7d', 'ret_30d', 'ret_3m',
-            'ret_6m', 'ret_1y', 'ret_3y', 'ret_5y', 'rvol', 'prev_close', 'pe',
-            'eps_current', 'eps_last_qtr', 'eps_change_pct', 'year'
+        # Critical columns check
+        critical_cols = [
+            'ticker', 'price', 'volume_1d', 
+            'vol_ratio_7d_90d', 'vol_ratio_30d_90d', 'vol_ratio_30d_180d'
         ]
         
-        # Clean and convert numeric columns
+        missing_critical = [col for col in critical_cols if col not in df.columns]
+        diagnostics["critical_columns_missing"] = missing_critical
+        
+        if missing_critical:
+            diagnostics["warnings"].append(f"Missing critical columns: {missing_critical}")
+        
+        # Clean numeric columns
+        numeric_cols = [
+            'price', 'volume_1d', 'volume_7d', 'volume_30d', 'volume_90d', 'volume_180d',
+            'vol_ratio_1d_90d', 'vol_ratio_7d_90d', 'vol_ratio_30d_90d',
+            'vol_ratio_1d_180d', 'vol_ratio_7d_180d', 'vol_ratio_30d_180d',
+            'ret_1d', 'ret_3d', 'ret_7d', 'ret_30d', 'ret_3m', 'ret_6m', 'ret_1y', 'ret_3y',
+            'low_52w', 'high_52w', 'from_low_pct', 'from_high_pct',
+            'sma_20d', 'sma_50d', 'sma_200d', 'rvol', 'pe',
+            'eps_current', 'eps_last_qtr', 'eps_change_pct'
+        ]
+        
         for col in numeric_cols:
             if col in df.columns:
-                if col == 'market_cap':
-                    df[col] = df[col].astype(str).apply(parse_market_cap)
-                else:
-                    df[col] = pd.to_numeric(
-                        df[col].astype(str).str.replace(r"[₹,$€£%,]", "", regex=True)
-                        .replace(["nan", "", "-"], np.nan),
-                        errors="coerce"
-                    )
+                # Clean and convert
+                df[col] = pd.to_numeric(
+                    df[col].astype(str)
+                    .str.replace(r"[₹,$€£%,]", "", regex=True)
+                    .str.replace("cr", "", regex=False)
+                    .str.replace("Cr", "", regex=False)
+                    .replace(["", "-", "nan", "NaN", "NA"], np.nan),
+                    errors='coerce'
+                )
         
-        # Fill critical columns
-        df['price'] = df['price'].fillna(df.get('prev_close', 1)).fillna(1)
-        df['volume_1d'] = df.get('volume_1d', pd.Series(0)).fillna(0).astype(int)
-        df['rvol'] = df.get('rvol', pd.Series(1)).fillna(1)
+        # Handle negative volume ratios (they're valid - showing decrease)
+        # Just ensure they're numeric
+        for col in df.columns:
+            if 'vol_ratio' in col and col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
         
-        # Ensure string columns
-        for col in ['ticker', 'company_name', 'sector', 'category']:
+        # Market cap special handling
+        if 'market_cap' in df.columns:
+            df['market_cap_num'] = df['market_cap'].apply(parse_market_cap)
+        
+        # Data quality score
+        quality_checks = []
+        for col in ['price', 'volume_1d', 'ticker']:
             if col in df.columns:
-                df[col] = df[col].astype(str).fillna("Unknown")
+                non_null_pct = df[col].notna().sum() / len(df) * 100
+                quality_checks.append(non_null_pct)
         
-        # Calculate derived columns
-        df["atr_20"] = calc_atr20(df["price"])
-        df["rs_volume_30d"] = df.get("volume_30d", 0) * df["price"]
+        diagnostics["data_quality_score"] = np.mean(quality_checks) if quality_checks else 0
         
-        # Calculate volume acceleration
-        df = calculate_volume_acceleration(df)
+        # Check data freshness (simplified - would need timestamp column)
+        diagnostics["data_age_hours"] = 0  # Assume fresh for now
         
-        return df
+        # Remove invalid rows
+        if 'price' in df.columns:
+            initial_len = len(df)
+            df = df[df['price'] > 0]
+            if len(df) < initial_len:
+                diagnostics["warnings"].append(f"Removed {initial_len - len(df)} rows with invalid prices")
+        
+        return df, diagnostics
         
     except Exception as e:
-        st.error(f"Error loading data: {str(e)}")
-        return pd.DataFrame()
+        diagnostics["warnings"].append(f"Data load error: {str(e)}")
+        return pd.DataFrame(), diagnostics
 
-def parse_market_cap(val):
-    """Parse market cap values with units"""
-    if pd.isna(val) or not isinstance(val, str):
+def parse_market_cap(val: Union[str, float]) -> float:
+    """Parse market cap with Indian notation"""
+    if pd.isna(val):
         return np.nan
     
-    val_str = re.sub(r"[₹,$€£%,]", "", val.strip())
+    val_str = str(val).strip()
     
+    # Remove currency symbols
+    val_str = val_str.replace("₹", "").replace(",", "").strip()
+    
+    # Handle Indian notation
     multipliers = {
-        'Cr': 1e7, 'cr': 1e7,
-        'L': 1e5, 'l': 1e5,
-        'K': 1e3, 'k': 1e3,
-        'M': 1e6, 'm': 1e6,
-        'B': 1e9, 'b': 1e9
+        'cr': 1e7, 'Cr': 1e7, 'crore': 1e7,
+        'l': 1e5, 'L': 1e5, 'lakh': 1e5, 'lac': 1e5
     }
     
-    for suffix, mult in multipliers.items():
+    for suffix, multiplier in multipliers.items():
         if suffix in val_str:
             try:
-                return float(val_str.replace(suffix, '').strip()) * mult
+                number = float(val_str.replace(suffix, '').strip())
+                return number * multiplier
             except:
                 return np.nan
     
@@ -153,1307 +209,1041 @@ def parse_market_cap(val):
         return np.nan
 
 # ============================================================================
-# VOLUME ACCELERATION
+# FIXED VOLUME ACCELERATION CALCULATION
 # ============================================================================
-def calculate_volume_acceleration(df: pd.DataFrame) -> pd.DataFrame:
-    """Calculate volume acceleration metrics"""
+def calculate_volume_metrics(df: pd.DataFrame) -> pd.DataFrame:
+    """Calculate CORRECT volume acceleration and metrics"""
     df = df.copy()
     
-    # Get volume ratio columns
-    vol_30_90 = df.get('vol_ratio_30d_90d', pd.Series(0, index=df.index))
-    vol_30_180 = df.get('vol_ratio_30d_180d', pd.Series(0, index=df.index))
+    # Create vol_ratio_7d_30d if not exists (needed for true acceleration)
+    if 'vol_ratio_7d_30d' not in df.columns:
+        if all(col in df.columns for col in ['volume_7d', 'volume_30d']):
+            # Calculate 7d vs 30d ratio
+            df['vol_ratio_7d_30d'] = (
+                (df['volume_7d'] - df['volume_30d']) / df['volume_30d'] * 100
+            ).fillna(0)
     
-    # Convert to percentage if values are in decimal format
-    if pd.api.types.is_numeric_dtype(vol_30_90):
-        if vol_30_90.abs().max() <= 10:  # Likely in decimal format
-            vol_30_90 = vol_30_90 * 100
-    if pd.api.types.is_numeric_dtype(vol_30_180):
-        if vol_30_180.abs().max() <= 10:  # Likely in decimal format  
-            vol_30_180 = vol_30_180 * 100
+    # CORRECT Volume Acceleration: Recent vs Past momentum
+    if all(col in df.columns for col in ['vol_ratio_7d_90d', 'vol_ratio_30d_90d']):
+        # True acceleration: Is 7-day volume growing faster than 30-day?
+        df['volume_acceleration'] = df['vol_ratio_7d_90d'] - df['vol_ratio_30d_90d']
+        
+        # Alternative calculation if we have more granular data
+        if 'vol_ratio_7d_30d' in df.columns:
+            # Even better: Compare very recent to recent
+            df['volume_acceleration_v2'] = df['vol_ratio_7d_30d'] - df['vol_ratio_30d_90d']
+            # Use the more sensitive metric
+            df['volume_acceleration'] = df[['volume_acceleration', 'volume_acceleration_v2']].max(axis=1)
+    else:
+        # Fallback
+        df['volume_acceleration'] = 0
     
-    # Calculate acceleration
-    df['volume_acceleration'] = vol_30_90 - vol_30_180
+    # Volume consistency score (all timeframes positive)
+    vol_cols = ['vol_ratio_1d_90d', 'vol_ratio_7d_90d', 'vol_ratio_30d_90d']
+    available_vol_cols = [col for col in vol_cols if col in df.columns]
     
-    # Classification
+    if available_vol_cols:
+        df['volume_consistency'] = (df[available_vol_cols] > 0).sum(axis=1) / len(available_vol_cols)
+    else:
+        df['volume_consistency'] = 0
+    
+    # Volume intensity (RVOL * volume acceleration)
+    if 'rvol' in df.columns:
+        df['volume_intensity'] = df['rvol'] * np.maximum(df['volume_acceleration'], 0) / 100
+    else:
+        df['volume_intensity'] = 0
+    
+    # Classification with better thresholds
     conditions = [
-        df['volume_acceleration'] > 30,
-        df['volume_acceleration'] > 20,
+        (df['volume_acceleration'] > 50) & (df['rvol'] > 2.0),
+        df['volume_acceleration'] > 40,
+        df['volume_acceleration'] > 25,
         df['volume_acceleration'] > 10,
         df['volume_acceleration'] > 0,
-        df['volume_acceleration'] > -10,
-        df['volume_acceleration'] <= -10
+        df['volume_acceleration'] > -20
     ]
     
     choices = [
-        "Institutional Loading",
-        "Heavy Accumulation", 
-        "Accumulation",
-        "Mild Accumulation",
-        "Distribution",
-        "Exodus"
+        "🔥 Explosive Accumulation",
+        "🏦 Institutional Loading",
+        "📈 Heavy Accumulation",
+        "📊 Accumulation",
+        "➕ Mild Accumulation",
+        "➖ Distribution"
     ]
     
-    df['volume_classification'] = np.select(conditions, choices, default="Neutral")
+    df['volume_pattern'] = np.select(conditions, choices, default="💀 Heavy Distribution")
     
     return df
 
 # ============================================================================
-# PATTERN DETECTION
+# ENHANCED PATTERN DETECTION (TOP 3 ONLY)
 # ============================================================================
-def detect_accumulation_under_resistance(row: pd.Series) -> dict:
-    """Pattern 1: Volume explodes but price stays flat near resistance"""
-    score = 0
-    signals = []
+def detect_top_patterns(row: pd.Series) -> Dict:
+    """Detect only the TOP 3 most effective patterns"""
+    patterns = []
     
-    vol_ratio = row.get('vol_ratio_30d_90d', 0)
-    ret_30d = row.get('ret_30d', 0)
-    from_high = row.get('from_high_pct', -100)
-    rvol = row.get('rvol', 1)
+    # Pattern 1: Accumulation Under Resistance (BEST)
+    if all(row.get(col, 0) is not np.nan for col in ['vol_ratio_30d_90d', 'from_high_pct', 'rvol']):
+        score = 0
+        signals = []
+        
+        vol_ratio = row['vol_ratio_30d_90d']
+        from_high = row['from_high_pct']
+        rvol = row['rvol']
+        
+        # Volume explosion with price near resistance
+        if vol_ratio > 40 and -20 <= from_high <= -5:
+            score = 70 + min(vol_ratio/2, 20)
+            signals.append(f"Volume +{vol_ratio:.0f}% near resistance")
+            
+            if rvol > 2.0:
+                score = min(score * 1.2, 100)
+                signals.append(f"RVOL {rvol:.1f}x confirms")
+        
+        if score > 50:
+            patterns.append({
+                'name': 'Accumulation Under Resistance',
+                'score': score,
+                'signals': signals
+            })
     
-    # Volume explosion
-    if vol_ratio > 50:
-        score += 40
-        signals.append(f"Volume +{vol_ratio:.0f}%")
-    elif vol_ratio > 30:
-        score += 25
-        signals.append(f"Volume +{vol_ratio:.0f}%")
+    # Pattern 2: Failed Breakdown Reversal
+    if all(row.get(col, 0) is not np.nan for col in ['from_low_pct', 'volume_acceleration', 'ret_7d']):
+        score = 0
+        signals = []
+        
+        from_low = row['from_low_pct']
+        vol_accel = row['volume_acceleration']
+        ret_7d = row['ret_7d']
+        
+        # Near 52w low with volume acceleration
+        if from_low < 15 and vol_accel > 20 and ret_7d > 0:
+            score = 60 + min(vol_accel/2, 30)
+            signals.append(f"Reversal from low +{from_low:.0f}%")
+            signals.append(f"Volume accelerating {vol_accel:.0f}%")
+            
+            # Quality check
+            if row.get('ret_3y', 0) > 200:
+                score = min(score * 1.15, 100)
+                signals.append("Quality stock reversal")
+        
+        if score > 50:
+            patterns.append({
+                'name': 'Failed Breakdown Reversal',
+                'score': score,
+                'signals': signals
+            })
     
-    # Price flat
-    if abs(ret_30d) < 5:
-        score += 30
-        signals.append(f"Price flat ({ret_30d:.1f}%)")
+    # Pattern 3: Coiled Spring
+    if all(row.get(col, 0) is not np.nan for col in ['ret_7d', 'ret_30d', 'vol_ratio_30d_90d']):
+        score = 0
+        signals = []
+        
+        ret_7d = row['ret_7d']
+        ret_30d = row['ret_30d']
+        vol_ratio = row['vol_ratio_30d_90d']
+        
+        # Tight range with volume building
+        if abs(ret_7d) < 5 and abs(ret_30d) < 10 and vol_ratio > 20:
+            score = 50 + min(vol_ratio, 40)
+            signals.append(f"Tight range with vol +{vol_ratio:.0f}%")
+            
+            # Above key SMAs bonus
+            if row.get('price', 0) > row.get('sma_200d', row.get('price', 1)):
+                score += 10
+                signals.append("Above 200 SMA")
+        
+        if score > 50:
+            patterns.append({
+                'name': 'Coiled Spring',
+                'score': score,
+                'signals': signals
+            })
     
-    # Near resistance
-    if -10 <= from_high <= 0:
-        score += 30
-        signals.append("At 52w high resistance")
-    elif -20 <= from_high < -10:
-        score += 20
-        signals.append("Near resistance")
-    
-    # RVOL bonus
-    if rvol > 2.0:
-        score = min(score * 1.2, 100)
-        signals.append(f"RVOL: {rvol:.1f}x")
-    
-    return {
-        'pattern': 'Accumulation Under Resistance',
-        'score': score,
-        'signals': signals,
-        'target': row.get('high_52w', row.get('price', 0)) * 1.05
-    }
-
-def detect_coiled_spring(row: pd.Series) -> dict:
-    """Pattern 2: Volume up but price in tight range"""
-    score = 0
-    signals = []
-    
-    vol_ratio = row.get('vol_ratio_30d_90d', 0)
-    ret_7d = row.get('ret_7d', 0)
-    ret_30d = row.get('ret_30d', 0)
-    price = row.get('price', 1)
-    sma_50d = row.get('sma_50d', price)
-    sma_200d = row.get('sma_200d', price)
-    
-    # Volume increase
-    if vol_ratio > 30:
-        score += 35
-        signals.append(f"Volume +{vol_ratio:.0f}%")
-    elif vol_ratio > 15:
-        score += 20
-        signals.append(f"Volume +{vol_ratio:.0f}%")
-    
-    # Tight range
-    if abs(ret_7d) < 5 and abs(ret_30d) < 10:
-        score += 35
-        signals.append("Tight consolidation")
-    
-    # Above SMAs
-    sma_score = 0
-    if price > sma_50d:
-        sma_score += 15
-    if price > sma_200d:
-        sma_score += 15
-    
-    score += sma_score
-    if sma_score == 30:
-        signals.append("Above key SMAs")
-    
-    return {
-        'pattern': 'Coiled Spring',
-        'score': score,
-        'signals': signals,
-        'target': price * 1.08
-    }
-
-def detect_absorption_pattern(row: pd.Series) -> dict:
-    """Pattern 3: High RVOL with price stability"""
-    score = 0
-    signals = []
-    
-    rvol = row.get('rvol', 1)
-    ret_7d = row.get('ret_7d', 0)
-    vol_1d_90d = row.get('vol_ratio_1d_90d', 0)
-    vol_7d_90d = row.get('vol_ratio_7d_90d', 0)
-    vol_30d_90d = row.get('vol_ratio_30d_90d', 0)
-    
-    # High RVOL
-    if rvol > 2.5:
-        score += 50
-        signals.append(f"Extreme RVOL: {rvol:.1f}x")
-    elif rvol > 1.5:
-        score += 30
-        signals.append(f"High RVOL: {rvol:.1f}x")
-    
-    # Consistent volume
-    positive_ratios = sum([1 for r in [vol_1d_90d, vol_7d_90d, vol_30d_90d] if r > 0])
-    if positive_ratios == 3:
-        score += 30
-        signals.append("Sustained volume increase")
-    
-    # Price absorption
-    if abs(ret_7d) < 3:
-        score += 20
-        signals.append("Price absorbed")
-    
-    return {
-        'pattern': 'Absorption Pattern',
-        'score': score,
-        'signals': signals,
-        'target': row.get('price', 0) * 1.10
-    }
-
-def detect_failed_breakdown_reversal(row: pd.Series) -> dict:
-    """Pattern 4: Near 52w low but volume accelerating"""
-    score = 0
-    signals = []
-    
-    from_low = row.get('from_low_pct', 100)
-    vol_accel = row.get('volume_acceleration', 0)
-    ret_7d = row.get('ret_7d', 0)
-    ret_3y = row.get('ret_3y', 0)
-    
-    # Near 52w low
-    if from_low < 10:
-        score += 40
-        signals.append(f"Near 52w low (+{from_low:.0f}%)")
-    elif from_low < 20:
-        score += 25
-        signals.append(f"Recent low (+{from_low:.0f}%)")
-    
-    # Volume acceleration
-    if vol_accel > 20:
-        score += 40
-        signals.append(f"Vol accel: {vol_accel:.0f}%")
-    elif vol_accel > 10:
-        score += 25
-        signals.append(f"Vol accel: {vol_accel:.0f}%")
-    
-    # Momentum reversal
-    if ret_7d > 0:
-        score += 20
-        signals.append("Momentum positive")
-    
-    # Quality bonus
-    if ret_3y > 200:
-        score = min(score * 1.2, 100)
-        signals.append("Quality reversal")
-    
-    return {
-        'pattern': 'Failed Breakdown Reversal',
-        'score': score,
-        'signals': signals,
-        'target': row.get('sma_50d', row.get('price', 0) * 1.15)
-    }
-
-def detect_stealth_breakout(row: pd.Series) -> dict:
-    """Pattern 5: Quiet strength building"""
-    score = 0
-    signals = []
-    
-    price = row.get('price', 1)
-    sma_20d = row.get('sma_20d', price)
-    sma_50d = row.get('sma_50d', price)
-    sma_200d = row.get('sma_200d', price)
-    vol_ratio = row.get('vol_ratio_30d_90d', 0)
-    ret_30d = row.get('ret_30d', 0)
-    
-    # Above all SMAs
-    sma_count = sum([1 for sma in [sma_20d, sma_50d, sma_200d] if price > sma])
-    if sma_count == 3:
-        score += 40
-        signals.append("Above all SMAs")
-    elif sma_count == 2:
-        score += 25
-        signals.append("Above 2 SMAs")
-    
-    # Gradual volume
-    if 10 <= vol_ratio <= 30:
-        score += 30
-        signals.append("Gradual vol increase")
-    
-    # Steady climb
-    if 5 <= ret_30d <= 15:
-        score += 30
-        signals.append("Steady climb")
-    
-    return {
-        'pattern': 'Stealth Breakout',
-        'score': score,
-        'signals': signals,
-        'target': row.get('high_52w', price * 1.20)
-    }
-
-def detect_pre_earnings_accumulation(row: pd.Series) -> dict:
-    """Pattern 6: Unusual volume with EPS momentum"""
-    score = 0
-    signals = []
-    
-    eps_current = row.get('eps_current', 0)
-    eps_last = row.get('eps_last_qtr', 0)
-    eps_change = row.get('eps_change_pct', 0)
-    vol_7d_90d = row.get('vol_ratio_7d_90d', 0)
-    from_high = row.get('from_high_pct', 0)
-    
-    # EPS momentum
-    if eps_last > 0 and eps_current > 0:
-        eps_accel = safe_divide((eps_current - eps_last), eps_last) * 100
-        if eps_accel > 10:
-            score += 35
-            signals.append(f"EPS accel: {eps_accel:.0f}%")
-    
-    # Recent volume spike
-    if vol_7d_90d > 50:
-        score += 35
-        signals.append("Recent vol spike")
-    elif vol_7d_90d > 25:
-        score += 20
-        signals.append("Higher recent vol")
-    
-    # Accumulation zone
-    if -20 <= from_high <= -5:
-        score += 30
-        signals.append("Accumulation zone")
-    
-    # Earnings growth bonus
-    if eps_change > 20:
-        score = min(score * 1.2, 100)
-        signals.append("Strong EPS growth")
-    
-    return {
-        'pattern': 'Pre-Earnings Accumulation',
-        'score': score,
-        'signals': signals,
-        'target': row.get('price', 0) * 1.12
-    }
-
-def detect_all_patterns(row: pd.Series) -> dict:
-    """Run all pattern detections"""
-    patterns = [
-        detect_accumulation_under_resistance(row),
-        detect_coiled_spring(row),
-        detect_absorption_pattern(row),
-        detect_failed_breakdown_reversal(row),
-        detect_stealth_breakout(row),
-        detect_pre_earnings_accumulation(row)
-    ]
-    
-    # Sort by score
+    # Sort by score and return top pattern
     patterns.sort(key=lambda x: x['score'], reverse=True)
     
-    # Calculate confluence
-    high_score_patterns = [p for p in patterns if p['score'] >= 70]
-    
-    confluence_score = 0
-    confluence_signals = []
-    
-    if len(high_score_patterns) >= 3:
-        confluence_score = 100
-        confluence_signals.append(f"{len(high_score_patterns)} PATTERNS ALIGNED!")
-    elif len(high_score_patterns) >= 2:
-        confluence_score = 85
-        confluence_signals.append(f"{len(high_score_patterns)} patterns converging")
-    elif len(high_score_patterns) >= 1:
-        confluence_score = 70
-        confluence_signals.append("Strong pattern detected")
-    
-    # Volume-Price Divergence
-    vol_ratio = row.get('vol_ratio_30d_90d', 0)
-    ret_30d = row.get('ret_30d', 0)
-    vp_divergence = safe_divide(vol_ratio, abs(ret_30d) + 0.01) * 2
-    vp_divergence = min(vp_divergence, 100)
+    if patterns:
+        top_pattern = patterns[0]
+        return {
+            'pattern_name': top_pattern['name'],
+            'pattern_score': top_pattern['score'],
+            'pattern_signals': ', '.join(top_pattern['signals']),
+            'pattern_count': len([p for p in patterns if p['score'] > 70])
+        }
     
     return {
-        'patterns': patterns,
-        'top_pattern': patterns[0] if patterns else None,
-        'confluence_score': confluence_score,
-        'confluence_signals': confluence_signals,
-        'vp_divergence': vp_divergence,
-        'high_score_patterns': high_score_patterns
+        'pattern_name': '',
+        'pattern_score': 0,
+        'pattern_signals': '',
+        'pattern_count': 0
     }
 
 # ============================================================================
-# SCORING FUNCTIONS
+# EDGE SCORING ENGINE WITH STRICTER CRITERIA
 # ============================================================================
-def score_vol_accel(row: pd.Series) -> float:
-    """Enhanced Volume Acceleration scoring"""
-    vol_30_90 = row.get("vol_ratio_30d_90d", 0)
-    vol_30_180 = row.get("vol_ratio_30d_180d", 0)
+def calculate_edge_scores(df: pd.DataFrame, weights: Tuple[float, float, float]) -> pd.DataFrame:
+    """Calculate EDGE scores with enhanced criteria"""
+    df = df.copy()
     
-    if pd.isna(vol_30_90) or pd.isna(vol_30_180):
-        return 50  # Default neutral score
+    # Component 1: Volume Score (50% weight)
+    df['vol_score'] = 0
+    if 'volume_acceleration' in df.columns:
+        # Base score from acceleration
+        df['vol_score'] = 50 + df['volume_acceleration'].clip(-50, 50)
+        
+        # RVOL multiplier
+        if 'rvol' in df.columns:
+            rvol_mult = df['rvol'].clip(0.5, 3.0)
+            df.loc[df['volume_acceleration'] > 0, 'vol_score'] *= rvol_mult / 1.5
+        
+        # Volume consistency bonus
+        if 'volume_consistency' in df.columns:
+            df['vol_score'] += df['volume_consistency'] * 20
+        
+        df['vol_score'] = df['vol_score'].clip(0, 100)
     
-    delta = vol_30_90 - vol_30_180
-    base_score = 50 + (delta * 2)  # More sensitive scaling
-    base_score = np.clip(base_score, 0, 100)
+    # Component 2: Momentum Score (30% weight)
+    df['mom_score'] = 50  # Start neutral
     
-    # RVOL bonus
-    rvol = row.get("rvol", 1)
-    if rvol > 2.0 and delta > 20:
-        base_score = min(base_score * 1.5, 100)
-    elif rvol > 1.5:
-        base_score = min(base_score * 1.2, 100)
+    # Short-term momentum
+    if all(col in df.columns for col in ['ret_1d', 'ret_3d', 'ret_7d']):
+        short_momentum = (df['ret_1d'] * 0.5 + df['ret_3d'] * 0.3 + df['ret_7d'] * 0.2)
+        df['mom_score'] += short_momentum * 3
+        
+        # Momentum consistency bonus
+        if all(df[col] > 0 for col in ['ret_1d', 'ret_3d', 'ret_7d']):
+            df['mom_score'] += 10
     
-    return base_score
+    # Medium-term trend
+    if 'ret_30d' in df.columns:
+        df['mom_score'] += df['ret_30d'].clip(-10, 10) * 1.5
+    
+    df['mom_score'] = df['mom_score'].clip(0, 100)
+    
+    # Component 3: Risk/Reward Score (20% weight)
+    df['rr_score'] = 50
+    
+    if all(col in df.columns for col in ['from_high_pct', 'from_low_pct']):
+        # Distance from high (opportunity)
+        if -30 <= df['from_high_pct'].values[0] <= -10:  # Sweet spot
+            df['rr_score'] += 30
+        
+        # Distance from low (risk)
+        df['rr_score'] += (df['from_low_pct'] / 2).clip(0, 20)
+    
+    # Quality discount
+    if 'ret_3y' in df.columns:
+        quality_stocks = df['ret_3y'] > 200
+        df.loc[quality_stocks, 'rr_score'] *= 1.2
+    
+    df['rr_score'] = df['rr_score'].clip(0, 100)
+    
+    # Calculate weighted EDGE score
+    df['EDGE'] = (
+        df['vol_score'] * weights[0] +
+        df['mom_score'] * weights[1] +
+        df['rr_score'] * weights[2]
+    )
+    
+    # Pattern detection for top stocks only (performance optimization)
+    top_edge_stocks = df.nlargest(MAX_PATTERN_DETECTION_STOCKS, 'EDGE')
+    
+    for idx in top_edge_stocks.index:
+        pattern_data = detect_top_patterns(df.loc[idx])
+        for key, value in pattern_data.items():
+            df.loc[idx, key] = value
+    
+    # Fill pattern columns for other stocks
+    for col in ['pattern_name', 'pattern_signals']:
+        if col not in df.columns:
+            df[col] = ''
+    for col in ['pattern_score', 'pattern_count']:
+        if col not in df.columns:
+            df[col] = 0
+    
+    # Pattern bonus to EDGE score
+    df.loc[df['pattern_score'] > 70, 'EDGE'] *= 1.1
+    df.loc[df['pattern_count'] > 1, 'EDGE'] *= 1.05
+    df['EDGE'] = df['EDGE'].clip(0, 100)
+    
+    return df
 
-def score_momentum(row: pd.Series, df: pd.DataFrame) -> float:
-    """Momentum scoring with consistency check"""
-    ret_1d = row.get('ret_1d', 0)
-    ret_3d = row.get('ret_3d', 0)
-    ret_7d = row.get('ret_7d', 0)
-    ret_30d = row.get('ret_30d', 0)
-    
-    # Simple momentum score
-    short_term = (ret_1d + ret_3d + ret_7d) / 3
-    mid_term = ret_30d
-    
-    momentum = (short_term * 0.6 + mid_term * 0.4)
-    base_score = 50 + (momentum * 5)  # Scale to 0-100
-    base_score = np.clip(base_score, 0, 100)
-    
-    # Consistency bonus
-    if ret_1d > 0 and ret_3d > ret_1d and ret_7d > ret_3d and ret_30d > 0:
-        base_score = min(base_score * 1.3, 100)
-    
-    return base_score
-
-def score_risk_reward(row: pd.Series) -> float:
-    """Risk/Reward scoring"""
-    price = row.get("price", 1)
-    high_52w = row.get("high_52w", price)
-    low_52w = row.get("low_52w", price)
-    
-    upside = safe_divide(high_52w - price, price) * 100
-    downside = safe_divide(price - low_52w, price) * 100
-    
-    # Risk/Reward ratio
-    rr_ratio = safe_divide(upside, downside + 1)
-    base_score = min(rr_ratio * 20, 100)
-    
-    # Quality bonus
-    ret_3y = row.get("ret_3y", 0)
-    ret_1y = row.get("ret_1y", 0)
-    if ret_3y > 300 and ret_1y < 20:  # Quality stock on sale
-        base_score = min(base_score * 1.4, 100)
-    
-    return base_score
-
-def score_fundamentals(row: pd.Series, df: pd.DataFrame) -> float:
-    """Fundamentals scoring"""
-    scores = []
-    
-    # EPS change
-    eps_change = row.get("eps_change_pct", 0)
-    if not pd.isna(eps_change):
-        eps_score = 50 + (eps_change * 2)  # Scale around 50
-        scores.append(np.clip(eps_score, 0, 100))
-    
-    # PE ratio
-    pe = row.get("pe", 0)
-    if not pd.isna(pe) and pe > 0:
-        if pe <= 25:
-            pe_score = 100 - (pe * 2)
-        elif pe <= 50:
-            pe_score = 50 - ((pe - 25) * 1)
-        else:
-            pe_score = 25
-        scores.append(max(pe_score, 0))
-    
-    # EPS acceleration
-    eps_current = row.get("eps_current", 0)
-    eps_last = row.get("eps_last_qtr", 0)
-    if eps_last > 0 and eps_current > 0:
-        eps_accel = safe_divide(eps_current - eps_last, eps_last) * 100
-        if eps_accel > 10:
-            scores.append(min(eps_accel * 5, 100))
-    
-    return np.mean(scores) if scores else 50
-
-def detect_super_edge(row: pd.Series) -> bool:
-    """Detect SUPER EDGE conditions"""
+def detect_super_edge_strict(row: pd.Series, sector_ranks: Dict[str, int]) -> bool:
+    """STRICTER SUPER EDGE detection (5 out of 6 conditions)"""
     conditions_met = 0
     
-    # Check each condition
-    if row.get("rvol", 1) > 2.0:
+    # 1. High RVOL
+    if row.get('rvol', 0) > 2.0:
         conditions_met += 1
     
-    if row.get("volume_acceleration", 0) > 30:
+    # 2. Strong volume acceleration
+    if row.get('volume_acceleration', 0) > 30:
         conditions_met += 1
     
-    eps_current = row.get("eps_current", 0)
-    eps_last = row.get("eps_last_qtr", 0)
-    if eps_last > 0 and eps_current > 0:
-        if safe_divide(eps_current - eps_last, eps_last) > 0.10:
+    # 3. EPS acceleration
+    if row.get('eps_current', 0) > 0 and row.get('eps_last_qtr', 0) > 0:
+        eps_growth = (row['eps_current'] - row['eps_last_qtr']) / row['eps_last_qtr']
+        if eps_growth > 0.15:  # 15% QoQ growth
             conditions_met += 1
     
-    from_high = row.get("from_high_pct", 0)
-    if -30 <= from_high <= -15:
+    # 4. Sweet spot zone
+    if -30 <= row.get('from_high_pct', -100) <= -10:
         conditions_met += 1
     
-    # Momentum alignment
+    # 5. Momentum alignment
     if (row.get('ret_1d', 0) > 0 and 
-        row.get('ret_3d', 0) > row.get('ret_1d', 0) and
-        row.get('ret_7d', 0) > row.get('ret_3d', 0) and 
+        row.get('ret_7d', 0) > row.get('ret_1d', 0) and
         row.get('ret_30d', 0) > 0):
         conditions_met += 1
     
-    return conditions_met >= 4
+    # 6. Sector strength (NEW)
+    if row.get('sector') in sector_ranks and sector_ranks[row['sector']] <= 3:
+        conditions_met += 1
+    
+    return conditions_met >= 5  # Raised from 4
 
 # ============================================================================
-# MAIN SCORING ENGINE
+# DYNAMIC STOP LOSS CALCULATION
 # ============================================================================
-def compute_scores(df: pd.DataFrame, weights: Tuple[float, float, float, float]) -> pd.DataFrame:
-    """Complete scoring with pattern detection"""
+def calculate_dynamic_stops(df: pd.DataFrame) -> pd.DataFrame:
+    """Calculate intelligent stop losses based on volatility and support"""
     df = df.copy()
     
-    # Calculate individual scores
-    with st.spinner("Calculating component scores..."):
-        df["vol_score"] = df.apply(score_vol_accel, axis=1)
-        df["mom_score"] = df.apply(score_momentum, axis=1, df=df)
-        df["rr_score"] = df.apply(score_risk_reward, axis=1)
-        df["fund_score"] = df.apply(score_fundamentals, axis=1, df=df)
-    
-    # Calculate EDGE score
-    block_cols = ["vol_score", "mom_score", "rr_score", "fund_score"]
-    
-    # Weighted average with adaptive weighting
-    df["EDGE"] = 0
     for idx in df.index:
-        scores = df.loc[idx, block_cols]
-        valid_mask = ~scores.isna()
+        row = df.loc[idx]
+        price = row.get('price', 100)
         
-        if valid_mask.sum() == 0:
-            continue
+        # Method 1: ATR-based stop (if we have price history)
+        atr_stop = price * 0.93  # Default 7%
+        
+        # Adjust for volatility category
+        if 'category' in df.columns:
+            if 'small' in str(row.get('category', '')).lower():
+                atr_stop = price * 0.90  # 10% for small caps
+            elif 'mid' in str(row.get('category', '')).lower():
+                atr_stop = price * 0.92  # 8% for mid caps
+        
+        # Method 2: Support-based stop
+        support_levels = []
+        
+        if row.get('sma_50d', 0) > 0:
+            support_levels.append(row['sma_50d'] * 0.98)
+        
+        if row.get('sma_200d', 0) > 0:
+            support_levels.append(row['sma_200d'] * 0.97)
+        
+        if row.get('low_52w', 0) > 0:
+            support_levels.append(row['low_52w'] * 1.05)
+        
+        # Recent swing low approximation
+        if row.get('ret_30d', 0) < 0:
+            recent_low = price * (1 + row['ret_30d']/100 * 1.2)
+            support_levels.append(recent_low * 0.98)
+        
+        # Choose the most appropriate stop
+        if support_levels:
+            support_stop = max(support_levels)
+            # Don't let stop be too close
+            support_stop = min(support_stop, price * 0.95)
             
-        valid_weights = np.array(weights)[valid_mask]
-        valid_scores = scores[valid_mask]
+            # Final stop is maximum of ATR and support methods
+            df.loc[idx, 'stop_loss'] = max(atr_stop, support_stop)
+        else:
+            df.loc[idx, 'stop_loss'] = atr_stop
         
-        # Normalize weights
-        norm_weights = valid_weights / valid_weights.sum()
-        df.loc[idx, "EDGE"] = (valid_scores * norm_weights).sum()
-    
-    # Detect SUPER EDGE
-    df["is_super_edge"] = df.apply(detect_super_edge, axis=1)
-    
-    # Boost SUPER EDGE scores
-    super_edge_mask = df["is_super_edge"]
-    df.loc[super_edge_mask, "EDGE"] = df.loc[super_edge_mask, "EDGE"] * 1.1
-    df["EDGE"] = df["EDGE"].clip(0, 100)
-    
-    # Classification
-    conditions = [
-        df["is_super_edge"] & (df["EDGE"] >= EDGE_THRESHOLDS["SUPER_EDGE"]),
-        df["EDGE"] >= EDGE_THRESHOLDS["EXPLOSIVE"],
-        df["EDGE"] >= EDGE_THRESHOLDS["STRONG"],
-        df["EDGE"] >= EDGE_THRESHOLDS["MODERATE"],
-    ]
-    choices = ["SUPER_EDGE", "EXPLOSIVE", "STRONG", "MODERATE"]
-    df["tag"] = np.select(conditions, choices, default="WATCH")
-    
-    # Position sizing
-    position_map = {
-        "SUPER_EDGE": 0.15,
-        "EXPLOSIVE": 0.10,
-        "STRONG": 0.05,
-        "MODERATE": 0.02,
-        "WATCH": 0.00
-    }
-    df['position_size_pct'] = df['tag'].map(position_map)
-    
-    # Calculate stops and targets
-    df['dynamic_stop'] = df['price'] * 0.95
-    df['target1'] = df['price'] * 1.05
-    df['target2'] = df['price'] * 1.10
-    
-    # Adjust for SUPER EDGE
-    super_mask = df["tag"] == "SUPER_EDGE"
-    df.loc[super_mask, 'target1'] = df.loc[super_mask, 'price'] * 1.10
-    df.loc[super_mask, 'target2'] = df.loc[super_mask, 'price'] * 1.20
-    
-    # Pattern detection - ONLY for high potential stocks
-    with st.spinner("Detecting explosive patterns..."):
-        # Initialize pattern columns first
-        df['pattern_analysis'] = None
-        df['top_pattern_name'] = ""
-        df['top_pattern_score'] = 0.0
-        df['pattern_confluence_score'] = 0.0
-        df['vp_divergence_score'] = 0.0
+        # Calculate stop percentage
+        df.loc[idx, 'stop_loss_pct'] = ((df.loc[idx, 'stop_loss'] - price) / price) * 100
         
-        high_potential = df[df['EDGE'] >= 30].copy()
-        
-        # Store pattern data using .at for complex objects
-        for idx, row in high_potential.iterrows():
-            pattern_data = detect_all_patterns(row)
-            
-            # Use .at for storing dictionary objects
-            df.at[idx, 'pattern_analysis'] = pattern_data
-            df.at[idx, 'top_pattern_name'] = pattern_data['top_pattern']['pattern'] if pattern_data['top_pattern'] else ""
-            df.at[idx, 'top_pattern_score'] = float(pattern_data['top_pattern']['score']) if pattern_data['top_pattern'] else 0.0
-            df.at[idx, 'pattern_confluence_score'] = float(pattern_data['confluence_score'])
-            df.at[idx, 'vp_divergence_score'] = float(pattern_data['vp_divergence'])
-    
-    # Additional indicators
-    df['eps_qoq_acceleration'] = 0
-    mask = df['eps_last_qtr'] > 0
-    df.loc[mask, 'eps_qoq_acceleration'] = (
-        (df.loc[mask, 'eps_current'] - df.loc[mask, 'eps_last_qtr']) / 
-        df.loc[mask, 'eps_last_qtr'] * 100
-    )
-    
-    df['quality_consolidation'] = (
-        (df.get('ret_3y', 0) > 300) & 
-        (df.get('ret_1y', 0) < 20) & 
-        (df.get('from_high_pct', 0) >= -40) & 
-        (df.get('from_high_pct', 0) <= -15)
-    )
-    
-    df['momentum_aligned'] = (
-        (df.get('ret_1d', 0) > 0) & 
-        (df.get('ret_3d', 0) > df.get('ret_1d', 0)) & 
-        (df.get('ret_7d', 0) > df.get('ret_3d', 0)) & 
-        (df.get('ret_30d', 0) > 0)
-    )
-    
-    # Tier classifications
-    df['eps_tier'] = df['eps_current'].apply(get_eps_tier)
-    df['price_tier'] = df['price'].apply(get_price_tier)
+        # Risk-based position sizing adjustment
+        stop_distance = abs(df.loc[idx, 'stop_loss_pct'])
+        if stop_distance > 10:
+            df.loc[idx, 'risk_adjustment'] = 0.7  # Reduce position size
+        elif stop_distance > 7:
+            df.loc[idx, 'risk_adjustment'] = 0.85
+        else:
+            df.loc[idx, 'risk_adjustment'] = 1.0
     
     return df
 
 # ============================================================================
-# HELPER FUNCTIONS
+# PORTFOLIO RISK MANAGEMENT
 # ============================================================================
-def get_eps_tier(eps: float) -> str:
-    """Categorize EPS into tiers"""
-    if pd.isna(eps):
-        return ""
+def apply_portfolio_constraints(df: pd.DataFrame) -> pd.DataFrame:
+    """Apply portfolio-level risk constraints"""
+    df = df.copy()
     
-    tiers = [
-        (0.95, "95↑"),
-        (0.75, "75↑"),
-        (0.55, "55↑"),
-        (0.35, "35↑"),
-        (0.15, "15↑"),
-        (0.05, "5↑"),
-        (-float('inf'), "5↓")
-    ]
+    # Sort by EDGE score
+    df = df.sort_values('EDGE', ascending=False)
     
-    for threshold, label in tiers:
-        if eps >= threshold:
-            return label
-    return ""
+    # Track allocations
+    total_allocation = 0
+    sector_allocations = {}
+    position_count = 0
+    super_edge_count = 0
+    
+    for idx in df.index:
+        row = df.loc[idx]
+        base_size = BASE_POSITION_SIZES.get(row.get('tag', 'WATCH'), 0)
+        
+        if base_size > 0:
+            # Apply risk adjustment from stop loss calculation
+            adjusted_size = base_size * row.get('risk_adjustment', 1.0)
+            
+            # Check constraints
+            if position_count >= MAX_POSITIONS:
+                adjusted_size = 0  # No more positions
+            
+            elif total_allocation + adjusted_size > MAX_PORTFOLIO_EXPOSURE:
+                # Partial position to fill remaining
+                adjusted_size = max(0, MAX_PORTFOLIO_EXPOSURE - total_allocation)
+            
+            # Sector concentration check
+            sector = row.get('sector', 'Unknown')
+            current_sector_allocation = sector_allocations.get(sector, 0)
+            
+            if current_sector_allocation + adjusted_size > MAX_SECTOR_EXPOSURE:
+                adjusted_size = max(0, MAX_SECTOR_EXPOSURE - current_sector_allocation)
+            
+            # SUPER EDGE limit
+            if row.get('tag') == 'SUPER_EDGE':
+                if super_edge_count >= MAX_SUPER_EDGE_POSITIONS:
+                    adjusted_size = min(adjusted_size, 0.05)  # Downgrade to small position
+                else:
+                    super_edge_count += 1
+            
+            # Update tracking
+            if adjusted_size > 0:
+                total_allocation += adjusted_size
+                sector_allocations[sector] = current_sector_allocation + adjusted_size
+                position_count += 1
+            
+            df.loc[idx, 'position_size'] = adjusted_size
+            df.loc[idx, 'portfolio_weight'] = adjusted_size
+        else:
+            df.loc[idx, 'position_size'] = 0
+            df.loc[idx, 'portfolio_weight'] = 0
+    
+    # Add portfolio metadata
+    df['total_portfolio_allocation'] = total_allocation
+    
+    return df
 
-def get_price_tier(price: float) -> str:
-    """Categorize price into tiers"""
-    if pd.isna(price):
-        return ""
-    
-    tiers = [
-        (5000, "5K↑"),
-        (2000, "2K↑"),
-        (1000, "1K↑"),
-        (500, "500↑"),
-        (200, "200↑"),
-        (100, "100↑"),
-        (0, "100↓")
-    ]
-    
-    for threshold, label in tiers:
-        if price >= threshold:
-            return label
-    return ""
-
 # ============================================================================
-# VISUALIZATION FUNCTIONS
+# MAIN SCORING PIPELINE
 # ============================================================================
-def plot_stock_radar_chart(df_row: pd.Series):
-    """Create radar chart for stock EDGE components"""
-    categories = ['Volume Accel', 'Momentum', 'Risk/Reward', 'Fundamentals']
-    scores = [
-        df_row.get('vol_score', 0),
-        df_row.get('mom_score', 0),
-        df_row.get('rr_score', 0),
-        df_row.get('fund_score', 0)
+def run_edge_analysis(df: pd.DataFrame, weights: Tuple[float, float, float]) -> pd.DataFrame:
+    """Complete EDGE analysis pipeline"""
+    # Calculate volume metrics
+    df = calculate_volume_metrics(df)
+    
+    # Calculate sector rankings for SUPER EDGE detection
+    sector_ranks = {}
+    if 'sector' in df.columns:
+        # Simple sector ranking by average volume acceleration
+        sector_scores = df.groupby('sector')['volume_acceleration'].mean().sort_values(ascending=False)
+        for i, sector in enumerate(sector_scores.index):
+            sector_ranks[sector] = i + 1
+    
+    # Calculate EDGE scores
+    df = calculate_edge_scores(df, weights)
+    
+    # Classify stocks
+    conditions = [
+        df['EDGE'] >= EDGE_THRESHOLDS['EXPLOSIVE'],
+        df['EDGE'] >= EDGE_THRESHOLDS['STRONG'],
+        df['EDGE'] >= EDGE_THRESHOLDS['MODERATE']
     ]
-    scores = [0 if pd.isna(s) else s for s in scores]
+    choices = ['EXPLOSIVE', 'STRONG', 'MODERATE']
+    df['tag'] = np.select(conditions, choices, default='WATCH')
     
-    line_color = 'gold' if df_row.get('tag') == 'SUPER_EDGE' else 'darkblue'
+    # Detect SUPER EDGE with stricter criteria
+    for idx in df[df['EDGE'] >= EDGE_THRESHOLDS['SUPER_EDGE']].index:
+        if detect_super_edge_strict(df.loc[idx], sector_ranks):
+            df.loc[idx, 'tag'] = 'SUPER_EDGE'
+            df.loc[idx, 'EDGE'] = min(df.loc[idx, 'EDGE'] * 1.1, 100)  # Boost score
     
-    fig = go.Figure(data=go.Scatterpolar(
-        r=scores,
-        theta=categories,
-        fill='toself',
-        name=df_row.get('company_name', 'Stock'),
-        line_color=line_color,
-        line_width=3
-    ))
+    # Calculate dynamic stops
+    df = calculate_dynamic_stops(df)
     
-    title = f"EDGE Components - {df_row.get('company_name', '')} ({df_row.get('ticker', '')})"
-    if df_row.get('tag') == 'SUPER_EDGE':
-        title += " ⭐ SUPER EDGE ⭐"
+    # Apply portfolio constraints
+    df = apply_portfolio_constraints(df)
     
-    fig.update_layout(
-        polar=dict(
-            radialaxis=dict(
-                visible=True,
-                range=[0, 100]
-            )),
-        showlegend=False,
-        title=title,
-        font_size=16
+    # Calculate targets
+    df['target_1'] = df['price'] * 1.07  # Conservative
+    df['target_2'] = df['price'] * 1.15  # Aggressive
+    
+    # Adjust targets for SUPER EDGE
+    super_mask = df['tag'] == 'SUPER_EDGE'
+    df.loc[super_mask, 'target_1'] = df.loc[super_mask, 'price'] * 1.12
+    df.loc[super_mask, 'target_2'] = df.loc[super_mask, 'price'] * 1.25
+    
+    # Add decision column
+    df['decision'] = df['tag'].apply(lambda x: 
+        'BUY NOW' if x == 'SUPER_EDGE' else
+        'BUY' if x == 'EXPLOSIVE' else
+        'ACCUMULATE' if x == 'STRONG' else
+        'WATCH' if x == 'MODERATE' else
+        'IGNORE'
     )
     
-    return fig
+    return df
 
 # ============================================================================
-# MAIN UI
+# UI COMPONENTS
+# ============================================================================
+def render_sidebar_diagnostics(diagnostics: Dict):
+    """Render system health in sidebar"""
+    with st.sidebar.expander("📊 System Health", expanded=False):
+        # Data quality score with color
+        quality_score = diagnostics.get('data_quality_score', 0)
+        if quality_score > 90:
+            st.success(f"Data Quality: {quality_score:.0f}%")
+        elif quality_score > 70:
+            st.warning(f"Data Quality: {quality_score:.0f}%")
+        else:
+            st.error(f"Data Quality: {quality_score:.0f}%")
+        
+        # Timestamp
+        st.write(f"**Last Update:** {diagnostics.get('timestamp', 'Unknown').strftime('%H:%M:%S')}")
+        
+        # Data stats
+        st.write(f"**Rows Loaded:** {diagnostics.get('rows_loaded', 0):,}")
+        
+        # Warnings
+        warnings = diagnostics.get('warnings', [])
+        if warnings:
+            st.write("**⚠️ Warnings:**")
+            for warning in warnings[:3]:  # Show max 3
+                st.write(f"• {warning}")
+        
+        # Critical columns
+        missing = diagnostics.get('critical_columns_missing', [])
+        if missing:
+            st.error(f"Missing columns: {', '.join(missing)}")
+        
+        # Download diagnostic report
+        diag_data = pd.DataFrame([diagnostics])
+        csv = diag_data.to_csv(index=False)
+        st.download_button(
+            "📥 Diagnostic Report",
+            csv,
+            "diagnostics.csv",
+            "text/csv",
+            key="diag_download"
+        )
+
+def render_sector_leaderboard(df: pd.DataFrame):
+    """Render sector leaderboard instead of heatmap"""
+    st.header("🏆 Sector EDGE Leaderboard")
+    
+    # Calculate sector metrics
+    sector_metrics = df.groupby('sector').agg({
+        'EDGE': 'mean',
+        'ticker': 'count',
+        'volume_acceleration': 'mean',
+        'tag': lambda x: (x == 'SUPER_EDGE').sum()
+    }).round(1)
+    
+    sector_metrics.columns = ['Avg EDGE', 'Total Stocks', 'Avg Vol Accel', 'Super Edge']
+    sector_metrics = sector_metrics.sort_values('Avg EDGE', ascending=False)
+    
+    # Display top 10 sectors
+    for idx, (sector, row) in enumerate(sector_metrics.head(10).iterrows()):
+        medal = "🥇" if idx == 0 else "🥈" if idx == 1 else "🥉" if idx == 2 else f"{idx+1}."
+        
+        col1, col2, col3, col4 = st.columns([1, 3, 2, 2])
+        with col1:
+            st.write(f"**{medal}**")
+        with col2:
+            st.write(f"**{sector}**")
+        with col3:
+            st.write(f"EDGE: {row['Avg EDGE']:.1f} | Stocks: {row['Total Stocks']}")
+        with col4:
+            if row['Super Edge'] > 0:
+                st.write(f"⭐ Super: {int(row['Super Edge'])}")
+            else:
+                st.write("")
+        
+        # Mini bar chart for EDGE distribution
+        sector_stocks = df[df['sector'] == sector]['EDGE']
+        if len(sector_stocks) > 2:
+            fig = go.Figure(data=[go.Histogram(
+                x=sector_stocks,
+                nbinsx=10,
+                marker_color='lightblue',
+                showlegend=False
+            )])
+            fig.update_layout(
+                height=60,
+                margin=dict(l=0, r=0, t=0, b=0),
+                xaxis=dict(visible=False),
+                yaxis=dict(visible=False),
+                paper_bgcolor='rgba(0,0,0,0)',
+                plot_bgcolor='rgba(0,0,0,0)'
+            )
+            st.plotly_chart(fig, use_container_width=True, key=f"sector_{idx}")
+
+def create_excel_report(df_signals: pd.DataFrame, df_all: pd.DataFrame) -> io.BytesIO:
+    """Create multi-sheet Excel report"""
+    output = io.BytesIO()
+    
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        # Sheet 1: Executive Summary
+        summary_data = {
+            'Metric': [
+                'Total Signals',
+                'SUPER EDGE Count',
+                'EXPLOSIVE Count', 
+                'Portfolio Allocation',
+                'Top Sector',
+                'Avg EDGE Score',
+                'Report Date'
+            ],
+            'Value': [
+                len(df_signals),
+                (df_signals['tag'] == 'SUPER_EDGE').sum(),
+                (df_signals['tag'] == 'EXPLOSIVE').sum(),
+                f"{df_signals['portfolio_weight'].sum()*100:.1f}%",
+                df_signals.groupby('sector')['EDGE'].mean().idxmax() if 'sector' in df_signals.columns else 'N/A',
+                f"{df_signals['EDGE'].mean():.1f}",
+                datetime.now().strftime('%Y-%m-%d %H:%M')
+            ]
+        }
+        pd.DataFrame(summary_data).to_excel(writer, sheet_name='Executive Summary', index=False)
+        
+        # Sheet 2: Action Items (SUPER EDGE + EXPLOSIVE)
+        action_items = df_signals[df_signals['tag'].isin(['SUPER_EDGE', 'EXPLOSIVE'])].copy()
+        if not action_items.empty:
+            action_cols = [
+                'ticker', 'company_name', 'tag', 'EDGE', 'decision',
+                'price', 'position_size', 'stop_loss', 'target_1', 'target_2',
+                'volume_pattern', 'pattern_name'
+            ]
+            action_cols = [col for col in action_cols if col in action_items.columns]
+            action_items[action_cols].to_excel(writer, sheet_name='Action Items', index=False)
+        
+        # Sheet 3: All Signals
+        signal_cols = [
+            'ticker', 'company_name', 'sector', 'tag', 'EDGE',
+            'price', 'volume_acceleration', 'pattern_name', 'decision'
+        ]
+        signal_cols = [col for col in signal_cols if col in df_signals.columns]
+        df_signals[signal_cols].to_excel(writer, sheet_name='All Signals', index=False)
+        
+        # Sheet 4: Pattern Analysis
+        pattern_df = df_signals[df_signals['pattern_score'] > 0].copy()
+        if not pattern_df.empty:
+            pattern_cols = ['ticker', 'pattern_name', 'pattern_score', 'pattern_signals']
+            pattern_cols = [col for col in pattern_cols if col in pattern_df.columns]
+            pattern_df[pattern_cols].to_excel(writer, sheet_name='Pattern Analysis', index=False)
+        
+        # Sheet 5: Sector Analysis
+        sector_analysis = df_all.groupby('sector').agg({
+            'EDGE': ['mean', 'max', 'count'],
+            'volume_acceleration': 'mean'
+        }).round(1)
+        sector_analysis.columns = ['Avg EDGE', 'Max EDGE', 'Count', 'Avg Vol Accel']
+        sector_analysis.to_excel(writer, sheet_name='Sector Analysis')
+        
+        # Sheet 6: Raw Data (optional, first 1000 rows)
+        df_all.head(1000).to_excel(writer, sheet_name='Raw Data', index=False)
+    
+    output.seek(0)
+    return output
+
+# ============================================================================
+# MAIN UI FUNCTION
 # ============================================================================
 def render_ui():
     """Main Streamlit UI"""
     st.set_page_config(
-        page_title=PAGE_TITLE,
+        page_title="EDGE Protocol - Ultimate Trading Intelligence",
         page_icon="⚡",
         layout="wide",
         initial_sidebar_state="expanded"
     )
     
-    # Custom CSS
+    # Custom CSS for better UI
     st.markdown("""
     <style>
-    .super-edge-banner {
-        background: linear-gradient(135deg, #FFD700 0%, #FFA500 100%);
+    .super-edge-alert {
+        background: linear-gradient(135deg, #FFD700, #FFA500);
+        color: black;
         padding: 20px;
         border-radius: 10px;
         text-align: center;
-        margin-bottom: 20px;
-    }
-    .super-edge-text {
-        color: #000;
         font-size: 24px;
         font-weight: bold;
+        margin-bottom: 20px;
+        animation: pulse 2s infinite;
+    }
+    @keyframes pulse {
+        0% { opacity: 0.8; }
+        50% { opacity: 1; }
+        100% { opacity: 0.8; }
     }
     .stTabs [data-baseweb="tab-list"] {
-        gap: 8px;
+        gap: 2px;
     }
     .stTabs [data-baseweb="tab"] {
+        height: 50px;
         padding-left: 20px;
         padding-right: 20px;
-    }
-    div[data-testid="metric-container"] {
-        background-color: rgba(28, 131, 225, 0.1);
-        border: 1px solid rgba(28, 131, 225, 0.2);
-        padding: 10px;
-        border-radius: 5px;
+        background-color: rgba(240, 242, 246, 0.5);
+        border-radius: 5px 5px 0px 0px;
     }
     </style>
     """, unsafe_allow_html=True)
     
-    st.title(PAGE_TITLE)
-    st.markdown("**Your edge**: Volume acceleration + Pattern detection + Momentum = **PROFITS**")
+    # Header
+    st.title("⚡ EDGE Protocol - Ultimate Trading Intelligence")
+    st.markdown("**Correct Volume Acceleration + Risk Management + Pattern Recognition = Superior Returns**")
     
     # Sidebar
     with st.sidebar:
-        st.header("⚙️ Settings")
-        profile_name = st.radio("Profile", list(PROFILE_PRESETS.keys()), index=0)
-        weights = PROFILE_PRESETS[profile_name]
+        st.header("⚙️ Configuration")
+        
+        # Weights selection (simplified to 3 components)
+        st.subheader("Strategy Weights")
+        vol_weight = st.slider("Volume Weight %", 30, 70, 50, 5) / 100
+        mom_weight = st.slider("Momentum Weight %", 10, 40, 30, 5) / 100
+        rr_weight = 1 - vol_weight - mom_weight
+        
+        weights = (vol_weight, mom_weight, rr_weight)
+        
+        st.write(f"Risk/Reward: {rr_weight*100:.0f}%")
         
         st.markdown("---")
-        st.subheader("🎯 Display Filters")
-        min_edge = st.slider("Min EDGE Score", 0, 100, 30, 5)
-        show_smallcaps = st.checkbox("Include small/micro caps", value=False)
-        show_super_edge_only = st.checkbox("Show SUPER EDGE Only", value=False)
         
-        st.markdown("---")
-        st.markdown("### 📊 Weights")
-        st.write(f"Volume: {weights[0]*100:.0f}%")
-        st.write(f"Momentum: {weights[1]*100:.0f}%")
-        st.write(f"Risk/Reward: {weights[2]*100:.0f}%")
-        st.write(f"Fundamentals: {weights[3]*100:.0f}%")
+        # Filters
+        st.subheader("🎯 Filters")
+        min_edge = st.slider("Min EDGE Score", 0, 100, 50, 5)
+        exclude_small_caps = st.checkbox("Exclude Small/Micro Caps", True)
+        max_signals = st.slider("Max Signals", 10, 100, 50, 10)
     
     # Load data
-    df = load_sheet()
+    df, diagnostics = load_and_validate_data()
+    
+    # Show diagnostics in sidebar
+    render_sidebar_diagnostics(diagnostics)
     
     if df.empty:
-        st.error("❌ No data available. Please check the data source.")
+        st.error("❌ Failed to load data. Check connection and data source.")
         return
     
-    # Apply filters
-    if not show_smallcaps:
-        df = df[~df["category"].str.contains("nano|micro", case=False, na=False)]
+    # Apply basic filters
+    if exclude_small_caps and 'category' in df.columns:
+        df = df[~df['category'].str.contains('micro|nano|small', case=False, na=False)]
     
-    # Remove low liquidity stocks
-    if "rs_volume_30d" in df.columns:
-        df = df[(df["rs_volume_30d"] >= 1e7) | df["rs_volume_30d"].isna()]
+    # Run EDGE analysis
+    with st.spinner("Running EDGE Protocol Analysis..."):
+        df_analyzed = run_edge_analysis(df, weights)
     
-    # Process data
-    df_scored = compute_scores(df, weights)
-    
-    # Apply EDGE filter
-    df_filtered = df_scored[df_scored["EDGE"] >= min_edge].copy()
-    
-    # Super Edge filter
-    if show_super_edge_only:
-        df_filtered = df_filtered[df_filtered["tag"] == "SUPER_EDGE"]
+    # Filter by minimum EDGE
+    df_signals = df_analyzed[df_analyzed['EDGE'] >= min_edge].head(max_signals)
     
     # SUPER EDGE Alert
-    super_edge_count = (df_filtered["tag"] == "SUPER_EDGE").sum()
+    super_edge_count = (df_signals['tag'] == 'SUPER_EDGE').sum()
     if super_edge_count > 0:
         st.markdown(f"""
-        <div class="super-edge-banner">
-            <div class="super-edge-text">
-                ⭐ {super_edge_count} SUPER EDGE SIGNAL{'S' if super_edge_count > 1 else ''} DETECTED! ⭐<br>
-                Maximum conviction opportunities!
-            </div>
+        <div class="super-edge-alert">
+            ⭐ {super_edge_count} SUPER EDGE SIGNAL{'S' if super_edge_count > 1 else ''} DETECTED ⭐<br>
+            <span style="font-size: 16px;">Maximum conviction trades with strict risk management!</span>
         </div>
         """, unsafe_allow_html=True)
     
-    # Main tabs
+    # Main content tabs
     tabs = st.tabs([
-        "📊 Daily Signals",
-        "⭐ SUPER EDGE",
-        "🎯 Explosive Patterns",
-        "📈 Volume Analysis",
-        "🔥 Sector Heatmap",
-        "🔍 Deep Dive",
-        "📋 Raw Data"
+        "🎯 Trading Signals",
+        "⭐ SUPER EDGE Focus", 
+        "🏆 Sector Leaders",
+        "📊 Deep Analysis"
     ])
     
-    # Tab 1: Daily Signals
+    # Tab 1: Trading Signals
     with tabs[0]:
-        st.header("📊 Daily EDGE Signals")
+        st.header("🎯 Today's Trading Signals")
         
-        # Quick stats
-        col1, col2, col3, col4 = st.columns(4)
+        # Quick metrics
+        col1, col2, col3, col4, col5 = st.columns(5)
         with col1:
-            st.metric("Total Signals", len(df_filtered))
+            st.metric("Total Signals", len(df_signals))
         with col2:
-            st.metric("SUPER EDGE", (df_filtered["tag"] == "SUPER_EDGE").sum())
+            st.metric("SUPER EDGE", (df_signals['tag'] == 'SUPER_EDGE').sum())
         with col3:
-            st.metric("EXPLOSIVE", (df_filtered["tag"] == "EXPLOSIVE").sum())
+            st.metric("Portfolio Used", f"{df_signals['portfolio_weight'].sum()*100:.1f}%")
         with col4:
-            avg_edge = df_filtered["EDGE"].mean()
+            avg_edge = df_signals['EDGE'].mean() if len(df_signals) > 0 else 0
             st.metric("Avg EDGE", f"{avg_edge:.1f}")
+        with col5:
+            patterns = (df_signals['pattern_score'] > 70).sum()
+            st.metric("Strong Patterns", patterns)
         
         # Filters
-        st.markdown("### 🔍 Filters")
-        filter_cols = st.columns(4)
-        
-        with filter_cols[0]:
-            unique_tags = df_filtered['tag'].unique().tolist()
-            selected_tags = st.multiselect("Classification", unique_tags, default=unique_tags)
-        
-        with filter_cols[1]:
-            unique_sectors = sorted(df_filtered['sector'].dropna().unique())
-            selected_sectors = st.multiselect("Sector", unique_sectors, default=unique_sectors)
-        
-        with filter_cols[2]:
-            unique_vol_class = df_filtered['volume_classification'].unique().tolist()
-            selected_vol_class = st.multiselect("Volume Pattern", unique_vol_class, default=unique_vol_class)
-        
-        with filter_cols[3]:
-            search_ticker = st.text_input("Search Ticker", "")
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            signal_types = st.multiselect(
+                "Signal Types",
+                df_signals['tag'].unique(),
+                default=df_signals['tag'].unique()
+            )
+        with col2:
+            if 'sector' in df_signals.columns:
+                sectors = st.multiselect(
+                    "Sectors",
+                    df_signals['sector'].unique(),
+                    default=df_signals['sector'].unique()
+                )
+            else:
+                sectors = []
+        with col3:
+            search = st.text_input("Search Ticker")
         
         # Apply filters
-        display_df = df_filtered.copy()
-        if selected_tags:
-            display_df = display_df[display_df['tag'].isin(selected_tags)]
-        if selected_sectors:
-            display_df = display_df[display_df['sector'].isin(selected_sectors)]
-        if selected_vol_class:
-            display_df = display_df[display_df['volume_classification'].isin(selected_vol_class)]
-        if search_ticker:
-            display_df = display_df[display_df['ticker'].str.contains(search_ticker.upper(), na=False)]
+        display_df = df_signals.copy()
+        if signal_types:
+            display_df = display_df[display_df['tag'].isin(signal_types)]
+        if sectors and 'sector' in display_df.columns:
+            display_df = display_df[display_df['sector'].isin(sectors)]
+        if search:
+            display_df = display_df[display_df['ticker'].str.contains(search.upper(), na=False)]
         
-        # Sort and display
-        display_df = display_df.sort_values('EDGE', ascending=False)
-        
+        # Display main signals table
         if not display_df.empty:
-            # Highlight function
-            def highlight_rows(row):
-                if row['tag'] == 'SUPER_EDGE':
-                    return ['background-color: gold'] * len(row)
-                elif row['tag'] == 'EXPLOSIVE':
-                    return ['background-color: #ffcccc'] * len(row)
-                return [''] * len(row)
-            
-            # Display columns
+            # Define columns to show
             display_cols = [
-                'ticker', 'company_name', 'sector', 'tag', 'EDGE',
-                'vol_score', 'mom_score', 'rr_score', 'fund_score',
-                'price', 'rvol', 'volume_acceleration', 'volume_classification',
-                'position_size_pct', 'dynamic_stop', 'target1', 'target2'
+                'ticker', 'company_name', 'sector', 'tag', 'EDGE', 'decision',
+                'price', 'position_size', 'stop_loss', 'stop_loss_pct',
+                'target_1', 'target_2', 'volume_pattern', 'pattern_name'
             ]
-            
-            # Ensure all columns exist
             display_cols = [col for col in display_cols if col in display_df.columns]
             
-            st.dataframe(
-                display_df[display_cols].style.apply(highlight_rows, axis=1)
-                .format({
-                    'EDGE': '{:.1f}',
-                    'vol_score': '{:.0f}',
-                    'mom_score': '{:.0f}',
-                    'rr_score': '{:.0f}',
-                    'fund_score': '{:.0f}',
-                    'price': '₹{:.2f}',
-                    'rvol': '{:.1f}',
-                    'volume_acceleration': '{:.1f}%',
-                    'position_size_pct': '{:.1%}',
-                    'dynamic_stop': '₹{:.2f}',
-                    'target1': '₹{:.2f}',
-                    'target2': '₹{:.2f}'
-                }),
-                use_container_width=True,
-                height=600
-            )
+            # Style the dataframe
+            def style_signals(val):
+                if val == 'SUPER_EDGE':
+                    return 'background-color: gold; font-weight: bold;'
+                elif val == 'EXPLOSIVE':
+                    return 'background-color: #ffcccc;'
+                elif val == 'BUY NOW':
+                    return 'color: green; font-weight: bold;'
+                return ''
             
-            # Export button
-            csv = display_df.to_csv(index=False).encode('utf-8')
-            st.download_button(
-                "📥 Export Signals",
-                csv,
-                f"edge_signals_{pd.Timestamp.now().strftime('%Y%m%d')}.csv",
-                "text/csv",
-                type="primary"
-            )
+            styled_df = display_df[display_cols].style.applymap(
+                style_signals, subset=['tag', 'decision']
+            ).format({
+                'EDGE': '{:.1f}',
+                'price': '₹{:.2f}',
+                'position_size': '{:.1%}',
+                'stop_loss': '₹{:.2f}',
+                'stop_loss_pct': '{:.1f}%',
+                'target_1': '₹{:.2f}',
+                'target_2': '₹{:.2f}'
+            })
+            
+            st.dataframe(styled_df, use_container_width=True, height=600)
+            
+            # Portfolio allocation warning
+            total_allocation = display_df['portfolio_weight'].sum()
+            if total_allocation > 0.7:
+                st.warning(f"⚠️ High portfolio allocation: {total_allocation*100:.1f}%")
+            
+            # Export buttons
+            col1, col2 = st.columns(2)
+            with col1:
+                csv = display_df.to_csv(index=False)
+                st.download_button(
+                    "📥 Download Signals (CSV)",
+                    csv,
+                    f"edge_signals_{datetime.now().strftime('%Y%m%d')}.csv",
+                    "text/csv",
+                    type="primary"
+                )
+            
+            with col2:
+                excel_file = create_excel_report(df_signals, df_analyzed)
+                st.download_button(
+                    "📊 Download Full Report (Excel)",
+                    excel_file,
+                    f"EDGE_Report_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    type="primary"
+                )
         else:
-            st.info("No stocks match the selected filters.")
+            st.info("No signals match the selected filters.")
     
-    # Tab 2: SUPER EDGE Analysis
+    # Tab 2: SUPER EDGE Focus
     with tabs[1]:
-        st.header("⭐ SUPER EDGE Analysis")
+        st.header("⭐ SUPER EDGE Deep Dive")
         
-        super_edge_df = df_scored[df_scored["tag"] == "SUPER_EDGE"].sort_values("EDGE", ascending=False)
+        super_df = df_signals[df_signals['tag'] == 'SUPER_EDGE']
         
-        if not super_edge_df.empty:
-            st.success(f"🎯 {len(super_edge_df)} SUPER EDGE opportunities detected!")
+        if not super_df.empty:
+            st.success(f"🎯 {len(super_df)} SUPER EDGE opportunities meeting all 5+ criteria!")
             
-            # Display top 5 in detail
-            for idx, (_, row) in enumerate(super_edge_df.head(5).iterrows()):
-                with st.expander(f"#{idx+1} {row['ticker']} - {row['company_name']} (EDGE: {row['EDGE']:.1f})", expanded=(idx==0)):
+            for idx, (_, row) in enumerate(super_df.iterrows()):
+                with st.expander(
+                    f"#{idx+1} {row['ticker']} - {row.get('company_name', 'N/A')} | EDGE: {row['EDGE']:.1f}",
+                    expanded=(idx == 0)
+                ):
                     col1, col2, col3 = st.columns(3)
                     
                     with col1:
-                        st.metric("Price", f"₹{row.get('price', 0):.2f}")
-                        st.metric("RVOL", f"{row.get('rvol', 0):.1f}x")
-                        st.metric("Position Size", f"{row.get('position_size_pct', 0):.1%}")
+                        st.subheader("📊 Entry Details")
+                        st.metric("Current Price", f"₹{row['price']:.2f}")
+                        st.metric("Position Size", f"{row['position_size']*100:.1f}%")
+                        st.metric("Stop Loss", f"₹{row['stop_loss']:.2f} ({row['stop_loss_pct']:.1f}%)")
                     
                     with col2:
-                        st.metric("Volume Accel", f"{row.get('volume_acceleration', 0):.1f}%")
-                        st.metric("From High", f"{row.get('from_high_pct', 0):.1f}%")
-                        st.metric("EPS QoQ", f"{row.get('eps_qoq_acceleration', 0):.1f}%")
+                        st.subheader("🎯 Targets")
+                        st.metric("Target 1 (12%)", f"₹{row['target_1']:.2f}")
+                        st.metric("Target 2 (25%)", f"₹{row['target_2']:.2f}")
+                        risk_reward = abs(row['target_1'] - row['price']) / abs(row['price'] - row['stop_loss'])
+                        st.metric("Risk:Reward", f"1:{risk_reward:.1f}")
                     
                     with col3:
-                        st.metric("Stop Loss", f"₹{row.get('dynamic_stop', 0):.2f}")
-                        st.metric("Target 1", f"₹{row.get('target1', 0):.2f}")
-                        st.metric("Target 2", f"₹{row.get('target2', 0):.2f}")
+                        st.subheader("🔍 Key Signals")
+                        st.write(f"**Volume:** {row.get('volume_pattern', 'N/A')}")
+                        st.write(f"**Vol Accel:** {row.get('volume_acceleration', 0):.1f}%")
+                        st.write(f"**RVOL:** {row.get('rvol', 0):.1f}x")
+                        if row.get('pattern_name'):
+                            st.write(f"**Pattern:** {row['pattern_name']}")
                     
-                    # Radar chart
-                    fig = plot_stock_radar_chart(row)
-                    st.plotly_chart(fig, use_container_width=True)
+                    # Why SUPER EDGE?
+                    st.write("**Why SUPER EDGE?**")
+                    criteria = []
+                    if row.get('rvol', 0) > 2:
+                        criteria.append("✅ RVOL > 2.0x")
+                    if row.get('volume_acceleration', 0) > 30:
+                        criteria.append("✅ Volume Acceleration > 30%")
+                    if row.get('from_high_pct', -100) >= -30 and row.get('from_high_pct', 0) <= -10:
+                        criteria.append("✅ In Sweet Spot Zone")
+                    if row.get('eps_current', 0) > row.get('eps_last_qtr', 0):
+                        criteria.append("✅ EPS Accelerating")
+                    st.write(" | ".join(criteria))
         else:
-            st.info("No SUPER EDGE signals today. Check EXPLOSIVE category.")
+            st.info("No SUPER EDGE signals today. Check EXPLOSIVE category for high-conviction trades.")
+            
+            # Show next best opportunities
+            explosive_df = df_signals[df_signals['tag'] == 'EXPLOSIVE'].head(5)
+            if not explosive_df.empty:
+                st.subheader("🔥 Top EXPLOSIVE Opportunities")
+                cols = ['ticker', 'company_name', 'EDGE', 'price', 'volume_pattern']
+                cols = [col for col in cols if col in explosive_df.columns]
+                st.dataframe(explosive_df[cols], use_container_width=True)
     
-    # Tab 3: Explosive Patterns
+    # Tab 3: Sector Leaders
     with tabs[2]:
-        st.header("🎯 Explosive Patterns Discovery")
-        
-        # Filter for stocks with patterns
-        pattern_df = df_scored[df_scored['top_pattern_score'] > 0].copy()
-        
-        if not pattern_df.empty:
-            # Pattern stats
-            col1, col2, col3, col4 = st.columns(4)
-            with col1:
-                st.metric("Total Patterns", len(pattern_df))
-            with col2:
-                high_confluence = (pattern_df['pattern_confluence_score'] >= 85).sum()
-                st.metric("High Confluence", high_confluence)
-            with col3:
-                avg_score = pattern_df['top_pattern_score'].mean()
-                st.metric("Avg Pattern Score", f"{avg_score:.0f}")
-            with col4:
-                unique_patterns = pattern_df['top_pattern_name'].nunique()
-                st.metric("Pattern Types", unique_patterns)
-            
-            # Pattern distribution chart
-            pattern_counts = pattern_df['top_pattern_name'].value_counts()
-            
-            fig_patterns = go.Figure(data=[go.Bar(
-                x=pattern_counts.index,
-                y=pattern_counts.values,
-                text=pattern_counts.values,
-                textposition='auto',
-                marker_color='lightblue'
-            )])
-            
-            fig_patterns.update_layout(
-                title="Pattern Distribution",
-                xaxis_title="Pattern Type",
-                yaxis_title="Count",
-                height=400
-            )
-            
-            st.plotly_chart(fig_patterns, use_container_width=True)
-            
-            # High confluence patterns
-            st.subheader("🔥 High Confluence Signals")
-            
-            high_conf_df = pattern_df[pattern_df['pattern_confluence_score'] >= 70].sort_values(
-                'pattern_confluence_score', ascending=False
-            ).head(10)
-            
-            if not high_conf_df.empty:
-                display_pattern_cols = [
-                    'ticker', 'company_name', 'price', 'EDGE',
-                    'top_pattern_name', 'top_pattern_score', 
-                    'pattern_confluence_score', 'vp_divergence_score'
-                ]
-                
-                st.dataframe(
-                    high_conf_df[display_pattern_cols].style.format({
-                        'price': '₹{:.2f}',
-                        'EDGE': '{:.1f}',
-                        'top_pattern_score': '{:.0f}',
-                        'pattern_confluence_score': '{:.0f}',
-                        'vp_divergence_score': '{:.1f}'
-                    }),
-                    use_container_width=True
-                )
-            
-            # Pattern guide
-            with st.expander("📚 Pattern Guide"):
-                st.markdown("""
-                **Pattern Types:**
-                1. **Accumulation Under Resistance** - Big volume, flat price near highs
-                2. **Coiled Spring** - Tight range with increasing volume
-                3. **Absorption Pattern** - High RVOL with price stability
-                4. **Failed Breakdown Reversal** - Bounce from lows with volume
-                5. **Stealth Breakout** - Quiet strength above SMAs
-                6. **Pre-Earnings Accumulation** - Volume spike before earnings
-                
-                **Confluence Score:**
-                - 100: 3+ patterns aligned (ULTRA HIGH conviction)
-                - 85: 2 patterns aligned (Very strong)
-                - 70: 1 strong pattern (Good opportunity)
-                """)
-        else:
-            st.info("Pattern detection requires more data or different market conditions.")
+        render_sector_leaderboard(df_analyzed)
     
-    # Tab 4: Volume Analysis
+    # Tab 4: Deep Analysis
     with tabs[3]:
-        st.header("📈 Volume Acceleration Analysis")
+        st.header("📊 Deep Market Analysis")
         
-        # Volume acceleration scatter plot
-        if "volume_acceleration" in df_filtered.columns and "from_high_pct" in df_filtered.columns:
-            # Prepare data
-            plot_df = df_filtered.dropna(subset=['volume_acceleration', 'from_high_pct'])
-            
-            if not plot_df.empty:
-                # Create size based on RVOL
-                plot_df['marker_size'] = plot_df.get('rvol', 1) * 10
-                
-                fig = px.scatter(
-                    plot_df,
-                    x="from_high_pct",
-                    y="volume_acceleration",
-                    color="tag",
-                    size="marker_size",
-                    hover_data=['ticker', 'company_name', 'EDGE', 'rvol'],
-                    title="Volume Acceleration Map (Size = RVOL)",
-                    labels={
-                        "from_high_pct": "% From 52-Week High",
-                        "volume_acceleration": "Volume Acceleration %"
-                    },
-                    color_discrete_map={
-                        "SUPER_EDGE": "#FFD700",
-                        "EXPLOSIVE": "#FF4B4B",
-                        "STRONG": "#FFA500",
-                        "MODERATE": "#90EE90",
-                        "WATCH": "#87CEEB"
-                    }
-                )
-                
-                # Add zones
-                fig.add_vline(x=-15, line_dash="dash", line_color="gold", 
-                            annotation_text="Sweet Spot Start")
-                fig.add_vline(x=-30, line_dash="dash", line_color="gold", 
-                            annotation_text="Sweet Spot End")
-                fig.add_hline(y=30, line_dash="dash", line_color="red", 
-                            annotation_text="High Acceleration")
-                
-                # Add shaded region
-                fig.add_vrect(x0=-30, x1=-15, fillcolor="gold", opacity=0.1,
-                            annotation_text="SUPER EDGE ZONE", annotation_position="top")
-                
-                fig.update_layout(height=600)
-                st.plotly_chart(fig, use_container_width=True)
-                
-                # Volume insights
-                st.subheader("📊 Volume Insights")
-                
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    high_rvol = (plot_df['rvol'] > 2.0).sum()
-                    st.metric("High RVOL (>2x)", high_rvol)
-                
-                with col2:
-                    high_accel = (plot_df['volume_acceleration'] > 30).sum()
-                    st.metric("High Acceleration (>30%)", high_accel)
-                
-                with col3:
-                    inst_loading = (plot_df['volume_classification'] == "Institutional Loading").sum()
-                    st.metric("Institutional Loading", inst_loading)
-        else:
-            st.info("Volume acceleration data not available.")
-    
-    # Tab 5: Sector Heatmap
-    with tabs[4]:
-        st.header("🔥 Sector Heatmap")
-        
-        # Aggregate by sector
-        sector_agg = df_scored.groupby('sector').agg({
-            'EDGE': 'mean',
-            'ticker': 'count',
-            'is_super_edge': 'sum'
-        }).reset_index()
-        
-        sector_agg.columns = ['sector', 'avg_edge', 'count', 'super_edge_count']
-        sector_agg = sector_agg[sector_agg['count'] >= 3]  # Min 3 stocks
-        
-        if not sector_agg.empty:
-            # Create treemap
-            fig = px.treemap(
-                sector_agg,
-                path=['sector'],
-                values='count',
-                color='avg_edge',
-                hover_data={
-                    'avg_edge': ':.1f',
-                    'count': True,
-                    'super_edge_count': True
-                },
-                color_continuous_scale='RdYlGn',
-                range_color=[0, 100],
-                title="Sector EDGE Heatmap"
-            )
-            
-            fig.update_layout(height=600)
-            st.plotly_chart(fig, use_container_width=True)
-            
-            # Top sectors table
-            st.subheader("🏆 Top Sectors by EDGE")
-            
-            top_sectors = sector_agg.sort_values('avg_edge', ascending=False).head(10)
-            
-            st.dataframe(
-                top_sectors.style.format({
-                    'avg_edge': '{:.1f}',
-                    'count': '{:.0f}',
-                    'super_edge_count': '{:.0f}'
-                }).background_gradient(subset=['avg_edge'], cmap='RdYlGn'),
-                use_container_width=True
-            )
-        else:
-            st.info("Insufficient data for sector analysis.")
-    
-    # Tab 6: Deep Dive
-    with tabs[5]:
-        st.header("🔍 Stock Deep Dive")
-        
-        # Stock selector
-        available_stocks = df_scored[df_scored['EDGE'].notna()]['ticker'].unique()
-        
-        if len(available_stocks) > 0:
-            # Prioritize high EDGE stocks
-            sorted_stocks = (df_scored[df_scored['ticker'].isin(available_stocks)]
-                           .sort_values('EDGE', ascending=False)['ticker'].unique())
-            
-            selected_ticker = st.selectbox(
-                "Select Stock",
-                sorted_stocks,
-                format_func=lambda x: f"⭐ {x}" if x in df_scored[df_scored['tag'] == 'SUPER_EDGE']['ticker'].values else x
-            )
-            
-            # Get stock data
-            stock_data = df_scored[df_scored['ticker'] == selected_ticker].iloc[0]
-            
-            # Display header
-            if stock_data['tag'] == 'SUPER_EDGE':
-                st.markdown("""
-                <div style="background: gold; padding: 10px; border-radius: 5px; text-align: center;">
-                    <h2 style="margin: 0;">⭐ SUPER EDGE SIGNAL ⭐</h2>
-                </div>
-                """, unsafe_allow_html=True)
-            
-            # Key metrics
-            st.subheader(f"{stock_data['company_name']} ({stock_data['ticker']})")
-            
-            col1, col2, col3, col4 = st.columns(4)
-            
-            with col1:
-                st.metric("Price", f"₹{stock_data.get('price', 0):.2f}")
-                st.metric("EDGE Score", f"{stock_data.get('EDGE', 0):.1f}")
-                st.metric("Classification", stock_data.get('tag', 'N/A'))
-            
-            with col2:
-                st.metric("RVOL", f"{stock_data.get('rvol', 0):.1f}x")
-                st.metric("Volume Accel", f"{stock_data.get('volume_acceleration', 0):.1f}%")
-                st.metric("Volume Pattern", stock_data.get('volume_classification', 'N/A'))
-            
-            with col3:
-                st.metric("1Y Return", f"{stock_data.get('ret_1y', 0)*100:.0f}%")
-                st.metric("3Y Return", f"{stock_data.get('ret_3y', 0)*100:.0f}%")
-                st.metric("From High", f"{stock_data.get('from_high_pct', 0)*100:.1f}%")
-            
-            with col4:
-                st.metric("Stop Loss", f"₹{stock_data.get('dynamic_stop', 0):.2f}")
-                st.metric("Target 1", f"₹{stock_data.get('target1', 0):.2f}")
-                st.metric("Position Size", f"{stock_data.get('position_size_pct', 0):.1%}")
-            
-            # Radar chart
-            fig = plot_stock_radar_chart(stock_data)
-            st.plotly_chart(fig, use_container_width=True)
-            
-            # Pattern analysis
-            if stock_data.get('pattern_analysis'):
-                st.subheader("🎯 Pattern Analysis")
-                
-                pattern_data = stock_data['pattern_analysis']
-                if isinstance(pattern_data, dict):
-                    patterns = pattern_data.get('patterns', [])
-                    
-                    # Show top 3 patterns
-                    for pattern in patterns[:3]:
-                        if pattern['score'] > 50:
-                            with st.expander(f"{pattern['pattern']} (Score: {pattern['score']:.0f})"):
-                                for signal in pattern.get('signals', []):
-                                    st.write(f"• {signal}")
-                                if pattern.get('target'):
-                                    target_pct = (pattern['target'] / stock_data['price'] - 1) * 100
-                                    st.success(f"Pattern Target: ₹{pattern['target']:.2f} (+{target_pct:.1f}%)")
-            
-            # Special indicators
-            st.subheader("📌 Special Indicators")
-            
-            indicators = []
-            if stock_data.get('quality_consolidation'):
-                indicators.append("💎 Quality Consolidation")
-            if stock_data.get('momentum_aligned'):
-                indicators.append("📈 Momentum Aligned")
-            if stock_data.get('rvol', 0) > 2:
-                indicators.append("🔥 High RVOL Activity")
-            if stock_data.get('eps_qoq_acceleration', 0) > 10:
-                indicators.append("💰 EPS Accelerating")
-            
-            if indicators:
-                for ind in indicators:
-                    st.write(ind)
-            else:
-                st.info("No special indicators active")
-        else:
-            st.info("No stocks available for analysis.")
-    
-    # Tab 7: Raw Data
-    with tabs[6]:
-        st.header("📋 Raw Data & Diagnostics")
-        
-        # Summary stats
-        st.subheader("📊 Summary Statistics")
-        
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("Total Stocks Loaded", len(df))
-            st.metric("After Filters", len(df_scored))
-            st.metric("High EDGE (>70)", (df_scored['EDGE'] > 70).sum())
-        
-        with col2:
-            st.metric("Avg EDGE Score", f"{df_scored['EDGE'].mean():.1f}")
-            st.metric("Avg RVOL", f"{df_scored.get('rvol', pd.Series([1])).mean():.2f}")
-            st.metric("Patterns Detected", (df_scored['top_pattern_score'] > 0).sum())
-        
-        with col3:
-            st.metric("Data Timestamp", pd.Timestamp.now().strftime('%Y-%m-%d %H:%M'))
-            st.metric("Profile", profile_name)
-            st.metric("Min EDGE Filter", min_edge)
-        
-        # Data quality check
-        st.subheader("🔍 Data Quality Check")
-        
-        critical_cols = ['price', 'volume_1d', 'vol_ratio_30d_90d', 'vol_ratio_30d_180d']
-        quality_data = []
-        
-        for col in critical_cols:
-            if col in df_scored.columns:
-                non_null = df_scored[col].notna().sum()
-                pct = non_null / len(df_scored) * 100
-                quality_data.append({
-                    'Column': col,
-                    'Non-null': non_null,
-                    'Coverage %': f"{pct:.1f}%",
-                    'Status': '✅' if pct > 90 else '⚠️' if pct > 70 else '❌'
-                })
-        
-        quality_df = pd.DataFrame(quality_data)
-        st.dataframe(quality_df, use_container_width=True, hide_index=True)
-        
-        # Sample data
-        st.subheader("📄 Sample Data (Top 10 by EDGE)")
-        
-        sample_cols = ['ticker', 'company_name', 'EDGE', 'tag', 'price', 'rvol', 
-                      'volume_acceleration', 'top_pattern_name', 'top_pattern_score']
-        sample_cols = [col for col in sample_cols if col in df_scored.columns]
-        
-        st.dataframe(
-            df_scored.nlargest(10, 'EDGE')[sample_cols],
-            use_container_width=True
-        )
-        
-        # Export full data
-        st.subheader("💾 Export Options")
-        
+        # Volume Acceleration Distribution
         col1, col2 = st.columns(2)
         
         with col1:
-            csv_full = df_scored.to_csv(index=False).encode('utf-8')
-            st.download_button(
-                "📥 Download Full Dataset",
-                csv_full,
-                f"edge_protocol_full_{pd.Timestamp.now().strftime('%Y%m%d')}.csv",
-                "text/csv"
+            st.subheader("📈 Volume Acceleration Distribution")
+            
+            fig = go.Figure()
+            fig.add_trace(go.Histogram(
+                x=df_analyzed['volume_acceleration'],
+                nbinsx=30,
+                name='All Stocks',
+                marker_color='lightblue'
+            ))
+            
+            if len(df_signals) > 0:
+                fig.add_trace(go.Histogram(
+                    x=df_signals['volume_acceleration'],
+                    nbinsx=20,
+                    name='Signal Stocks',
+                    marker_color='gold',
+                    opacity=0.7
+                ))
+            
+            fig.update_layout(
+                xaxis_title="Volume Acceleration %",
+                yaxis_title="Count",
+                height=400,
+                barmode='overlay'
             )
+            st.plotly_chart(fig, use_container_width=True)
         
         with col2:
-            # High EDGE only
-            high_edge_df = df_scored[df_scored['EDGE'] >= 70]
-            if not high_edge_df.empty:
-                csv_high = high_edge_df.to_csv(index=False).encode('utf-8')
-                st.download_button(
-                    "🔥 Download High EDGE Only",
-                    csv_high,
-                    f"edge_high_signals_{pd.Timestamp.now().strftime('%Y%m%d')}.csv",
-                    "text/csv"
-                )
+            st.subheader("🎯 EDGE Score Distribution")
+            
+            fig2 = go.Figure()
+            
+            # Add regions
+            fig2.add_vrect(x0=0, x1=50, fillcolor="red", opacity=0.1, annotation_text="Watch")
+            fig2.add_vrect(x0=50, x1=70, fillcolor="yellow", opacity=0.1, annotation_text="Moderate")
+            fig2.add_vrect(x0=70, x1=85, fillcolor="orange", opacity=0.1, annotation_text="Strong")
+            fig2.add_vrect(x0=85, x1=100, fillcolor="green", opacity=0.1, annotation_text="Explosive")
+            
+            fig2.add_trace(go.Histogram(
+                x=df_analyzed['EDGE'],
+                nbinsx=25,
+                marker_color='darkblue'
+            ))
+            
+            fig2.update_layout(
+                xaxis_title="EDGE Score",
+                yaxis_title="Count",
+                height=400
+            )
+            st.plotly_chart(fig2, use_container_width=True)
+        
+        # Pattern Analysis
+        if 'pattern_name' in df_analyzed.columns:
+            st.subheader("🎯 Pattern Detection Summary")
+            
+            pattern_summary = df_analyzed[df_analyzed['pattern_name'] != '']['pattern_name'].value_counts()
+            
+            if len(pattern_summary) > 0:
+                col1, col2 = st.columns([2, 1])
+                
+                with col1:
+                    fig = go.Figure(data=[go.Bar(
+                        x=pattern_summary.index,
+                        y=pattern_summary.values,
+                        text=pattern_summary.values,
+                        textposition='auto',
+                        marker_color=['gold' if 'Accumulation' in p else 'lightblue' for p in pattern_summary.index]
+                    )])
+                    
+                    fig.update_layout(
+                        xaxis_title="Pattern Type",
+                        yaxis_title="Count",
+                        height=350
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+                
+                with col2:
+                    st.write("**Pattern Strength:**")
+                    strong_patterns = df_analyzed[df_analyzed['pattern_score'] > 80]
+                    st.metric("Score > 80", len(strong_patterns))
+                    st.metric("Multi-Pattern", (df_analyzed['pattern_count'] > 1).sum())
+        
+        # Market Breadth
+        st.subheader("📊 Market Breadth Analysis")
+        
+        breadth_metrics = {
+            'Stocks Advancing': (df_analyzed.get('ret_1d', 0) > 0).sum(),
+            'Stocks Declining': (df_analyzed.get('ret_1d', 0) < 0).sum(),
+            'Above 50 SMA': (df_analyzed['price'] > df_analyzed.get('sma_50d', df_analyzed['price'])).sum(),
+            'Above 200 SMA': (df_analyzed['price'] > df_analyzed.get('sma_200d', df_analyzed['price'])).sum(),
+            'High Volume (RVOL>1.5)': (df_analyzed.get('rvol', 0) > 1.5).sum(),
+            'Accumulation Patterns': (df_analyzed['volume_acceleration'] > 10).sum()
+        }
+        
+        col1, col2, col3 = st.columns(3)
+        for i, (metric, value) in enumerate(breadth_metrics.items()):
+            with [col1, col2, col3][i % 3]:
+                pct = value / len(df_analyzed) * 100
+                st.metric(metric, f"{value} ({pct:.0f}%)")
 
 # ============================================================================
 # MAIN ENTRY POINT
