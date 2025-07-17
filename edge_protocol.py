@@ -323,7 +323,8 @@ def calculate_volume_metrics(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 # ============================================================================
-# ENHANCED PATTERN DETECTION (TOP 3 ONLY)
+# PATTERN DETECTION FUNCTIONS
+# These functions need to be defined before calculate_edge_scores
 # ============================================================================
 def detect_accumulation_under_resistance(row: pd.Series) -> dict:
     """Pattern 1: Volume explodes but price stays flat near resistance"""
@@ -640,6 +641,7 @@ def detect_all_patterns(row: pd.Series) -> dict:
 
 # ============================================================================
 # SCORING FUNCTIONS
+# These functions need to be defined before calculate_edge_scores
 # ============================================================================
 def score_vol_accel(row: pd.Series) -> float:
     """Enhanced Volume Acceleration scoring"""
@@ -740,6 +742,58 @@ def score_fundamentals(row: pd.Series, df: pd.DataFrame) -> float:
             scores.append(min(eps_accel * 500, 100)) # Scale to 100
     
     return np.mean(scores) if scores else 50.0
+
+# ============================================================================
+# MAIN SCORING ENGINE
+# ============================================================================
+def calculate_edge_scores(df: pd.DataFrame, weights: Tuple[float, float, float]) -> pd.DataFrame:
+    """Calculate EDGE scores with enhanced criteria"""
+    df = df.copy()
+    
+    # Calculate individual scores
+    with st.spinner("Calculating component scores..."):
+        df["vol_score"] = df.apply(score_vol_accel, axis=1)
+        df["mom_score"] = df.apply(score_momentum, axis=1, df=df)
+        df["rr_score"] = df.apply(score_risk_reward, axis=1)
+        df["fund_score"] = df.apply(score_fundamentals, axis=1, df=df)
+    
+    # Calculate EDGE score
+    block_cols = ["vol_score", "mom_score", "rr_score", "fund_score"]
+    
+    # Weighted average with adaptive weighting
+    df["EDGE"] = 0.0
+    for idx in df.index:
+        scores = df.loc[idx, block_cols]
+        valid_mask = ~scores.isna()
+        
+        if valid_mask.sum() == 0:
+            continue
+            
+        valid_weights = np.array(weights)[valid_mask]
+        valid_scores = scores[valid_mask]
+        
+        # Normalize weights
+        norm_weights = valid_weights / valid_weights.sum()
+        df.loc[idx, "EDGE"] = (valid_scores * norm_weights).sum()
+    
+    # Detect SUPER EDGE
+    df["is_super_edge"] = False # Initialize column
+    # This will be filled by run_edge_analysis after sector_ranks are available
+    
+    # Boost SUPER EDGE scores (will be re-evaluated in run_edge_analysis)
+    # df.loc[df["is_super_edge"], "EDGE"] = df.loc[df["is_super_edge"], "EDGE"] * 1.1
+    df["EDGE"] = df["EDGE"].clip(0, 100)
+    
+    # Classification (initial, will be refined in run_edge_analysis)
+    conditions = [
+        df["EDGE"] >= EDGE_THRESHOLDS["EXPLOSIVE"],
+        df["EDGE"] >= EDGE_THRESHOLDS["STRONG"],
+        df["EDGE"] >= EDGE_THRESHOLDS["MODERATE"],
+    ]
+    choices = ["EXPLOSIVE", "STRONG", "MODERATE"]
+    df["tag"] = np.select(conditions, choices, default="WATCH")
+    
+    return df
 
 def detect_super_edge_strict(row: pd.Series, sector_ranks: Dict[str, int]) -> bool:
     """STRICTER SUPER EDGE detection (5 out of 6 conditions)"""
@@ -1254,7 +1308,7 @@ def create_excel_report(df_signals: pd.DataFrame, df_all: pd.DataFrame) -> io.By
                 action_cols = [
                     'ticker', 'company_name', 'tag', 'EDGE', 'decision',
                     'price', 'position_size', 'stop_loss', 'target_1', 'target_2',
-                    'volume_pattern', 'pattern_name'
+                    'volume_pattern', 'top_pattern_name' # Changed pattern_name to top_pattern_name
                 ]
                 action_cols = [col for col in action_cols if col in action_items.columns]
                 if action_cols:
@@ -1263,17 +1317,17 @@ def create_excel_report(df_signals: pd.DataFrame, df_all: pd.DataFrame) -> io.By
         # Sheet 3: All Signals
         signal_cols = [
             'ticker', 'company_name', 'sector', 'tag', 'EDGE',
-            'price', 'volume_acceleration', 'pattern_name', 'decision'
+            'price', 'volume_acceleration', 'top_pattern_name', 'decision' # Changed pattern_name to top_pattern_name
         ]
         signal_cols = [col for col in signal_cols if col in df_signals.columns]
         if signal_cols:
             df_signals[signal_cols].to_excel(writer, sheet_name='All Signals', index=False)
         
         # Sheet 4: Pattern Analysis
-        if 'pattern_score' in df_signals.columns:
-            pattern_df = df_signals[df_signals['pattern_score'] > 0].copy()
+        if 'top_pattern_score' in df_signals.columns: # Changed pattern_score to top_pattern_score
+            pattern_df = df_signals[df_signals['top_pattern_score'] > 0].copy() # Changed pattern_score to top_pattern_score
             if not pattern_df.empty:
-                pattern_cols = ['ticker', 'pattern_name', 'pattern_score', 'pattern_signals']
+                pattern_cols = ['ticker', 'top_pattern_name', 'top_pattern_score', 'pattern_signals'] # Changed pattern_name to top_pattern_name, pattern_score to top_pattern_score
                 pattern_cols = [col for col in pattern_cols if col in pattern_df.columns]
                 if pattern_cols:
                     pattern_df[pattern_cols].to_excel(writer, sheet_name='Pattern Analysis', index=False)
