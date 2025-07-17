@@ -45,15 +45,19 @@ SHEET_CONFIG = {
     'REQUEST_TIMEOUT': 30
 }
 
+def get_sheet_url():
+    """Get the proper Google Sheets CSV export URL"""
+    return f"https://docs.google.com/spreadsheets/d/{SHEET_CONFIG['SHEET_ID']}/export?format=csv&gid={SHEET_CONFIG['GID']}"
+
 # Market Cap Classification (in Crores)
-MARKET_CAP_TIERS = {
-    'Mega Cap': 200000,
-    'Large Cap': 20000,
-    'Mid Cap': 5000,
-    'Small Cap': 500,
-    'Micro Cap': 100,
-    'Nano Cap': 0
-}
+MARKET_CAP_TIERS = [
+    ('Mega Cap', 200000),
+    ('Large Cap', 20000),
+    ('Mid Cap', 5000),
+    ('Small Cap', 500),
+    ('Micro Cap', 100),
+    ('Nano Cap', 0)
+]
 
 # EPS Tiers
 EPS_TIERS = {
@@ -174,18 +178,27 @@ def load_data() -> Tuple[pd.DataFrame, Dict[str, any]]:
     
     try:
         # Construct URL
-        url = f"https://docs.google.com/spreadsheets/d/{SHEET_CONFIG['SHEET_ID']}/export?format=csv&gid={SHEET_CONFIG['GID']}"
+        url = get_sheet_url()
         
         # Log the URL for debugging
         logger.info(f"Fetching data from: {url}")
         
         # Fetch data with proper error handling
-        response = requests.get(url, timeout=SHEET_CONFIG['REQUEST_TIMEOUT'])
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+        response = requests.get(url, timeout=SHEET_CONFIG['REQUEST_TIMEOUT'], headers=headers)
+        
+        # Log response details for debugging
+        logger.info(f"Response status: {response.status_code}")
+        logger.info(f"Response content type: {response.headers.get('content-type', 'unknown')}")
+        
         response.raise_for_status()
         
         # Check if we got valid CSV data
-        if not response.text or response.text.startswith('<!DOCTYPE'):
-            raise ValueError("Received HTML instead of CSV data. Check sheet permissions.")
+        content_type = response.headers.get('content-type', '')
+        if 'text/html' in content_type or response.text.startswith('<!DOCTYPE'):
+            raise ValueError("Received HTML instead of CSV data. The sheet might be private or the link is incorrect.")
         
         # Load into DataFrame using StringIO properly
         df = pd.read_csv(io.StringIO(response.text))
@@ -249,7 +262,9 @@ def load_data() -> Tuple[pd.DataFrame, Dict[str, any]]:
         if e.response.status_code == 404:
             error_msg = "Sheet not found. Please check the Sheet ID and GID are correct."
         elif e.response.status_code == 403:
-            error_msg = "Access denied. Make sure the Google Sheet is publicly accessible."
+            error_msg = "Access denied (403). The Google Sheet must be set to 'Anyone with the link can view'."
+        elif e.response.status_code == 400:
+            error_msg = "Bad request (400). The GID might be incorrect or the sheet format is invalid."
         else:
             error_msg = f"HTTP error {e.response.status_code}: {str(e)}"
         logger.error(error_msg)
@@ -328,25 +343,53 @@ def clean_and_convert_data(df: pd.DataFrame) -> pd.DataFrame:
     # Category assignment based on market cap
     df['category'] = df['market_cap_cr'].apply(assign_market_category)
     
+    # Ensure category column exists and has no NaN values
+    df['category'] = df['category'].fillna('Unknown')
+    
     return df
 
 def parse_market_cap(val: Union[str, float]) -> float:
     """Parse market cap strings to numeric values in Crores"""
-    if pd.isna(val):
+    if pd.isna(val) or val == '' or val == '-':
         return np.nan
     
     val_str = str(val).strip().upper()
-    val_str = val_str.replace('₹', '').replace(',', '').strip()
     
-    # Handle Cr suffix
-    if 'CR' in val_str:
-        val_str = val_str.replace('CR', '').strip()
+    # Remove currency symbols and commas
+    val_str = val_str.replace('₹', '').replace(',', '').replace(' ', '').strip()
+    
+    # Handle already numeric values
+    if val_str.replace('.', '').replace('-', '').isdigit():
         try:
             return float(val_str)
         except:
             return np.nan
     
-    # If no suffix, assume it's already in Crores
+    # Handle Cr suffix
+    if 'CR' in val_str:
+        val_str = val_str.replace('CRORE', '').replace('CR', '').strip()
+        try:
+            return float(val_str)
+        except:
+            return np.nan
+    
+    # Handle other suffixes (K, M, B)
+    multipliers = {
+        'K': 0.01,      # 1K = 0.01 Cr
+        'M': 0.1,       # 1M = 0.1 Cr  
+        'B': 100,       # 1B = 100 Cr
+        'T': 100000     # 1T = 100000 Cr
+    }
+    
+    for suffix, multiplier in multipliers.items():
+        if val_str.endswith(suffix):
+            try:
+                number = float(val_str[:-1])
+                return number * multiplier
+            except:
+                return np.nan
+    
+    # If no pattern matches, try parsing as is
     try:
         return float(val_str)
     except:
@@ -354,14 +397,15 @@ def parse_market_cap(val: Union[str, float]) -> float:
 
 def assign_market_category(market_cap_cr: float) -> str:
     """Assign category based on market cap in Crores"""
-    if pd.isna(market_cap_cr):
+    if pd.isna(market_cap_cr) or market_cap_cr <= 0:
         return 'Unknown'
     
-    for category, min_cap in MARKET_CAP_TIERS.items():
+    # Check each tier from largest to smallest
+    for category, min_cap in MARKET_CAP_TIERS:
         if market_cap_cr >= min_cap:
             return category
     
-    return 'Nano Cap'
+    return 'Unknown'  # Fallback if no tier matches
 
 def validate_data_quality(df: pd.DataFrame) -> Tuple[pd.DataFrame, float]:
     """Validate data quality and calculate quality score"""
@@ -391,14 +435,22 @@ def add_derived_columns(df: pd.DataFrame) -> pd.DataFrame:
     # EPS Tier assignment
     if 'eps_current' in df.columns:
         df['eps_tier'] = df['eps_current'].apply(assign_eps_tier)
+    else:
+        df['eps_tier'] = 'Unknown'
     
     # Price Tier assignment
     if 'price' in df.columns:
         df['price_tier'] = df['price'].apply(assign_price_tier)
+    else:
+        df['price_tier'] = 'Unknown'
     
     # Volume in Rupees (for liquidity filter)
     if all(col in df.columns for col in ['volume_1d', 'price']):
-        df['volume_rupees'] = df['volume_1d'] * df['price']
+        # Handle NaN values properly
+        df['volume_rupees'] = df['volume_1d'].fillna(0) * df['price'].fillna(0)
+    else:
+        df['volume_rupees'] = 0
+        logger.warning("Cannot calculate volume_rupees - missing volume_1d or price column")
     
     # True Volume Acceleration (if both ratios available)
     if all(col in df.columns for col in ['vol_ratio_30d_90d', 'vol_ratio_30d_180d']):
@@ -468,6 +520,7 @@ def calculate_edge_scores(df: pd.DataFrame, weights: Dict[str, float]) -> pd.Dat
     else:
         # Fallback to simple volume metrics
         df['volume_score'] = calculate_simple_volume_score(df)
+        logger.warning("Using simplified volume scoring due to missing acceleration data")
     
     # 2. Momentum Score
     df['momentum_score'] = calculate_momentum_score(df)
@@ -658,8 +711,16 @@ def detect_key_patterns(df: pd.DataFrame) -> pd.DataFrame:
 def calculate_position_sizing(df: pd.DataFrame) -> pd.DataFrame:
     """Calculate position sizes with risk management"""
     
+    # Ensure signal_strength column exists
+    if 'signal_strength' not in df.columns:
+        # Create signal strength based on edge score if missing
+        if 'edge_score' in df.columns:
+            df['signal_strength'] = df['edge_score'].apply(classify_signal_strength)
+        else:
+            df['signal_strength'] = 'WATCH'  # Default
+    
     # Base position size from signal strength
-    df['base_position_size'] = df['signal_strength'].map(POSITION_SIZES)
+    df['base_position_size'] = df['signal_strength'].map(POSITION_SIZES).fillna(0)
     
     # Risk adjustment based on volatility
     if 'volatility_52w' in df.columns:
@@ -693,15 +754,27 @@ def calculate_dynamic_stops(df: pd.DataFrame) -> pd.DataFrame:
         'Unknown': 0.10
     }
     
+    # Ensure category column exists
+    if 'category' not in df.columns:
+        df['category'] = 'Unknown'
+    
     df['stop_loss_pct'] = df['category'].map(category_stops).fillna(0.10)
     
     # Adjust for support levels
     if all(col in df.columns for col in ['price', 'sma_50d', 'low_52w']):
-        # Use max of category stop or support-based stop
-        support_stop_50 = (df['price'] - df['sma_50d']) / df['price']
-        support_stop_52w = (df['price'] - df['low_52w'] * 1.05) / df['price']
+        # Calculate support-based stops
+        support_stop_50 = ((df['price'] - df['sma_50d']) / df['price']).abs()
+        support_stop_52w = ((df['price'] - df['low_52w'] * 1.05) / df['price']).abs()
         
-        df['stop_loss_pct'] = df[['stop_loss_pct', support_stop_50.abs(), support_stop_52w.abs()]].min(axis=1)
+        # Get minimum of all three stop options
+        df['stop_loss_pct'] = pd.concat([
+            df['stop_loss_pct'], 
+            support_stop_50, 
+            support_stop_52w
+        ], axis=1).min(axis=1)
+    
+    # Ensure stop loss is reasonable (not too tight or too wide)
+    df['stop_loss_pct'] = df['stop_loss_pct'].clip(0.05, 0.25)  # Between 5% and 25%
     
     # Calculate stop price
     df['stop_loss'] = df['price'] * (1 - df['stop_loss_pct'])
@@ -710,6 +783,13 @@ def calculate_dynamic_stops(df: pd.DataFrame) -> pd.DataFrame:
 
 def calculate_targets(df: pd.DataFrame) -> pd.DataFrame:
     """Calculate profit targets"""
+    
+    # Ensure required columns exist
+    if 'price' not in df.columns:
+        df['target_1'] = 0
+        df['target_2'] = 0
+        df['risk_reward'] = 0
+        return df
     
     # Base targets on signal strength
     target_multipliers = {
@@ -721,23 +801,39 @@ def calculate_targets(df: pd.DataFrame) -> pd.DataFrame:
         'AVOID': (1.00, 1.00)
     }
     
-    df['target_1'] = df.apply(
-        lambda row: row['price'] * target_multipliers.get(row['signal_strength'], (1.10, 1.20))[0],
-        axis=1
-    )
-    
-    df['target_2'] = df.apply(
-        lambda row: row['price'] * target_multipliers.get(row['signal_strength'], (1.10, 1.20))[1],
-        axis=1
-    )
+    # Calculate targets with default multipliers if signal_strength is missing
+    if 'signal_strength' in df.columns:
+        df['target_1'] = df.apply(
+            lambda row: row['price'] * target_multipliers.get(row['signal_strength'], (1.10, 1.20))[0],
+            axis=1
+        )
+        
+        df['target_2'] = df.apply(
+            lambda row: row['price'] * target_multipliers.get(row['signal_strength'], (1.10, 1.20))[1],
+            axis=1
+        )
+    else:
+        # Default targets if no signal strength
+        df['target_1'] = df['price'] * 1.10
+        df['target_2'] = df['price'] * 1.20
     
     # Calculate risk/reward
-    df['risk_reward'] = (df['target_1'] - df['price']) / (df['price'] - df['stop_loss'])
+    if 'stop_loss' in df.columns:
+        # Avoid division by zero
+        df['risk_reward'] = (df['target_1'] - df['price']) / (df['price'] - df['stop_loss']).replace(0, 0.01)
+        df['risk_reward'] = df['risk_reward'].clip(0, 10)  # Cap at reasonable values
+    else:
+        df['risk_reward'] = 2.0  # Default risk/reward
     
     return df
 
 def apply_portfolio_constraints(df: pd.DataFrame) -> pd.DataFrame:
     """Apply portfolio-level risk constraints"""
+    
+    # Check if required columns exist
+    if 'edge_score' not in df.columns or 'position_size' not in df.columns:
+        # Return dataframe as is if we can't apply constraints
+        return df
     
     # Sort by edge score (highest first)
     df = df.sort_values('edge_score', ascending=False).copy()
@@ -745,6 +841,10 @@ def apply_portfolio_constraints(df: pd.DataFrame) -> pd.DataFrame:
     # Track allocations
     total_allocation = 0
     sector_allocations = {}
+    
+    # Get sector column or use default
+    if 'sector' not in df.columns:
+        df['sector'] = 'Unknown'
     
     # Apply constraints
     for idx in df.index:
@@ -809,12 +909,26 @@ def create_edge_distribution_chart(df: pd.DataFrame) -> go.Figure:
 def create_sector_performance_chart(df: pd.DataFrame) -> go.Figure:
     """Create sector performance chart"""
     
+    # Check if required columns exist
+    if 'sector' not in df.columns or 'edge_score' not in df.columns:
+        fig = go.Figure()
+        fig.add_annotation(
+            text="Sector analysis not available - missing required data",
+            xref="paper", yref="paper",
+            x=0.5, y=0.5, showarrow=False
+        )
+        return fig
+    
     # Calculate sector metrics
     sector_metrics = df.groupby('sector').agg({
         'edge_score': 'mean',
         'ticker': 'count',
-        'volume_acceleration': 'mean'
     }).round(1)
+    
+    # Add volume acceleration if available
+    if 'volume_acceleration' in df.columns:
+        vol_accel_by_sector = df.groupby('sector')['volume_acceleration'].mean().round(1)
+        sector_metrics['volume_acceleration'] = vol_accel_by_sector
     
     sector_metrics = sector_metrics.sort_values('edge_score', ascending=True)
     
@@ -845,6 +959,19 @@ def create_sector_performance_chart(df: pd.DataFrame) -> go.Figure:
 
 def create_signal_scatter(df: pd.DataFrame) -> go.Figure:
     """Create signal strength scatter plot"""
+    
+    # Check required columns exist
+    required_cols = ['signal_strength', 'risk_reward', 'edge_score', 'position_size']
+    missing_cols = [col for col in required_cols if col not in df.columns]
+    
+    if missing_cols:
+        fig = go.Figure()
+        fig.add_annotation(
+            text=f"Missing required columns: {', '.join(missing_cols)}",
+            xref="paper", yref="paper",
+            x=0.5, y=0.5, showarrow=False
+        )
+        return fig
     
     # Filter for signals only
     signals_df = df[df['signal_strength'] != 'AVOID'].copy()
@@ -901,7 +1028,7 @@ def render_filters_sidebar(df: pd.DataFrame) -> Dict[str, any]:
     # Test connection button
     if st.sidebar.button("🔌 Test Data Connection"):
         with st.spinner("Testing connection..."):
-            test_url = f"https://docs.google.com/spreadsheets/d/{SHEET_CONFIG['SHEET_ID']}/export?format=csv&gid={SHEET_CONFIG['GID']}"
+            test_url = get_sheet_url()
             try:
                 response = requests.get(test_url, timeout=5)
                 if response.status_code == 200:
@@ -925,39 +1052,59 @@ def render_filters_sidebar(df: pd.DataFrame) -> Dict[str, any]:
     
     # Category filter
     if 'category' in df.columns:
-        categories = ['All'] + sorted(df['category'].unique().tolist())
-        filters['category'] = st.sidebar.multiselect(
-            "Market Cap Category",
-            categories[1:],  # Exclude 'All'
-            default=[]
-        )
+        categories = sorted(df['category'].dropna().unique().tolist())
+        if categories:  # Only show filter if categories exist
+            filters['category'] = st.sidebar.multiselect(
+                "Market Cap Category",
+                categories,
+                default=[]
+            )
+        else:
+            filters['category'] = []
+    else:
+        filters['category'] = []
     
     # Sector filter
     if 'sector' in df.columns:
-        sectors = ['All'] + sorted(df['sector'].unique().tolist())
-        filters['sector'] = st.sidebar.multiselect(
-            "Sector",
-            sectors[1:],  # Exclude 'All'
-            default=[]
-        )
+        sectors = sorted(df['sector'].dropna().unique().tolist())
+        if sectors:
+            filters['sector'] = st.sidebar.multiselect(
+                "Sector",
+                sectors,
+                default=[]
+            )
+        else:
+            filters['sector'] = []
+    else:
+        filters['sector'] = []
     
     # EPS Tier filter
     if 'eps_tier' in df.columns:
-        eps_tiers = ['All'] + sorted(df['eps_tier'].unique().tolist())
-        filters['eps_tier'] = st.sidebar.multiselect(
-            "EPS Tier",
-            eps_tiers[1:],  # Exclude 'All'
-            default=[]
-        )
+        eps_tiers = sorted(df['eps_tier'].dropna().unique().tolist())
+        if eps_tiers:
+            filters['eps_tier'] = st.sidebar.multiselect(
+                "EPS Tier",
+                eps_tiers,
+                default=[]
+            )
+        else:
+            filters['eps_tier'] = []
+    else:
+        filters['eps_tier'] = []
     
     # Price Tier filter
     if 'price_tier' in df.columns:
-        price_tiers = ['All'] + sorted(df['price_tier'].unique().tolist())
-        filters['price_tier'] = st.sidebar.multiselect(
-            "Price Tier",
-            price_tiers[1:],  # Exclude 'All'
-            default=[]
-        )
+        price_tiers = sorted(df['price_tier'].dropna().unique().tolist())
+        if price_tiers:
+            filters['price_tier'] = st.sidebar.multiselect(
+                "Price Tier",
+                price_tiers,
+                default=[]
+            )
+        else:
+            filters['price_tier'] = []
+    else:
+        filters['price_tier'] = []
     
     # Signal strength filter
     filters['min_edge_score'] = st.sidebar.slider(
@@ -979,23 +1126,24 @@ def apply_filters(df: pd.DataFrame, filters: Dict[str, any]) -> pd.DataFrame:
     filtered_df = df.copy()
     
     # Category filter
-    if filters.get('category'):
+    if filters.get('category') and 'category' in filtered_df.columns:
         filtered_df = filtered_df[filtered_df['category'].isin(filters['category'])]
     
     # Sector filter
-    if filters.get('sector'):
+    if filters.get('sector') and 'sector' in filtered_df.columns:
         filtered_df = filtered_df[filtered_df['sector'].isin(filters['sector'])]
     
     # EPS Tier filter
-    if filters.get('eps_tier'):
+    if filters.get('eps_tier') and 'eps_tier' in filtered_df.columns:
         filtered_df = filtered_df[filtered_df['eps_tier'].isin(filters['eps_tier'])]
     
     # Price Tier filter
-    if filters.get('price_tier'):
+    if filters.get('price_tier') and 'price_tier' in filtered_df.columns:
         filtered_df = filtered_df[filtered_df['price_tier'].isin(filters['price_tier'])]
     
     # EDGE score filter
-    filtered_df = filtered_df[filtered_df['edge_score'] >= filters['min_edge_score']]
+    if 'edge_score' in filtered_df.columns:
+        filtered_df = filtered_df[filtered_df['edge_score'] >= filters['min_edge_score']]
     
     # Liquidity filter
     if filters.get('min_liquidity') and 'volume_rupees' in filtered_df.columns:
@@ -1009,30 +1157,50 @@ def display_key_metrics(df: pd.DataFrame):
     col1, col2, col3, col4, col5 = st.columns(5)
     
     with col1:
-        total_signals = len(df[df['signal_strength'] != 'AVOID'])
+        if 'signal_strength' in df.columns:
+            total_signals = len(df[df['signal_strength'] != 'AVOID'])
+        else:
+            total_signals = len(df[df['edge_score'] >= EDGE_THRESHOLDS['WATCH']])
         st.metric("Total Signals", total_signals)
     
     with col2:
-        super_edge = len(df[df['signal_strength'] == 'SUPER_EDGE'])
+        if 'signal_strength' in df.columns:
+            super_edge = len(df[df['signal_strength'] == 'SUPER_EDGE'])
+        else:
+            super_edge = len(df[df['edge_score'] >= EDGE_THRESHOLDS['SUPER_EDGE']])
         st.metric("SUPER EDGE", super_edge)
     
     with col3:
-        avg_edge = df[df['signal_strength'] != 'AVOID']['edge_score'].mean()
+        if 'edge_score' in df.columns:
+            signals_only = df[df['edge_score'] >= EDGE_THRESHOLDS['WATCH']]
+            avg_edge = signals_only['edge_score'].mean() if len(signals_only) > 0 else 0
+        else:
+            avg_edge = 0
         st.metric("Avg EDGE Score", f"{avg_edge:.1f}")
     
     with col4:
-        portfolio_used = df['position_size'].sum() * 100
+        if 'position_size' in df.columns:
+            portfolio_used = df['position_size'].sum() * 100
+        else:
+            portfolio_used = 0
         st.metric("Portfolio Used", f"{portfolio_used:.1f}%")
     
     with col5:
-        high_rr = len(df[df['risk_reward'] >= 2])
+        if 'risk_reward' in df.columns:
+            high_rr = len(df[df['risk_reward'] >= 2])
+        else:
+            high_rr = 0
         st.metric("High R/R (≥2)", high_rr)
 
 def display_signals_table(df: pd.DataFrame):
     """Display main signals table"""
     
     # Filter for actionable signals
-    signals_df = df[df['signal_strength'] != 'AVOID'].copy()
+    if 'signal_strength' in df.columns:
+        signals_df = df[df['signal_strength'] != 'AVOID'].copy()
+    else:
+        # If signal_strength doesn't exist, use edge_score threshold
+        signals_df = df[df['edge_score'] >= EDGE_THRESHOLDS['WATCH']].copy()
     
     if signals_df.empty:
         st.info("No signals match current filters")
@@ -1174,17 +1342,34 @@ def main():
                 
                 **Direct Sheet Link:**
                 [Open Google Sheet](https://docs.google.com/spreadsheets/d/1Wa4-4K7hyTTCrqJ0pUzS-NaLFiRQpBgI8KBdHx9obKk)
+                
+                **To Verify Sheet Access:**
+                Click the "🔌 Test Data Connection" button in the sidebar to check if the sheet is accessible.
+                
+                **Alternative Data Sources:**
+                - If you have access to the data, download it as CSV and upload
+                - The system will work with any properly formatted watchlist CSV
                 """)
         
-        # Offer manual upload option
+        # Offer manual upload option or demo mode
         st.markdown("---")
-        st.subheader("📤 Alternative: Upload Data Manually")
+        st.subheader("📤 Alternative Options")
         
-        uploaded_file = st.file_uploader(
-            "Upload your watchlist CSV file",
-            type=['csv'],
-            help="Download the data from Google Sheets as CSV and upload here"
-        )
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("#### Upload Data Manually")
+            uploaded_file = st.file_uploader(
+                "Upload your watchlist CSV file",
+                type=['csv'],
+                help="Download the data from Google Sheets as CSV and upload here"
+            )
+        
+        with col2:
+            st.markdown("#### Demo Mode")
+            if st.button("🎮 Load Demo Data", type="primary"):
+                st.info("Demo mode would load sample data for testing. Feature coming soon!")
+                # TODO: Add demo data generation
         
         if uploaded_file is not None:
             try:
@@ -1199,8 +1384,40 @@ def main():
                 df, quality_score = validate_data_quality(df)
                 df = add_derived_columns(df)
                 
-                diagnostics['rows_loaded'] = len(df)
-                diagnostics['data_quality_score'] = quality_score
+                # Update diagnostics with proper structure
+                diagnostics = {
+                    'timestamp': datetime.now(),
+                    'rows_loaded': len(df),
+                    'data_quality_score': quality_score,
+                    'warnings': [],
+                    'critical_columns_missing': []
+                }
+                
+                # Check for critical columns in uploaded data
+                critical_cols = [
+                    'ticker', 'company_name', 'price', 'market_cap',
+                    'volume_1d', 'rvol', 'sector', 'category',
+                    'vol_ratio_30d_90d', 'vol_ratio_30d_180d',
+                    'ret_1d', 'ret_7d', 'ret_30d',
+                    'from_high_pct', 'from_low_pct',
+                    'eps_current', 'pe', 'sma_50d', 'sma_200d'
+                ]
+                
+                missing = [col for col in critical_cols if col not in df.columns]
+                if missing:
+                    diagnostics['critical_columns_missing'] = missing
+                    diagnostics['warnings'].append(f"Missing columns: {', '.join(missing[:5])}{'...' if len(missing) > 5 else ''}")
+                
+                # Show data preview option
+                if st.checkbox("👁️ Preview uploaded data", key="preview_data"):
+                    st.write("**Column Names Found:**")
+                    st.write(list(df.columns))
+                    
+                    st.write("**First 5 Rows:**")
+                    st.dataframe(df.head())
+                    
+                    st.write("**Data Types:**")
+                    st.write(df.dtypes)
                 
             except Exception as e:
                 st.error(f"Error reading uploaded file: {str(e)}")
@@ -1223,34 +1440,60 @@ def main():
             st.code(f"""
 Sheet ID: {SHEET_CONFIG['SHEET_ID']}
 GID: {SHEET_CONFIG['GID']}
-Full URL: https://docs.google.com/spreadsheets/d/{SHEET_CONFIG['SHEET_ID']}/export?format=csv&gid={SHEET_CONFIG['GID']}
+Full URL: {get_sheet_url()}
             """, language="text")
     
     # Get filters
     filters = render_filters_sidebar(df)
     
     # Process data
-    with st.spinner("Analyzing market dynamics..."):
-        # Apply strategy weights
-        weights = STRATEGY_WEIGHTS[filters['strategy']]
+    try:
+        with st.spinner("Analyzing market dynamics..."):
+            # Apply strategy weights
+            weights = STRATEGY_WEIGHTS[filters['strategy']]
+            
+            # Calculate EDGE scores
+            df = calculate_edge_scores(df, weights)
+            
+            # Detect patterns
+            df = detect_key_patterns(df)
+            
+            # Calculate position sizing and risk metrics
+            df = calculate_position_sizing(df)
+            
+            # Apply portfolio constraints
+            df = apply_portfolio_constraints(df)
+            
+            # Apply filters
+            filtered_df = apply_filters(df, filters)
+            
+    except Exception as e:
+        st.error(f"❌ Error during analysis: {str(e)}")
         
-        # Calculate EDGE scores
-        df = calculate_edge_scores(df, weights)
+        # Show debug information
+        with st.expander("🐛 Debug Information", expanded=True):
+            st.write("**Error Details:**")
+            st.code(str(e))
+            
+            st.write("**Data Columns Available:**")
+            st.write(list(df.columns))
+            
+            st.write("**Data Sample:**")
+            st.dataframe(df.head())
+            
+            st.write("**Missing Critical Columns:**")
+            critical_cols = ['price', 'sma_50d', 'low_52w', 'category']
+            missing = [col for col in critical_cols if col not in df.columns]
+            st.write(missing)
         
-        # Detect patterns
-        df = detect_key_patterns(df)
-        
-        # Calculate position sizing and risk metrics
-        df = calculate_position_sizing(df)
-        
-        # Apply portfolio constraints
-        df = apply_portfolio_constraints(df)
-        
-        # Apply filters
-        filtered_df = apply_filters(df, filters)
+        st.stop()
     
     # Check for SUPER EDGE signals
-    super_edge_count = len(filtered_df[filtered_df['signal_strength'] == 'SUPER_EDGE'])
+    if 'signal_strength' in filtered_df.columns:
+        super_edge_count = len(filtered_df[filtered_df['signal_strength'] == 'SUPER_EDGE'])
+    else:
+        super_edge_count = 0
+        
     if super_edge_count > 0:
         st.markdown(f"""
         <div class="super-edge-alert">
@@ -1258,8 +1501,13 @@ Full URL: https://docs.google.com/spreadsheets/d/{SHEET_CONFIG['SHEET_ID']}/expo
         </div>
         """, unsafe_allow_html=True)
     
-    # Display metrics
-    display_key_metrics(filtered_df)
+    # Display key metrics (safely handle missing columns)
+    try:
+        display_key_metrics(filtered_df)
+    except Exception as e:
+        st.warning(f"Some metrics unavailable: {str(e)}")
+        # Show basic metrics that we can calculate
+        st.metric("Total Rows", len(filtered_df))
     
     # Main content tabs
     tab1, tab2, tab3, tab4, tab5 = st.tabs([
@@ -1327,7 +1575,18 @@ Full URL: https://docs.google.com/spreadsheets/d/{SHEET_CONFIG['SHEET_ID']}/expo
         
         # Display top picks for each signal strength
         for strength in ['SUPER_EDGE', 'EXPLOSIVE', 'STRONG']:
-            top_picks = filtered_df[filtered_df['signal_strength'] == strength].head(5)
+            if 'signal_strength' in filtered_df.columns:
+                top_picks = filtered_df[filtered_df['signal_strength'] == strength].head(5)
+            else:
+                # Use edge score thresholds as fallback
+                if strength == 'SUPER_EDGE':
+                    top_picks = filtered_df[filtered_df['edge_score'] >= EDGE_THRESHOLDS['SUPER_EDGE']].head(5)
+                elif strength == 'EXPLOSIVE':
+                    mask = (filtered_df['edge_score'] >= EDGE_THRESHOLDS['EXPLOSIVE']) & (filtered_df['edge_score'] < EDGE_THRESHOLDS['SUPER_EDGE'])
+                    top_picks = filtered_df[mask].head(5)
+                else:  # STRONG
+                    mask = (filtered_df['edge_score'] >= EDGE_THRESHOLDS['STRONG']) & (filtered_df['edge_score'] < EDGE_THRESHOLDS['EXPLOSIVE'])
+                    top_picks = filtered_df[mask].head(5)
             
             if not top_picks.empty:
                 st.subheader(f"{strength} Signals")
@@ -1336,17 +1595,24 @@ Full URL: https://docs.google.com/spreadsheets/d/{SHEET_CONFIG['SHEET_ID']}/expo
                     col1, col2, col3, col4 = st.columns([2, 1, 1, 1])
                     
                     with col1:
-                        st.write(f"**{stock['ticker']} - {stock['company_name']}**")
-                        st.caption(f"{stock['sector']} | {stock['category']}")
+                        ticker = stock.get('ticker', 'N/A')
+                        company = stock.get('company_name', 'Unknown')
+                        sector = stock.get('sector', 'Unknown')
+                        category = stock.get('category', 'Unknown')
+                        st.write(f"**{ticker} - {company}**")
+                        st.caption(f"{sector} | {category}")
                     
                     with col2:
-                        st.metric("EDGE Score", f"{stock['edge_score']:.1f}")
+                        edge_score = stock.get('edge_score', 0)
+                        st.metric("EDGE Score", f"{edge_score:.1f}")
                     
                     with col3:
-                        st.metric("Price", f"₹{stock['price']:.2f}")
+                        price = stock.get('price', 0)
+                        st.metric("Price", f"₹{price:.2f}")
                     
                     with col4:
-                        st.metric("R/R Ratio", f"{stock['risk_reward']:.2f}")
+                        rr = stock.get('risk_reward', 0)
+                        st.metric("R/R Ratio", f"{rr:.2f}")
     
     with tab4:
         st.header("📉 Risk Analysis")
@@ -1354,9 +1620,12 @@ Full URL: https://docs.google.com/spreadsheets/d/{SHEET_CONFIG['SHEET_ID']}/expo
         # Portfolio allocation summary
         st.subheader("Portfolio Allocation")
         
-        allocation_df = filtered_df[filtered_df['position_size'] > 0].copy()
+        if 'position_size' in filtered_df.columns:
+            allocation_df = filtered_df[filtered_df['position_size'] > 0].copy()
+        else:
+            allocation_df = pd.DataFrame()  # Empty dataframe
         
-        if not allocation_df.empty:
+        if not allocation_df.empty and 'sector' in allocation_df.columns:
             # Sector allocation pie chart
             sector_allocation = allocation_df.groupby('sector')['position_size'].sum()
             
@@ -1377,16 +1646,27 @@ Full URL: https://docs.google.com/spreadsheets/d/{SHEET_CONFIG['SHEET_ID']}/expo
             col1, col2, col3 = st.columns(3)
             
             with col1:
-                avg_stop = allocation_df['stop_loss_pct'].mean() * 100
+                if 'stop_loss_pct' in allocation_df.columns:
+                    avg_stop = allocation_df['stop_loss_pct'].mean() * 100
+                else:
+                    avg_stop = 0
                 st.metric("Avg Stop Loss", f"{avg_stop:.1f}%")
             
             with col2:
-                avg_rr = allocation_df['risk_reward'].mean()
+                if 'risk_reward' in allocation_df.columns:
+                    avg_rr = allocation_df['risk_reward'].mean()
+                else:
+                    avg_rr = 0
                 st.metric("Avg Risk/Reward", f"{avg_rr:.2f}")
             
             with col3:
-                max_drawdown = (allocation_df['position_size'] * allocation_df['stop_loss_pct']).sum() * 100
+                if all(col in allocation_df.columns for col in ['position_size', 'stop_loss_pct']):
+                    max_drawdown = (allocation_df['position_size'] * allocation_df['stop_loss_pct']).sum() * 100
+                else:
+                    max_drawdown = 0
                 st.metric("Max Portfolio Drawdown", f"{max_drawdown:.1f}%")
+        else:
+            st.info("No portfolio allocation data available. Run the analysis with proper data to see risk metrics.")
     
     with tab5:
         st.header("📚 Documentation")
