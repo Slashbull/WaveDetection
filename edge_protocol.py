@@ -13,6 +13,7 @@ from functools import lru_cache
 from scipy import stats
 from typing import Dict, List, Tuple, Optional, Union
 import time
+import datetime # Changed from 'from datetime import datetime, timedelta'
 
 # Suppress warnings for cleaner output in Streamlit
 warnings.filterwarnings("ignore")
@@ -164,7 +165,7 @@ def load_and_validate_data() -> Tuple[pd.DataFrame, Dict[str, any]]:
     cleaning, and basic preprocessing.
     """
     diagnostics = {
-        "timestamp": datetime.now(),
+        "timestamp": datetime.datetime.now(), # Changed to datetime.datetime.now()
         "rows_loaded": 0,
         "data_quality_score": 0,
         "critical_columns_missing": [],
@@ -1368,6 +1369,172 @@ def plot_stock_radar_chart(df_row: pd.Series):
     return fig
 
 # ============================================================================
+# UI COMPONENTS
+# ============================================================================
+def render_sidebar_diagnostics(diagnostics: Dict):
+    """Renders system health and data diagnostics in the sidebar."""
+    with st.sidebar.expander("📊 System Health & Diagnostics", expanded=False):
+        # Data quality score with color coding
+        quality_score = diagnostics.get('data_quality_score', 0)
+        if quality_score > 90:
+            st.success(f"Data Quality: {quality_score:.0f}% - Excellent")
+        elif quality_score > 70:
+            st.warning(f"Data Quality: {quality_score:.0f}% - Good, check warnings")
+        else:
+            st.error(f"Data Quality: {quality_score:.0f}% - Poor, proceed with caution")
+
+        # Timestamp
+        st.write(f"**Last Run:** {diagnostics.get('timestamp', 'Unknown').strftime('%Y-%m-%d %H:%M:%S')}")
+
+        # Data stats
+        st.write(f"**Rows Loaded:** {diagnostics.get('rows_loaded', 0):,}")
+
+        # Warnings
+        warnings_list = diagnostics.get('warnings', [])
+        if warnings_list:
+            st.write("**⚠️ Warnings:**")
+            for warning in warnings_list[:5]: # Show max 5 warnings
+                st.write(f"• {warning}")
+            if len(warnings_list) > 5:
+                st.write(f"  ... {len(warnings_list) - 5} more warnings.")
+
+        # Critical columns
+        missing_critical = diagnostics.get('critical_columns_missing', [])
+        if missing_critical:
+            st.error(f"Missing critical columns: {', '.join(missing_critical)}. Data may be unreliable.")
+
+        # Download diagnostic report
+        diag_data = pd.DataFrame([diagnostics])
+        csv = diag_data.to_csv(index=False).encode('utf-8')
+        st.download_button(
+            "📥 Diagnostic Report",
+            csv,
+            "diagnostics.csv",
+            "text/csv",
+            key="diag_download"
+        )
+
+def create_excel_report(df_signals: pd.DataFrame, df_all: pd.DataFrame) -> io.BytesIO:
+    """
+    Creates a multi-sheet Excel report containing various aspects of the analysis.
+    """
+    output = io.BytesIO()
+
+    # Ensure all dataframes used in the report are not empty
+    if df_signals.empty and df_all.empty:
+        st.warning("No data to generate Excel report.")
+        return output # Return empty BytesIO
+
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        # Sheet 1: Executive Summary
+        summary_data = {
+            'Metric': [
+                'Total Stocks Analyzed',
+                'Total Signals Generated',
+                'SUPER EDGE Count',
+                'EXPLOSIVE Count',
+                'Portfolio Allocation (Total)',
+                'Avg EDGE Score (Signals)',
+                'Top Sector by Avg EDGE',
+                'Report Generated On'
+            ],
+            'Value': [
+                len(df_all),
+                len(df_signals),
+                (df_signals['tag'] == 'SUPER_EDGE').sum() if 'tag' in df_signals.columns else 0,
+                (df_signals['tag'] == 'EXPLOSIVE').sum() if 'tag' in df_signals.columns else 0,
+                f"{df_signals['portfolio_weight'].sum()*100:.1f}%" if 'portfolio_weight' in df_signals.columns else "0.0%",
+                f"{df_signals['EDGE'].mean():.1f}" if 'EDGE' in df_signals.columns and len(df_signals) > 0 else "N/A",
+                df_signals.groupby('sector')['EDGE'].mean().idxmax() if 'sector' in df_signals.columns and 'EDGE' in df_signals.columns and len(df_signals) > 0 else 'N/A',
+                datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S IST') # Changed to datetime.datetime.now()
+            ]
+        }
+        pd.DataFrame(summary_data).to_excel(writer, sheet_name='Executive Summary', index=False)
+
+        # Sheet 2: Action Items (SUPER EDGE + EXPLOSIVE) - Most important for trading
+        if 'tag' in df_signals.columns:
+            action_items = df_signals[df_signals['tag'].isin(['SUPER_EDGE', 'EXPLOSIVE'])].copy()
+            if not action_items.empty:
+                action_cols = [
+                    'ticker', 'company_name', 'tag', 'EDGE', 'decision',
+                    'price', 'position_size', 'stop_loss', 'stop_loss_pct', 'target1', 'target2',
+                    'volume_classification', 'top_pattern_name', 'top_pattern_score', 'pattern_confluence_score', 'vp_divergence_score', 'sector', 'rvol', 'volume_acceleration'
+                ]
+                # Filter to only include columns that actually exist in the dataframe
+                action_cols = [col for col in action_cols if col in action_items.columns]
+                if action_cols:
+                    action_items[action_cols].to_excel(writer, sheet_name='Actionable Signals', index=False)
+                else:
+                    pd.DataFrame([{"Message": "No relevant columns for Actionable Signals."}]).to_excel(writer, sheet_name='Actionable Signals', index=False)
+            else:
+                pd.DataFrame([{"Message": "No SUPER EDGE or EXPLOSIVE signals."}]).to_excel(writer, sheet_name='Actionable Signals', index=False)
+
+        # Sheet 3: All Trading Signals (filtered by min EDGE)
+        if not df_signals.empty:
+            signal_cols = [
+                'ticker', 'company_name', 'sector', 'tag', 'EDGE', 'decision',
+                'price', 'position_size', 'portfolio_weight',
+                'stop_loss', 'stop_loss_pct', 'target1', 'target2',
+                'vol_score', 'mom_score', 'rr_score', 'fund_score',
+                'volume_acceleration', 'rvol', 'volume_classification',
+                'top_pattern_name', 'top_pattern_score', 'pattern_confluence_score', 'vp_divergence_score', 'from_high_pct', 'from_low_pct'
+            ]
+            signal_cols = [col for col in signal_cols if col in df_signals.columns]
+            if signal_cols:
+                df_signals[signal_cols].to_excel(writer, sheet_name='All Trading Signals', index=False)
+            else:
+                pd.DataFrame([{"Message": "No relevant columns for All Trading Signals."}]).to_excel(writer, sheet_name='All Trading Signals', index=False)
+        else:
+            pd.DataFrame([{"Message": "No signals generated based on current filters."}]).to_excel(writer, sheet_name='All Trading Signals', index=False)
+
+        # Sheet 4: Pattern Analysis (all detected patterns)
+        if 'top_pattern_score' in df_all.columns:
+            pattern_df = df_all[df_all['top_pattern_score'] > 0].copy()
+            if not pattern_df.empty:
+                pattern_cols = ['ticker', 'company_name', 'top_pattern_name', 'top_pattern_score', 'pattern_confluence_score', 'vp_divergence_score', 'EDGE', 'tag', 'price']
+                pattern_cols = [col for col in pattern_cols if col in pattern_df.columns]
+                if pattern_cols:
+                    pattern_df[pattern_cols].sort_values(by='top_pattern_score', ascending=False).to_excel(writer, sheet_name='Pattern Analysis', index=False)
+                else:
+                    pd.DataFrame([{"Message": "No relevant columns for Pattern Analysis."}]).to_excel(writer, sheet_name='Pattern Analysis', index=False)
+            else:
+                pd.DataFrame([{"Message": "No patterns detected in the dataset."}]).to_excel(writer, sheet_name='Pattern Analysis', index=False)
+
+        # Sheet 5: Sector Summary Analysis
+        if 'sector' in df_all.columns and not df_all.empty:
+            agg_dict_sector = {}
+            if 'EDGE' in df_all.columns:
+                agg_dict_sector['EDGE'] = ['mean', 'max', 'count']
+            if 'volume_acceleration' in df_all.columns:
+                agg_dict_sector['volume_acceleration'] = 'mean'
+            if 'rvol' in df_all.columns:
+                agg_dict_sector['rvol'] = 'mean'
+            if 'ret_3m' in df_all.columns:
+                agg_dict_sector['ret_3m'] = 'mean'
+
+            if agg_dict_sector:
+                sector_analysis = df_all.groupby('sector').agg(agg_dict_sector).round(1)
+                # Flatten column names for multi-index aggregation
+                sector_analysis.columns = ['_'.join(col).strip() if isinstance(col, tuple) else col for col in sector_analysis.columns]
+                sector_analysis.rename(columns={'ticker_count': 'Total Stocks', 'EDGE_mean': 'Avg EDGE', 'EDGE_max': 'Max EDGE',
+                                                 'volume_acceleration_mean': 'Avg Vol Accel', 'rvol_mean': 'Avg RVOL',
+                                                 'ret_3m_mean': 'Avg 3m Return'}, inplace=True)
+                sector_analysis.sort_values(by='Avg EDGE', ascending=False).to_excel(writer, sheet_name='Sector Analysis')
+            else:
+                pd.DataFrame([{"Message": "Not enough data for Sector Analysis."}]).to_excel(writer, sheet_name='Sector Analysis', index=False)
+        else:
+            pd.DataFrame([{"Message": "Sector data missing or DataFrame is empty for Sector Analysis."}]).to_excel(writer, sheet_name='Sector Analysis', index=False)
+
+        # Sheet 6: Raw Data (optional, first 5000 rows to prevent huge files)
+        if not df_all.empty:
+            df_all.head(5000).to_excel(writer, sheet_name='Raw Data', index=False)
+        else:
+            pd.DataFrame([{"Message": "Raw data is empty."}]).to_excel(writer, sheet_name='Raw Data', index=False)
+
+    output.seek(0) # Rewind the buffer
+    return output
+
+# ============================================================================
 # MAIN STREAMLIT UI FUNCTION
 # ============================================================================
 def render_ui():
@@ -1651,7 +1818,7 @@ def render_ui():
                 st.download_button(
                     "📥 Download Signals (CSV)",
                     csv_export,
-                    f"edge_signals_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                    f"edge_signals_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.csv", # Changed to datetime.datetime.now()
                     "text/csv",
                     type="primary"
                 )
@@ -1661,7 +1828,7 @@ def render_ui():
                 st.download_button(
                     "📊 Download Full Report (Excel)",
                     excel_buffer,
-                    f"EDGE_Report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                    f"EDGE_Report_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx", # Changed to datetime.datetime.now()
                     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     type="primary"
                 )
@@ -2133,7 +2300,7 @@ def render_ui():
             st.metric("Patterns Detected", (df_analyzed['top_pattern_score'] > 0).sum() if 'top_pattern_score' in df_analyzed.columns else 0)
         
         with col3:
-            st.metric("Data Timestamp", diagnostics.get('timestamp', datetime.now()).strftime('%Y-%m-%d %H:%M'))
+            st.metric("Data Timestamp", diagnostics.get('timestamp', datetime.datetime.now()).strftime('%Y-%m-%d %H:%M')) # Changed to datetime.datetime.now()
             st.metric("Profile", profile_name)
             st.metric("Min EDGE Filter", min_edge)
         
@@ -2190,7 +2357,7 @@ def render_ui():
             st.download_button(
                 "📥 Download Full Processed Data",
                 csv_full,
-                f"edge_protocol_full_processed_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                f"edge_protocol_full_processed_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.csv", # Changed to datetime.datetime.now()
                 "text/csv"
             )
         
@@ -2202,7 +2369,7 @@ def render_ui():
                 st.download_button(
                     "🔥 Download High EDGE Signals Only",
                     csv_high,
-                    f"edge_high_signals_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                    f"edge_high_signals_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.csv", # Changed to datetime.datetime.now()
                     "text/csv"
                 )
 
