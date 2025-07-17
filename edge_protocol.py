@@ -750,7 +750,7 @@ def score_fundamentals(row: pd.Series, df: pd.DataFrame) -> float:
 # ============================================================================
 # MAIN SCORING ENGINE
 # ============================================================================
-def calculate_edge_scores(df: pd.DataFrame, weights: Tuple[float, float, float, float]) -> pd.DataFrame: # Added fund_weight to tuple
+def calculate_edge_scores(df: pd.DataFrame, weights: Tuple[float, float, float, float]) -> pd.DataFrame:
     """Calculate EDGE scores with enhanced criteria"""
     df = df.copy()
     
@@ -778,9 +778,8 @@ def calculate_edge_scores(df: pd.DataFrame, weights: Tuple[float, float, float, 
             continue
             
         # Ensure weights array matches the length of block_cols
-        # If the weights tuple has 3 elements, and block_cols has 4, this is where the IndexError occurs.
-        # The fix is to ensure `weights` passed in has 4 elements, or adapt this logic.
-        # Since PROFILE_PRESETS has 4 elements, we ensure `weights` is always 4 elements.
+        # This was the source of the IndexError: boolean index did not match indexed array
+        # The `weights` tuple from PROFILE_PRESETS is guaranteed to have 4 elements.
         valid_weights = np.array(weights)[valid_mask] 
         valid_scores = scores[valid_mask]
         
@@ -1001,7 +1000,7 @@ def apply_portfolio_constraints(df: pd.DataFrame) -> pd.DataFrame:
 # ============================================================================
 # MAIN SCORING PIPELINE
 # ============================================================================
-def run_edge_analysis(df: pd.DataFrame, weights: Tuple[float, float, float, float]) -> pd.DataFrame: # Added fund_weight to tuple
+def run_edge_analysis(df: pd.DataFrame, weights: Tuple[float, float, float, float]) -> pd.DataFrame:
     """Complete EDGE analysis pipeline"""
     # Load constants inside this function as well
     constants = load_app_constants()
@@ -1916,7 +1915,7 @@ def render_ui():
             st.info("Insufficient data for sector analysis.")
 
     # Tab 6: Deep Dive (from old version)
-    with tabs[5]:
+    with tabs[5]: # Corrected index from 6 to 5
         st.header("🔍 Stock Deep Dive")
         
         # Stock selector
@@ -2013,7 +2012,7 @@ def render_ui():
                 st.info("No stocks available for analysis.")
         
     # Tab 7: Raw Data (from old version)
-    with tabs[6]:
+    with tabs[5]: # Corrected index from 6 to 5
         st.header("📋 Raw Data & Diagnostics")
         
         # Summary stats
