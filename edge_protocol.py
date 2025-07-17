@@ -220,8 +220,9 @@ def load_and_validate_data() -> Tuple[pd.DataFrame, Dict[str, any]]:
         quality_checks = []
         for col in ['price', 'volume_1d', 'ticker']:
             if col in df.columns:
-                non_null_pct = df[col].notna().sum() / len(df) * 100
-                quality_checks.append(non_null_pct)
+                non_null = df[col].notna().sum()
+                pct = non_null / len(df) * 100
+                quality_checks.append(pct)
         
         diagnostics["data_quality_score"] = np.mean(quality_checks) if quality_checks else 0
         
@@ -1499,8 +1500,8 @@ def render_ui():
         "⭐ SUPER EDGE Focus", 
         "🏆 Sector Leaders",
         "📊 Deep Analysis",
-        "🔍 Stock Deep Dive", # Added from old version
-        "📋 Raw Data" # Added from old version
+        "🔍 Stock Deep Dive",
+        "📋 Raw Data"
     ])
     
     # Tab 1: Trading Signals
@@ -2012,7 +2013,7 @@ def render_ui():
                 st.info("No stocks available for analysis.")
         
     # Tab 7: Raw Data (from old version)
-    with tabs[5]: # Corrected index from 6 to 5
+    with tabs[6]: # Corrected index from 6 to 5
         st.header("📋 Raw Data & Diagnostics")
         
         # Summary stats
