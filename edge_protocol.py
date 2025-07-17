@@ -754,6 +754,10 @@ def calculate_edge_scores(df: pd.DataFrame, weights: Tuple[float, float, float, 
     """Calculate EDGE scores with enhanced criteria"""
     df = df.copy()
     
+    # Load constants inside this function
+    constants = load_app_constants()
+    EDGE_THRESHOLDS = constants["EDGE_THRESHOLDS"]
+
     # Calculate individual scores
     with st.spinner("Calculating component scores..."):
         df["vol_score"] = df.apply(score_vol_accel, axis=1)
@@ -805,6 +809,8 @@ def calculate_edge_scores(df: pd.DataFrame, weights: Tuple[float, float, float, 
 
 def detect_super_edge_strict(row: pd.Series, sector_ranks: Dict[str, int]) -> bool:
     """STRICTER SUPER EDGE detection (5 out of 6 conditions)"""
+    constants = load_app_constants() # Load constants
+    
     conditions_met = 0
     
     # 1. High RVOL
@@ -922,6 +928,13 @@ def calculate_dynamic_stops(df: pd.DataFrame) -> pd.DataFrame:
 # ============================================================================
 def apply_portfolio_constraints(df: pd.DataFrame) -> pd.DataFrame:
     """Apply portfolio-level risk constraints"""
+    constants = load_app_constants() # Load constants
+    MAX_POSITIONS = constants["MAX_POSITIONS"]
+    MAX_PORTFOLIO_EXPOSURE = constants["MAX_PORTFOLIO_EXPOSURE"]
+    MAX_SECTOR_EXPOSURE = constants["MAX_SECTOR_EXPOSURE"]
+    MAX_SUPER_EDGE_POSITIONS = constants["MAX_SUPER_EDGE_POSITIONS"]
+    BASE_POSITION_SIZES = constants["BASE_POSITION_SIZES"]
+
     df = df.copy()
     
     # Sort by EDGE score
@@ -992,9 +1005,7 @@ def run_edge_analysis(df: pd.DataFrame, weights: Tuple[float, float, float, floa
     """Complete EDGE analysis pipeline"""
     # Load constants inside this function as well
     constants = load_app_constants()
-    EDGE_THRESHOLDS = constants["EDGE_THRESHOLDS"]
-    MAX_PATTERN_DETECTION_STOCKS = constants["MAX_PATTERN_DETECTION_STOCKS"]
-
+    
     # Calculate volume metrics
     df = calculate_volume_metrics(df)
     
@@ -1015,15 +1026,15 @@ def run_edge_analysis(df: pd.DataFrame, weights: Tuple[float, float, float, floa
     
     # Classify stocks
     conditions = [
-        df['EDGE'] >= EDGE_THRESHOLDS['EXPLOSIVE'],
-        df['EDGE'] >= EDGE_THRESHOLDS['STRONG'],
-        df['EDGE'] >= EDGE_THRESHOLDS['MODERATE']
+        df['EDGE'] >= constants['EDGE_THRESHOLDS']['EXPLOSIVE'], # Access via constants
+        df['EDGE'] >= constants['EDGE_THRESHOLDS']['STRONG'],    # Access via constants
+        df['EDGE'] >= constants['EDGE_THRESHOLDS']['MODERATE']   # Access via constants
     ]
     choices = ['EXPLOSIVE', 'STRONG', 'MODERATE']
     df['tag'] = np.select(conditions, choices, default='WATCH')
     
     # Detect SUPER EDGE with stricter criteria
-    for idx in df[df['EDGE'] >= EDGE_THRESHOLDS['SUPER_EDGE']].index:
+    for idx in df[df['EDGE'] >= constants['EDGE_THRESHOLDS']['SUPER_EDGE']].index: # Access via constants
         if detect_super_edge_strict(df.loc[idx], sector_ranks):
             df.loc[idx, 'tag'] = 'SUPER_EDGE'
             df.loc[idx, 'EDGE'] = min(df.loc[idx, 'EDGE'] * 1.1, 100)  # Boost score
@@ -1206,6 +1217,9 @@ def render_sidebar_diagnostics(diagnostics: Dict):
 
 def render_sector_leaderboard(df: pd.DataFrame):
     """Render sector leaderboard instead of heatmap"""
+    constants = load_app_constants() # Load constants
+    MIN_STOCKS_PER_SECTOR = constants["MIN_STOCKS_PER_SECTOR"]
+
     st.header("🏆 Sector EDGE Leaderboard")
     
     if 'sector' not in df.columns:
@@ -1269,7 +1283,7 @@ def render_sector_leaderboard(df: pd.DataFrame):
         # Mini bar chart for EDGE distribution (only if EDGE data exists)
         if 'EDGE' in df.columns:
             sector_stocks = df[df['sector'] == sector]['EDGE']
-            if len(sector_stocks) > 2:
+            if len(sector_stocks) > constants["MIN_STOCKS_PER_SECTOR"] -1: # Check against MIN_STOCKS_PER_SECTOR
                 fig = go.Figure(data=[go.Histogram(
                     x=sector_stocks,
                     nbinsx=10,
@@ -1289,6 +1303,7 @@ def render_sector_leaderboard(df: pd.DataFrame):
 def create_excel_report(df_signals: pd.DataFrame, df_all: pd.DataFrame) -> io.BytesIO:
     """Create multi-sheet Excel report"""
     output = io.BytesIO()
+    constants = load_app_constants() # Load constants
     
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         # Sheet 1: Executive Summary
@@ -1862,7 +1877,7 @@ def render_ui():
         }).reset_index()
         
         sector_agg.columns = ['sector', 'avg_edge', 'count', 'super_edge_count']
-        sector_agg = sector_agg[sector_agg['count'] >= 3]  # Min 3 stocks
+        sector_agg = sector_agg[sector_agg['count'] >= constants["MIN_STOCKS_PER_SECTOR"]]  # Min 3 stocks
         
         if not sector_agg.empty:
             # Create treemap
