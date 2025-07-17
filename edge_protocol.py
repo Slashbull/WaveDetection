@@ -674,7 +674,7 @@ def score_momentum(row: pd.Series, df: pd.DataFrame) -> float:
         return 50.0 # Default neutral score
 
     # Simple momentum score (returns are now decimal)
-    short_term = (ret_1d + ret_3d + ret_7d) / 3
+    short_term = (ret_1d * 0.5 + ret_3d * 0.3 + ret_7d * 0.2)
     mid_term = ret_30d
     
     momentum = (short_term * 0.6 + mid_term * 0.4)
@@ -745,7 +745,7 @@ def score_fundamentals(row: pd.Series, df: pd.DataFrame) -> float:
 # ============================================================================
 # MAIN SCORING ENGINE
 # ============================================================================
-def calculate_edge_scores(df: pd.DataFrame, weights: Tuple[float, float, float]) -> pd.DataFrame:
+def calculate_edge_scores(df: pd.DataFrame, weights: Tuple[float, float, float, float]) -> pd.DataFrame: # Added fund_weight to tuple
     """Calculate EDGE scores with enhanced criteria"""
     df = df.copy()
     
@@ -768,7 +768,11 @@ def calculate_edge_scores(df: pd.DataFrame, weights: Tuple[float, float, float])
         if valid_mask.sum() == 0:
             continue
             
-        valid_weights = np.array(weights)[valid_mask]
+        # Ensure weights array matches the length of block_cols
+        # If the weights tuple has 3 elements, and block_cols has 4, this is where the IndexError occurs.
+        # The fix is to ensure `weights` passed in has 4 elements, or adapt this logic.
+        # Since PROFILE_PRESETS has 4 elements, we ensure `weights` is always 4 elements.
+        valid_weights = np.array(weights)[valid_mask] 
         valid_scores = scores[valid_mask]
         
         # Normalize weights
@@ -979,7 +983,7 @@ def apply_portfolio_constraints(df: pd.DataFrame) -> pd.DataFrame:
 # ============================================================================
 # MAIN SCORING PIPELINE
 # ============================================================================
-def run_edge_analysis(df: pd.DataFrame, weights: Tuple[float, float, float]) -> pd.DataFrame:
+def run_edge_analysis(df: pd.DataFrame, weights: Tuple[float, float, float, float]) -> pd.DataFrame: # Added fund_weight to tuple
     """Complete EDGE analysis pipeline"""
     # Calculate volume metrics
     df = calculate_volume_metrics(df)
@@ -1395,7 +1399,6 @@ def render_ui():
     </style>
     """, unsafe_allow_html=True)
     
-    # Header
     st.title("⚡ EDGE Protocol - Ultimate Trading Intelligence")
     st.markdown("**Correct Volume Acceleration + Risk Management + Pattern Recognition = Superior Returns**")
     
@@ -1403,15 +1406,15 @@ def render_ui():
     with st.sidebar:
         st.header("⚙️ Configuration")
         
-        # Weights selection (simplified to 3 components)
+        # Weights selection (using PROFILE_PRESETS directly)
         st.subheader("Strategy Weights")
-        vol_weight = st.slider("Volume Weight %", 30, 70, 50, 5) / 100
-        mom_weight = st.slider("Momentum Weight %", 10, 40, 30, 5) / 100
-        rr_weight = 1 - vol_weight - mom_weight
+        profile_name = st.radio("Profile", list(PROFILE_PRESETS.keys()), index=0, help="Select a weighting profile for the EDGE score components.")
+        weights = PROFILE_PRESETS[profile_name] # This will now be a 4-element tuple
         
-        weights = (vol_weight, mom_weight, rr_weight)
-        
-        st.write(f"Risk/Reward: {rr_weight*100:.0f}%")
+        st.write(f"Volume: {weights[0]*100:.0f}%")
+        st.write(f"Momentum: {weights[1]*100:.0f}%")
+        st.write(f"Risk/Reward: {weights[2]*100:.0f}%")
+        st.write(f"Fundamentals: {weights[3]*100:.0f}%") # Display all 4 weights
         
         st.markdown("---")
         
@@ -1420,6 +1423,7 @@ def render_ui():
         min_edge = st.slider("Min EDGE Score", 0, 100, 50, 5)
         exclude_small_caps = st.checkbox("Exclude Small/Micro Caps", True)
         max_signals = st.slider("Max Signals", 10, 100, 50, 10)
+        show_super_edge_only = st.checkbox("Show SUPER EDGE Only", value=False) # Added from old version
     
     # Load data
     df, diagnostics = load_and_validate_data()
@@ -1435,13 +1439,24 @@ def render_ui():
     if exclude_small_caps and 'category' in df.columns:
         df = df[~df['category'].str.contains('micro|nano|small', case=False, na=False)]
     
+    # Remove low liquidity stocks (from old version)
+    if "rs_volume_30d" in df.columns:
+        df = df[(df["rs_volume_30d"] >= 1e7) | df["rs_volume_30d"].isna()]
+
     # Run EDGE analysis
     with st.spinner("Running EDGE Protocol Analysis..."):
         df_analyzed = run_edge_analysis(df, weights)
     
     # Filter by minimum EDGE
-    df_signals = df_analyzed[df_analyzed['EDGE'] >= min_edge].head(max_signals)
+    df_signals = df_analyzed[df_analyzed['EDGE'] >= min_edge].copy() # Removed .head(max_signals) to apply show_super_edge_only first
     
+    # Apply show_super_edge_only filter if selected
+    if show_super_edge_only:
+        df_signals = df_signals[df_signals["tag"] == "SUPER_EDGE"]
+
+    # Apply max_signals after all other filters
+    df_signals = df_signals.head(max_signals)
+
     # SUPER EDGE Alert
     super_edge_count = (df_signals['tag'] == 'SUPER_EDGE').sum() if 'tag' in df_signals.columns else 0
     if super_edge_count > 0:
@@ -1457,7 +1472,9 @@ def render_ui():
         "🎯 Trading Signals",
         "⭐ SUPER EDGE Focus", 
         "🏆 Sector Leaders",
-        "📊 Deep Analysis"
+        "📊 Deep Analysis",
+        "🔍 Stock Deep Dive", # Added from old version
+        "📋 Raw Data" # Added from old version
     ])
     
     # Tab 1: Trading Signals
@@ -1489,7 +1506,7 @@ def render_ui():
             if 'tag' in display_df_for_filter.columns:
                 unique_tags = display_df_for_filter['tag'].dropna().unique().tolist()
                 signal_types = st.multiselect(
-                    "Signal Types",
+                    "Classification", # Changed label to Classification
                     unique_tags,
                     default=unique_tags
                 )
@@ -1500,7 +1517,7 @@ def render_ui():
             if 'sector' in display_df_for_filter.columns:
                 unique_sectors = display_df_for_filter['sector'].dropna().unique().tolist()
                 sectors = st.multiselect(
-                    "Sectors",
+                    "Sector", # Changed label to Sector
                     unique_sectors,
                     default=unique_sectors
                 )
@@ -1519,25 +1536,26 @@ def render_ui():
         if search:
             display_df = display_df[display_df['ticker'].str.contains(search.upper(), na=False)]
         
+        # Sort and display (from old version)
+        display_df = display_df.sort_values('EDGE', ascending=False)
+
         # Display main signals table
         if not display_df.empty:
             # Define columns to show
             display_cols = [
                 'ticker', 'company_name', 'sector', 'tag', 'EDGE', 'decision',
                 'price', 'position_size', 'stop_loss', 'stop_loss_pct',
-                'target_1', 'target_2', 'volume_pattern', 'top_pattern_name' # Changed pattern_name to top_pattern_name
+                'target_1', 'target_2', 'volume_pattern', 'top_pattern_name' 
             ]
             display_cols = [col for col in display_cols if col in display_df.columns]
             
             # Style the dataframe
-            def style_signals(val):
-                if val == 'SUPER_EDGE':
-                    return 'background-color: gold; font-weight: bold;'
-                elif val == 'EXPLOSIVE':
-                    return 'background-color: #ffcccc;'
-                elif val == 'BUY NOW':
-                    return 'color: green; font-weight: bold;'
-                return ''
+            def highlight_rows(row): # Renamed style_signals to highlight_rows
+                if row['tag'] == 'SUPER_EDGE':
+                    return ['background-color: gold'] * len(row)
+                elif row['tag'] == 'EXPLOSIVE':
+                    return ['background-color: #ffcccc'] * len(row)
+                return [''] * len(row)
             
             # Build format dict based on available columns
             format_dict = {}
@@ -1560,13 +1578,7 @@ def render_ui():
             styled_df = display_df[display_cols].style.format(format_dict)
             
             # Apply color map only to columns that exist
-            if 'tag' in display_cols or 'decision' in display_cols:
-                style_subset = []
-                if 'tag' in display_cols:
-                    style_subset.append('tag')
-                if 'decision' in display_cols:
-                    style_subset.append('decision')
-                styled_df = styled_df.applymap(style_signals, subset=style_subset)
+            styled_df = styled_df.apply(highlight_rows, axis=1) # Applied highlight_rows
             
             st.dataframe(styled_df, use_container_width=True, height=600)
             
@@ -1825,6 +1837,234 @@ def render_ui():
                     st.metric(metric, f"{value} ({pct:.0f}%)")
                 else:
                     st.metric(metric, "0 (0%)")
+
+    # Tab 5: Sector Heatmap (from old version)
+    with tabs[4]:
+        st.header("🔥 Sector Heatmap")
+        
+        # Aggregate by sector
+        sector_agg = df_analyzed.groupby('sector').agg({
+            'EDGE': 'mean',
+            'ticker': 'count',
+            'is_super_edge': 'sum'
+        }).reset_index()
+        
+        sector_agg.columns = ['sector', 'avg_edge', 'count', 'super_edge_count']
+        sector_agg = sector_agg[sector_agg['count'] >= 3]  # Min 3 stocks
+        
+        if not sector_agg.empty:
+            # Create treemap
+            fig = px.treemap(
+                sector_agg,
+                path=['sector'],
+                values='count',
+                color='avg_edge',
+                hover_data={
+                    'avg_edge': ':.1f',
+                    'count': True,
+                    'super_edge_count': True
+                },
+                color_continuous_scale='RdYlGn',
+                range_color=[0, 100],
+                title="Sector EDGE Heatmap"
+            )
+            
+            fig.update_layout(height=600)
+            st.plotly_chart(fig, use_container_width=True)
+            
+            # Top sectors table
+            st.subheader("🏆 Top Sectors by EDGE")
+            
+            top_sectors = sector_agg.sort_values('avg_edge', ascending=False).head(10)
+            
+            st.dataframe(
+                top_sectors.style.format({
+                    'avg_edge': '{:.1f}',
+                    'count': '{:.0f}',
+                    'super_edge_count': '{:.0f}'
+                }).background_gradient(subset=['avg_edge'], cmap='RdYlGn'),
+                use_container_width=True
+            )
+        else:
+            st.info("Insufficient data for sector analysis.")
+
+    # Tab 6: Deep Dive (from old version)
+    with tabs[5]:
+        st.header("🔍 Stock Deep Dive")
+        
+        # Stock selector
+        available_stocks = df_analyzed[df_analyzed['EDGE'].notna()]['ticker'].unique()
+        
+        if len(available_stocks) > 0:
+            # Prioritize high EDGE stocks
+            sorted_stocks = (df_analyzed[df_analyzed['ticker'].isin(available_stocks)]
+                            .sort_values('EDGE', ascending=False)['ticker'].unique())
+            
+            selected_ticker = st.selectbox(
+                "Select Stock",
+                sorted_stocks,
+                format_func=lambda x: f"⭐ {x}" if x in df_analyzed[df_analyzed['tag'] == 'SUPER_EDGE']['ticker'].values else x
+            )
+            
+            # Get stock data
+            stock_data = df_analyzed[df_analyzed['ticker'] == selected_ticker].iloc[0]
+            
+            # Display header
+            if stock_data['tag'] == 'SUPER_EDGE':
+                st.markdown("""
+                <div style="background: gold; padding: 10px; border-radius: 5px; text-align: center;">
+                    <h2 style="margin: 0;">⭐ SUPER EDGE SIGNAL ⭐</h2>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            # Key metrics
+            st.subheader(f"{stock_data['company_name']} ({stock_data['ticker']})")
+            
+            col1, col2, col3, col4 = st.columns(4)
+            
+            with col1:
+                st.metric("Price", f"₹{stock_data.get('price', 0):.2f}")
+                st.metric("EDGE Score", f"{stock_data.get('EDGE', 0):.1f}")
+                st.metric("Classification", stock_data.get('tag', 'N/A'))
+            
+            with col2:
+                st.metric("RVOL", f"{stock_data.get('rvol', 0):.1f}x")
+                st.metric("Volume Accel", f"{stock_data.get('volume_acceleration', 0):.1f}%")
+                st.metric("Volume Pattern", stock_data.get('volume_classification', 'N/A'))
+            
+            with col3:
+                st.metric("1Y Return", f"{stock_data.get('ret_1y', 0)*100:.0f}%")
+                st.metric("3Y Return", f"{stock_data.get('ret_3y', 0)*100:.0f}%")
+                st.metric("From High", f"{stock_data.get('from_high_pct', 0)*100:.1f}%")
+            
+            with col4:
+                st.metric("Stop Loss", f"₹{stock_data.get('dynamic_stop', 0):.2f}")
+                st.metric("Target 1", f"₹{stock_data.get('target_1', 0):.2f}") # Changed target1 to target_1
+                st.metric("Position Size", f"{stock_data.get('position_size', 0)*100:.1f}%") # Changed position_size_pct to position_size
+            
+            # Radar chart
+            fig = plot_stock_radar_chart(stock_data)
+            st.plotly_chart(fig, use_container_width=True)
+            
+            # Pattern analysis
+            if stock_data.get('pattern_analysis'):
+                st.subheader("🎯 Pattern Analysis")
+                
+                pattern_data = stock_data['pattern_analysis']
+                if isinstance(pattern_data, dict):
+                    patterns = pattern_data.get('patterns', [])
+                    
+                    # Show top 3 patterns
+                    for pattern in patterns[:3]:
+                        if pattern['score'] > 50:
+                            with st.expander(f"{pattern['pattern']} (Score: {pattern['score']:.0f})"):
+                                for signal in pattern.get('signals', []):
+                                    st.write(f"• {signal}")
+                                if pattern.get('target'):
+                                    target_pct = (pattern['target'] / stock_data['price'] - 1) * 100
+                                    st.success(f"Pattern Target: ₹{pattern['target']:.2f} (+{target_pct:.1f}%)")
+                    
+                    # Special indicators
+                    st.subheader("📌 Special Indicators")
+                    
+                    indicators = []
+                    if stock_data.get('quality_consolidation'):
+                        indicators.append("💎 Quality Consolidation")
+                    if stock_data.get('momentum_aligned'):
+                        indicators.append("📈 Momentum Aligned")
+                    if stock_data.get('rvol', 0) > 2:
+                        indicators.append("🔥 High RVOL Activity")
+                    if stock_data.get('eps_qoq_acceleration', 0) > 10:
+                        indicators.append("💰 EPS Accelerating")
+                    
+                    if indicators:
+                        for ind in indicators:
+                            st.write(ind)
+                    else:
+                        st.info("No special indicators active")
+            else:
+                st.info("No stocks available for analysis.")
+        
+    # Tab 7: Raw Data (from old version)
+    with tabs[6]:
+        st.header("📋 Raw Data & Diagnostics")
+        
+        # Summary stats
+        st.subheader("📊 Summary Statistics")
+        
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Total Stocks Loaded", len(df))
+            st.metric("After Filters", len(df_analyzed)) # Changed df_scored to df_analyzed
+            st.metric("High EDGE (>70)", (df_analyzed['EDGE'] > 70).sum()) # Changed df_scored to df_analyzed
+        
+        with col2:
+            st.metric("Avg EDGE Score", f"{df_analyzed['EDGE'].mean():.1f}") # Changed df_scored to df_analyzed
+            st.metric("Avg RVOL", f"{df_analyzed.get('rvol', pd.Series([1])).mean():.2f}") # Changed df_scored to df_analyzed
+            st.metric("Patterns Detected", (df_analyzed['top_pattern_score'] > 0).sum()) # Changed df_scored to df_analyzed
+        
+        with col3:
+            st.metric("Data Timestamp", pd.Timestamp.now().strftime('%Y-%m-%d %H:%M'))
+            st.metric("Profile", profile_name)
+            st.metric("Min EDGE Filter", min_edge)
+        
+        # Data quality check
+        st.subheader("🔍 Data Quality Check")
+        
+        critical_cols = ['price', 'volume_1d', 'vol_ratio_30d_90d', 'vol_ratio_30d_180d']
+        quality_data = []
+        
+        for col in critical_cols:
+            if col in df_analyzed.columns: # Changed df_scored to df_analyzed
+                non_null = df_analyzed[col].notna().sum() # Changed df_scored to df_analyzed
+                pct = non_null / len(df_analyzed) * 100 # Changed df_scored to df_analyzed
+                quality_data.append({
+                    'Column': col,
+                    'Non-null': non_null,
+                    'Coverage %': f"{pct:.1f}%",
+                    'Status': '✅' if pct > 90 else '⚠️' if pct > 70 else '❌'
+                })
+        
+        quality_df = pd.DataFrame(quality_data)
+        st.dataframe(quality_df, use_container_width=True, hide_index=True)
+        
+        # Sample data
+        st.subheader("📄 Sample Data (Top 10 by EDGE)")
+        
+        sample_cols = ['ticker', 'company_name', 'EDGE', 'tag', 'price', 'rvol', 
+                       'volume_acceleration', 'top_pattern_name', 'top_pattern_score']
+        sample_cols = [col for col in sample_cols if col in df_analyzed.columns] # Changed df_scored to df_analyzed
+        
+        st.dataframe(
+            df_analyzed.nlargest(10, 'EDGE')[sample_cols], # Changed df_scored to df_analyzed
+            use_container_width=True
+        )
+        
+        # Export full data
+        st.subheader("💾 Export Options")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            csv_full = df_analyzed.to_csv(index=False).encode('utf-8') # Changed df_scored to df_analyzed
+            st.download_button(
+                "📥 Download Full Dataset",
+                csv_full,
+                f"edge_protocol_full_{pd.Timestamp.now().strftime('%Y%m%d')}.csv",
+                "text/csv"
+            )
+        
+        with col2:
+            # High EDGE only
+            high_edge_df = df_analyzed[df_analyzed['EDGE'] >= 70] # Changed df_scored to df_analyzed
+            if not high_edge_df.empty:
+                csv_high = high_edge_df.to_csv(index=False).encode('utf-8')
+                st.download_button(
+                    "🔥 Download High EDGE Only",
+                    csv_high,
+                    f"edge_high_signals_{pd.Timestamp.now().strftime('%Y%m%d')}.csv",
+                    "text/csv"
+                )
 
 # ============================================================================
 # MAIN ENTRY POINT
