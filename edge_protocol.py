@@ -15,44 +15,6 @@ import re # Import the re module for regular expressions
 warnings.filterwarnings("ignore")
 
 # ============================================================================
-# CONFIGURATION & CONSTANTS
-# ============================================================================
-SHEET_ID = "1Wa4-4K7hyTTCrqJ0pUzS-NaLFiRQpBgI8KBdHx9obKk"
-GID_WATCHLIST = "2026492216"
-SHEET_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid={GID_WATCHLIST}"
-
-# Portfolio Risk Management
-MAX_PORTFOLIO_EXPOSURE = 0.80  # 80% max exposure
-MAX_POSITIONS = 10             # Maximum concurrent positions
-MAX_SECTOR_EXPOSURE = 0.30     # 30% max in one sector
-MAX_SUPER_EDGE_POSITIONS = 3   # Max 3 SUPER EDGE at once
-
-# Position Sizing (will be dynamically adjusted)
-BASE_POSITION_SIZES = {
-    "SUPER_EDGE": 0.15,
-    "EXPLOSIVE": 0.10,
-    "STRONG": 0.05,
-    "MODERATE": 0.02,
-    "WATCH": 0.00
-}
-
-# EDGE Thresholds
-EDGE_THRESHOLDS = {
-    "SUPER_EDGE": 92,  # Raised from 90
-    "EXPLOSIVE": 85,
-    "STRONG": 70,
-    "MODERATE": 50,
-    "WATCH": 0
-}
-
-# Performance Settings
-MAX_PATTERN_DETECTION_STOCKS = 100  # Limit pattern detection for performance
-CACHE_TTL = 300  # 5 minutes
-
-# Define the columns that hold the component scores globally
-GLOBAL_BLOCK_COLS = ["vol_score", "mom_score", "rr_score", "fund_score"]
-
-# ============================================================================
 # UTILITY FUNCTIONS
 # ============================================================================
 def safe_divide(a: float, b: float, default: float = 0) -> float:
@@ -107,11 +69,54 @@ def parse_market_cap(val: Union[str, float]) -> float:
         return np.nan
 
 # ============================================================================
+# CONFIGURATION & CONSTANTS (Loaded via function for robustness)
+# ============================================================================
+def load_app_constants() -> Dict:
+    """Loads all application-wide configuration constants."""
+    return {
+        "SHEET_ID": "1Wa4-4K7hyTTCrqJ0pUzS-NaLFiRQpBgI8KBdHx9obKk",
+        "GID_WATCHLIST": "2026492216",
+        "MAX_PORTFOLIO_EXPOSURE": 0.80,  # 80% max exposure
+        "MAX_POSITIONS": 10,             # Maximum concurrent positions
+        "MAX_SECTOR_EXPOSURE": 0.30,     # 30% max in one sector
+        "MAX_SUPER_EDGE_POSITIONS": 3,   # Max 3 SUPER EDGE at once
+        "BASE_POSITION_SIZES": {
+            "SUPER_EDGE": 0.15,
+            "EXPLOSIVE": 0.10,
+            "STRONG": 0.05,
+            "MODERATE": 0.02,
+            "WATCH": 0.00
+        },
+        "EDGE_THRESHOLDS": {
+            "SUPER_EDGE": 92,  # Raised from 90
+            "EXPLOSIVE": 85,
+            "STRONG": 70,
+            "MODERATE": 50,
+            "WATCH": 0
+        },
+        "MAX_PATTERN_DETECTION_STOCKS": 100,  # Limit pattern detection for performance
+        "CACHE_TTL": 300,  # 5 minutes
+        "MIN_STOCKS_PER_SECTOR": 4, # Minimum number of stocks in a sector to avoid thin sector alerts
+        "PROFILE_PRESETS": {
+            "Balanced": (0.40, 0.25, 0.20, 0.15),
+            "Swing": (0.50, 0.30, 0.20, 0.00), # Higher Volume Accel & Momentum
+            "Positional": (0.40, 0.25, 0.25, 0.10), # Slightly more emphasis on R/R and Fundamentals
+            "Momentum‑only": (0.60, 0.30, 0.10, 0.00), # Heavily weighted towards Volume Accel & Momentum
+            "Breakout": (0.45, 0.40, 0.15, 0.00), # Strong emphasis on Momentum and Volume Accel for breakout confirmation
+            "Long‑Term": (0.25, 0.25, 0.15, 0.35), # Higher weight for Fundamentals
+        }
+    }
+
+
+# ============================================================================
 # DATA LOADING WITH VALIDATION
 # ============================================================================
-@st.cache_data(ttl=CACHE_TTL)
+@st.cache_data(ttl=load_app_constants()["CACHE_TTL"])
 def load_and_validate_data() -> Tuple[pd.DataFrame, Dict[str, any]]:
     """Load data with comprehensive validation and diagnostics"""
+    constants = load_app_constants() # Load constants inside function
+    SHEET_URL = f"https://docs.google.com/spreadsheets/d/{constants['SHEET_ID']}/export?format=csv&gid={constants['GID_WATCHLIST']}"
+
     diagnostics = {
         "timestamp": datetime.now(),
         "rows_loaded": 0,
@@ -985,6 +990,11 @@ def apply_portfolio_constraints(df: pd.DataFrame) -> pd.DataFrame:
 # ============================================================================
 def run_edge_analysis(df: pd.DataFrame, weights: Tuple[float, float, float, float]) -> pd.DataFrame: # Added fund_weight to tuple
     """Complete EDGE analysis pipeline"""
+    # Load constants inside this function as well
+    constants = load_app_constants()
+    EDGE_THRESHOLDS = constants["EDGE_THRESHOLDS"]
+    MAX_PATTERN_DETECTION_STOCKS = constants["MAX_PATTERN_DETECTION_STOCKS"]
+
     # Calculate volume metrics
     df = calculate_volume_metrics(df)
     
@@ -994,7 +1004,7 @@ def run_edge_analysis(df: pd.DataFrame, weights: Tuple[float, float, float, floa
         # Simple sector ranking by average volume acceleration
         sector_df = df.groupby('sector')['volume_acceleration'].agg(['mean', 'count'])
         # Only rank sectors with at least 3 stocks
-        sector_df = sector_df[sector_df['count'] >= 3]
+        sector_df = sector_df[sector_df['count'] >= constants["MIN_STOCKS_PER_SECTOR"]] # Use MIN_STOCKS_PER_SECTOR
         if not sector_df.empty:
             sector_scores = sector_df['mean'].sort_values(ascending=False)
             for i, sector in enumerate(sector_scores.index):
@@ -1360,6 +1370,8 @@ def create_excel_report(df_signals: pd.DataFrame, df_all: pd.DataFrame) -> io.By
 # ============================================================================
 def render_ui():
     """Main Streamlit UI"""
+    constants = load_app_constants() # Load constants at the start of the function
+    
     st.set_page_config(
         page_title="EDGE Protocol - Ultimate Trading Intelligence",
         page_icon="⚡",
@@ -1408,8 +1420,8 @@ def render_ui():
         
         # Weights selection (using PROFILE_PRESETS directly)
         st.subheader("Strategy Weights")
-        profile_name = st.radio("Profile", list(PROFILE_PRESETS.keys()), index=0, help="Select a weighting profile for the EDGE score components.")
-        weights = PROFILE_PRESETS[profile_name] # This will now be a 4-element tuple
+        profile_name = st.radio("Profile", list(constants["PROFILE_PRESETS"].keys()), index=0, help="Select a weighting profile for the EDGE score components.")
+        weights = constants["PROFILE_PRESETS"][profile_name] # This will now be a 4-element tuple
         
         st.write(f"Volume: {weights[0]*100:.0f}%")
         st.write(f"Momentum: {weights[1]*100:.0f}%")
