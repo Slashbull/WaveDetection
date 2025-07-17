@@ -641,7 +641,6 @@ def detect_all_patterns(row: pd.Series) -> dict:
 
 # ============================================================================
 # SCORING FUNCTIONS
-# These functions need to be defined before calculate_edge_scores
 # ============================================================================
 def score_vol_accel(row: pd.Series) -> float:
     """Enhanced Volume Acceleration scoring"""
@@ -786,12 +785,12 @@ def calculate_edge_scores(df: pd.DataFrame, weights: Tuple[float, float, float])
     
     # Classification (initial, will be refined in run_edge_analysis)
     conditions = [
-        df["EDGE"] >= EDGE_THRESHOLDS["EXPLOSIVE"],
-        df["EDGE"] >= EDGE_THRESHOLDS["STRONG"],
-        df["EDGE"] >= EDGE_THRESHOLDS["MODERATE"],
+        df['EDGE'] >= EDGE_THRESHOLDS['EXPLOSIVE'],
+        df['EDGE'] >= EDGE_THRESHOLDS['STRONG'],
+        df['EDGE'] >= EDGE_THRESHOLDS['MODERATE']
     ]
-    choices = ["EXPLOSIVE", "STRONG", "MODERATE"]
-    df["tag"] = np.select(conditions, choices, default="WATCH")
+    choices = ['EXPLOSIVE', 'STRONG', 'MODERATE']
+    df['tag'] = np.select(conditions, choices, default='WATCH')
     
     return df
 
