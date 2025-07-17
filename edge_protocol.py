@@ -159,10 +159,19 @@ def calculate_volume_acceleration(df: pd.DataFrame) -> pd.DataFrame:
     """Calculate volume acceleration metrics"""
     df = df.copy()
     
-    # Calculate volume acceleration
-    vol_30_90 = df.get('vol_ratio_30d_90d', 0)
-    vol_30_180 = df.get('vol_ratio_30d_180d', 0)
+    # Get volume ratio columns
+    vol_30_90 = df.get('vol_ratio_30d_90d', pd.Series(0, index=df.index))
+    vol_30_180 = df.get('vol_ratio_30d_180d', pd.Series(0, index=df.index))
     
+    # Convert to percentage if values are in decimal format
+    if pd.api.types.is_numeric_dtype(vol_30_90):
+        if vol_30_90.abs().max() <= 10:  # Likely in decimal format
+            vol_30_90 = vol_30_90 * 100
+    if pd.api.types.is_numeric_dtype(vol_30_180):
+        if vol_30_180.abs().max() <= 10:  # Likely in decimal format  
+            vol_30_180 = vol_30_180 * 100
+    
+    # Calculate acceleration
     df['volume_acceleration'] = vol_30_90 - vol_30_180
     
     # Classification
@@ -683,31 +692,25 @@ def compute_scores(df: pd.DataFrame, weights: Tuple[float, float, float, float])
     
     # Pattern detection - ONLY for high potential stocks
     with st.spinner("Detecting explosive patterns..."):
+        # Initialize pattern columns first
+        df['pattern_analysis'] = None
+        df['top_pattern_name'] = ""
+        df['top_pattern_score'] = 0.0
+        df['pattern_confluence_score'] = 0.0
+        df['vp_divergence_score'] = 0.0
+        
         high_potential = df[df['EDGE'] >= 30].copy()
         
-        pattern_results = []
+        # Store pattern data using .at for complex objects
         for idx, row in high_potential.iterrows():
             pattern_data = detect_all_patterns(row)
             
-            # Store pattern data
-            df.loc[idx, 'pattern_analysis'] = pattern_data
-            df.loc[idx, 'top_pattern_name'] = pattern_data['top_pattern']['pattern'] if pattern_data['top_pattern'] else ""
-            df.loc[idx, 'top_pattern_score'] = pattern_data['top_pattern']['score'] if pattern_data['top_pattern'] else 0
-            df.loc[idx, 'pattern_confluence_score'] = pattern_data['confluence_score']
-            df.loc[idx, 'vp_divergence_score'] = pattern_data['vp_divergence']
-        
-        # Fill missing pattern data for low EDGE stocks
-        pattern_cols = ['pattern_analysis', 'top_pattern_name', 'top_pattern_score', 
-                       'pattern_confluence_score', 'vp_divergence_score']
-        
-        for col in pattern_cols:
-            if col not in df.columns:
-                df[col] = None
-        
-        df['top_pattern_name'] = df['top_pattern_name'].fillna("")
-        df['top_pattern_score'] = df['top_pattern_score'].fillna(0)
-        df['pattern_confluence_score'] = df['pattern_confluence_score'].fillna(0)
-        df['vp_divergence_score'] = df['vp_divergence_score'].fillna(0)
+            # Use .at for storing dictionary objects
+            df.at[idx, 'pattern_analysis'] = pattern_data
+            df.at[idx, 'top_pattern_name'] = pattern_data['top_pattern']['pattern'] if pattern_data['top_pattern'] else ""
+            df.at[idx, 'top_pattern_score'] = float(pattern_data['top_pattern']['score']) if pattern_data['top_pattern'] else 0.0
+            df.at[idx, 'pattern_confluence_score'] = float(pattern_data['confluence_score'])
+            df.at[idx, 'vp_divergence_score'] = float(pattern_data['vp_divergence'])
     
     # Additional indicators
     df['eps_qoq_acceleration'] = 0
