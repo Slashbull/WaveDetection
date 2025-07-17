@@ -208,7 +208,8 @@ def load_and_validate_data() -> Tuple[pd.DataFrame, Dict[str, any]]:
             df['category'] = df['category'].astype(str).fillna("Unknown")
 
         # Calculate ATR after price is cleaned
-        df["atr_20"] = df['price'].rolling(20, min_periods=1).std().fillna(method="bfill").fillna(0) * math.sqrt(2)
+        # Changed math.sqrt(2) to np.sqrt(2) for consistency with numpy operations
+        df["atr_20"] = df['price'].rolling(20, min_periods=1).std().fillna(method="bfill").fillna(0) * np.sqrt(2)
         df["rs_volume_30d"] = df["volume_30d"] * df["price"]
 
         # Data quality score
