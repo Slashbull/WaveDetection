@@ -606,13 +606,13 @@ def calculate_position_sizing(df: pd.DataFrame) -> pd.DataFrame:
     """Calculate position sizes with sophisticated risk management"""
     
     # Base position size from signal strength
-    df['base_position_size'] = df['signal_strength'].map({
-        'EXPLOSIVE': POSITION_SIZES['EXPLOSIVE'],
-        'STRONG': POSITION_SIZES['STRONG'],
-        'MODERATE': POSITION_SIZES['MODERATE'],
-        'WATCH': POSITION_SIZES['WATCH'],
-        'AVOID': 0
-    }).fillna(0)
+df['base_position_size'] = df['signal_strength'].map({
+    'EXPLOSIVE': POSITION_SIZES['EXPLOSIVE'],
+    'STRONG': POSITION_SIZES['STRONG'],
+    'MODERATE': POSITION_SIZES['MODERATE'],
+    'WATCH': POSITION_SIZES['WATCH'],
+    'AVOID': 0
+}).fillna(0).astype(float)  # ← Add .astype(float) here
     
     # Adjust for volatility
     if 'volatility_52w' in df.columns:
