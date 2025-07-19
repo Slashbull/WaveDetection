@@ -1685,8 +1685,9 @@ def analyze_market_health(df: pd.DataFrame) -> MarketHealth:
             sector_performance['ticker'] >= 3  # Min stocks for reliability
         ].sort_values('ret_30d', ascending=False)
         
-        leading_sectors = list(sector_performance.head(5).itertuples(name=None))
-        lagging_sectors = list(sector_performance.tail(5).itertuples(name=None))
+        # Create tuples with just sector name and return
+        leading_sectors = [(idx, row['ret_30d']) for idx, row in sector_performance.head(5).iterrows()]
+        lagging_sectors = [(idx, row['ret_30d']) for idx, row in sector_performance.tail(5).iterrows()]
         sector_rotation_score = sector_performance['ret_30d'].std()
         
         # Category analysis
