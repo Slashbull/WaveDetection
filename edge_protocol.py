@@ -226,7 +226,7 @@ def calculate_edge_scores(df: pd.DataFrame) -> pd.DataFrame:
             np.where(df['volume_acceleration'] > 20, 90,     # Institutional
             np.where(df['volume_acceleration'] > 10, 75,     # Strong
             np.where(df['volume_acceleration'] > 0, 60,      # Positive
-            40)))  # Neutral/Negative
+            40))))  # Neutral/Negative - Fixed: Added missing closing parenthesis
         
         # RVOL boost
         if 'rvol' in df.columns:
