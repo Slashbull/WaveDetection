@@ -328,6 +328,13 @@ def calculate_market_health(df: pd.DataFrame) -> Dict[str, Any]:
     """Calculate overall market health metrics"""
     try:
         total_stocks = len(df)
+        if total_stocks == 0:
+            return {
+                'regime': 'UNKNOWN',
+                'regime_color': 'gray',
+                'total_stocks': 0,
+                'market_score': 0
+            }
         
         # Stocks above key SMAs
         above_sma20 = len(df[df['price'] > df['sma_20d']])
@@ -343,12 +350,12 @@ def calculate_market_health(df: pd.DataFrame) -> Dict[str, Any]:
         new_lows = len(df[df['from_low_pct'] < 5])
         
         # Average metrics
-        avg_ret_1d = df['ret_1d'].mean()
-        avg_ret_30d = df['ret_30d'].mean()
-        avg_rvol = df['rvol'].mean()
+        avg_ret_1d = df['ret_1d'].mean() if not df.empty else 0
+        avg_ret_30d = df['ret_30d'].mean() if not df.empty else 0
+        avg_rvol = df['rvol'].mean() if not df.empty else 1
         
         # Market regime
-        sma50_ratio = above_sma50 / total_stocks if total_stocks > 0 else 0
+        sma50_ratio = above_sma50 / total_stocks
         if sma50_ratio >= MARKET_REGIME_THRESHOLDS['BULL']:
             regime = 'BULL'
             regime_color = 'green'
@@ -363,28 +370,49 @@ def calculate_market_health(df: pd.DataFrame) -> Dict[str, Any]:
         high_volume_stocks = len(df[df['rvol'] > 2])
         volume_acceleration_stocks = len(df[df.apply(calculate_volume_acceleration, axis=1) > 0.1])
         
+        # Calculate advance/decline ratio safely
+        if declining > 0:
+            advance_decline_ratio = advancing / declining
+        elif advancing > 0:
+            advance_decline_ratio = float(advancing)  # All advancing
+        else:
+            advance_decline_ratio = 1.0  # Neutral
+        
+        # Calculate high/low ratio safely
+        if new_lows > 0:
+            high_low_ratio = new_highs / new_lows
+        elif new_highs > 0:
+            high_low_ratio = float(new_highs)  # All highs
+        else:
+            high_low_ratio = 1.0  # Neutral
+        
         return {
             'regime': regime,
             'regime_color': regime_color,
             'total_stocks': total_stocks,
-            'above_sma20_pct': (above_sma20 / total_stocks * 100) if total_stocks > 0 else 0,
-            'above_sma50_pct': (above_sma50 / total_stocks * 100) if total_stocks > 0 else 0,
-            'above_sma200_pct': (above_sma200 / total_stocks * 100) if total_stocks > 0 else 0,
-            'advance_decline_ratio': advancing / declining if declining > 0 else advancing,
+            'above_sma20_pct': (above_sma20 / total_stocks * 100),
+            'above_sma50_pct': (above_sma50 / total_stocks * 100),
+            'above_sma200_pct': (above_sma200 / total_stocks * 100),
+            'advance_decline_ratio': advance_decline_ratio,
             'new_highs': new_highs,
             'new_lows': new_lows,
-            'high_low_ratio': new_highs / new_lows if new_lows > 0 else new_highs,
+            'high_low_ratio': high_low_ratio,
             'avg_return_1d': avg_ret_1d,
             'avg_return_30d': avg_ret_30d,
             'avg_rvol': avg_rvol,
             'high_volume_stocks': high_volume_stocks,
             'volume_acceleration_stocks': volume_acceleration_stocks,
-            'market_score': calculate_market_score(sma50_ratio, advancing/total_stocks if total_stocks > 0 else 0)
+            'market_score': calculate_market_score(sma50_ratio, advancing/total_stocks)
         }
         
     except Exception as e:
         logger.error(f"Error calculating market health: {str(e)}")
-        return {}
+        return {
+            'regime': 'ERROR',
+            'regime_color': 'gray',
+            'total_stocks': 0,
+            'market_score': 0
+        }
 
 def calculate_market_score(sma50_ratio: float, advance_ratio: float) -> int:
     """Calculate overall market score (0-100)"""
@@ -395,8 +423,14 @@ def calculate_market_score(sma50_ratio: float, advance_ratio: float) -> int:
 def calculate_sector_statistics(df: pd.DataFrame) -> pd.DataFrame:
     """Calculate sector-level statistics"""
     try:
+        # Filter out empty sectors
+        df_clean = df[df['sector'].notna() & (df['sector'] != '') & (df['sector'] != 'nan')]
+        
+        if df_clean.empty:
+            return df
+        
         # Group by sector
-        sector_stats = df.groupby('sector').agg({
+        sector_stats = df_clean.groupby('sector').agg({
             'ticker': 'count',
             'ret_1d': 'mean',
             'ret_7d': 'mean',
@@ -423,6 +457,11 @@ def calculate_sector_statistics(df: pd.DataFrame) -> pd.DataFrame:
             right_index=True,
             how='left'
         )
+        
+        # Fill NaN values for stocks with no sector
+        df['sector_stock_count'] = df['sector_stock_count'].fillna(0)
+        df['sector_avg_ret_30d'] = df['sector_avg_ret_30d'].fillna(0)
+        df['sector_score'] = df['sector_score'].fillna(0)
         
         return df
         
@@ -548,6 +587,9 @@ def calculate_traffic_light_signal(row: pd.Series, market_health: Dict) -> Dict[
         
         # Liquidity adjustment
         liquidity_tier = row.get('liquidity_tier', 'D')
+        if pd.isna(liquidity_tier):
+            liquidity_tier = 'D'
+        
         if liquidity_tier == 'D':
             total_score *= 0.5  # Heavily penalize illiquid stocks
         elif liquidity_tier == 'C':
@@ -800,29 +842,31 @@ def generate_professional_excel_report(df: pd.DataFrame, analysis_results: Dict)
             action_items = []
             
             # Add GREEN signals
-            for _, row in analysis_results['green_signals'].iterrows():
-                action_items.append({
-                    'Action': 'BUY',
-                    'Ticker': row['ticker'],
-                    'Company': row['company_name'][:50],
-                    'Entry Price': row['signal_details']['entry_price'],
-                    'Target': row['signal_details']['target_price'],
-                    'Stop Loss': row['signal_details']['stop_price'],
-                    'Position Size': f"{row['signal_details']['position_size']*100:.1f}%",
-                    'Score': row['signal_details']['score'],
-                    'Liquidity': row['liquidity_tier']
-                })
+            if not analysis_results['green_signals'].empty:
+                for _, row in analysis_results['green_signals'].iterrows():
+                    action_items.append({
+                        'Action': 'BUY',
+                        'Ticker': row['ticker'],
+                        'Company': row['company_name'][:50] if len(row['company_name']) > 50 else row['company_name'],
+                        'Entry Price': row['signal_details']['entry_price'],
+                        'Target': row['signal_details']['target_price'],
+                        'Stop Loss': row['signal_details']['stop_price'],
+                        'Position Size': f"{row['signal_details']['position_size']*100:.1f}%",
+                        'Score': row['signal_details']['score'],
+                        'Liquidity': row.get('liquidity_tier', 'N/A')
+                    })
             
             # Add exit signals
-            for _, row in analysis_results.get('exit_signals', pd.DataFrame()).iterrows():
-                action_items.append({
-                    'Action': 'SELL',
-                    'Ticker': row['ticker'],
-                    'Company': row['company_name'][:50],
-                    'Current Price': row['price'],
-                    'Reason': ', '.join(row['exit_details']['exit_reasons']),
-                    'Urgency': row['exit_details']['exit_urgency']
-                })
+            if not analysis_results.get('exit_signals', pd.DataFrame()).empty:
+                for _, row in analysis_results['exit_signals'].iterrows():
+                    action_items.append({
+                        'Action': 'SELL',
+                        'Ticker': row['ticker'],
+                        'Company': row['company_name'][:50] if len(row['company_name']) > 50 else row['company_name'],
+                        'Current Price': row.get('price', 0),
+                        'Reason': ', '.join(row['exit_details']['exit_reasons'][:2]),  # Limit reasons
+                        'Urgency': row['exit_details'].get('exit_urgency', 'NORMAL')
+                    })
             
             if action_items:
                 action_df = pd.DataFrame(action_items)
@@ -863,32 +907,59 @@ def generate_professional_excel_report(df: pd.DataFrame, analysis_results: Dict)
             market_df.to_excel(writer, sheet_name='Market Overview', index=False)
             
             # Sheet 4: Sector Analysis
-            sector_analysis = df.groupby('sector').agg({
-                'ticker': 'count',
-                'ret_30d': 'mean',
-                'ret_7d': 'mean',
-                'rvol': 'mean',
-                'volume_30d': 'mean'
-            }).round(2)
-            sector_analysis.columns = ['Stock Count', 'Avg 30d Return', 'Avg 7d Return', 
-                                      'Avg RVol', 'Avg Volume']
-            sector_analysis = sector_analysis.sort_values('Avg 30d Return', ascending=False)
-            sector_analysis.to_excel(writer, sheet_name='Sector Analysis')
+            if not df.empty:
+                df_sectors = df[df['sector'].notna() & (df['sector'] != '') & (df['sector'] != 'nan')]
+                if not df_sectors.empty:
+                    sector_analysis = df_sectors.groupby('sector').agg({
+                        'ticker': 'count',
+                        'ret_30d': 'mean',
+                        'ret_7d': 'mean',
+                        'rvol': 'mean',
+                        'volume_30d': 'mean'
+                    }).round(2)
+                    sector_analysis.columns = ['Stock Count', 'Avg 30d Return', 'Avg 7d Return', 
+                                              'Avg RVol', 'Avg Volume']
+                    sector_analysis = sector_analysis.sort_values('Avg 30d Return', ascending=False)
+                    sector_analysis.to_excel(writer, sheet_name='Sector Analysis')
+                else:
+                    # Create empty sheet with message
+                    empty_df = pd.DataFrame({'Message': ['No sector data available']})
+                    empty_df.to_excel(writer, sheet_name='Sector Analysis', index=False)
             
             # Sheet 5: Green Signals Detail
-            if not analysis_results['green_signals'].empty:
-                green_detail = analysis_results['green_signals'][
-                    ['ticker', 'company_name', 'sector', 'price', 'ret_7d', 'ret_30d',
-                     'rvol', 'from_low_pct', 'liquidity_tier']
-                ].copy()
+            if 'green_signals' in analysis_results and not analysis_results['green_signals'].empty:
+                # Get available columns
+                available_cols = analysis_results['green_signals'].columns.tolist()
                 
-                # Add signal details
-                for col in ['score', 'target_price', 'stop_price', 'position_size']:
-                    green_detail[col] = analysis_results['green_signals'].apply(
-                        lambda x: x['signal_details'].get(col, 0), axis=1
-                    )
+                # Select columns that exist
+                detail_cols = []
+                for col in ['ticker', 'company_name', 'sector', 'price', 'ret_7d', 'ret_30d',
+                           'rvol', 'from_low_pct', 'liquidity_tier']:
+                    if col in available_cols:
+                        detail_cols.append(col)
                 
-                green_detail.to_excel(writer, sheet_name='Green Signals', index=False)
+                if detail_cols:
+                    green_detail = analysis_results['green_signals'][detail_cols].copy()
+                    
+                    # Add signal details safely
+                    if 'signal_details' in available_cols:
+                        for col in ['score', 'target_price', 'stop_price', 'position_size']:
+                            try:
+                                green_detail[col] = analysis_results['green_signals'].apply(
+                                    lambda x: x['signal_details'].get(col, 0) if isinstance(x['signal_details'], dict) else 0, 
+                                    axis=1
+                                )
+                            except:
+                                green_detail[col] = 0
+                    
+                    green_detail.to_excel(writer, sheet_name='Green Signals', index=False)
+                else:
+                    empty_df = pd.DataFrame({'Message': ['No data available for green signals']})
+                    empty_df.to_excel(writer, sheet_name='Green Signals', index=False)
+            else:
+                # Create empty sheet with message
+                empty_df = pd.DataFrame({'Message': ['No green signals found']})
+                empty_df.to_excel(writer, sheet_name='Green Signals', index=False)
             
             # Sheet 6: Portfolio Warnings
             if 'portfolio_warnings' in analysis_results:
@@ -950,37 +1021,76 @@ def create_market_health_gauge(market_score: int) -> go.Figure:
 
 def create_sector_performance_chart(df: pd.DataFrame) -> go.Figure:
     """Create sector performance comparison chart"""
-    sector_perf = df.groupby('sector').agg({
-        'ret_30d': 'mean',
-        'ticker': 'count'
-    }).round(2)
-    
-    # Filter sectors with at least 3 stocks
-    sector_perf = sector_perf[sector_perf['ticker'] >= PORTFOLIO_CONSTRAINTS['MIN_STOCKS_FOR_SECTOR_AVG']]
-    sector_perf = sector_perf.sort_values('ret_30d', ascending=True).tail(15)
-    
-    # Create color scale
-    colors = ['red' if x < 0 else 'green' for x in sector_perf['ret_30d']]
-    
-    fig = go.Figure(go.Bar(
-        x=sector_perf['ret_30d'],
-        y=sector_perf.index,
-        orientation='h',
-        marker_color=colors,
-        text=[f"{x:.1f}% ({sector_perf.loc[idx, 'ticker']} stocks)" 
-              for idx, x in zip(sector_perf.index, sector_perf['ret_30d'])],
-        textposition='auto'
-    ))
-    
-    fig.update_layout(
-        title="Top 15 Sectors by 30-Day Performance",
-        xaxis_title="Average 30-Day Return (%)",
-        yaxis_title="Sector",
-        height=600,
-        margin=dict(l=200)
-    )
-    
-    return fig
+    try:
+        # Filter out empty sectors
+        df_clean = df[df['sector'].notna() & (df['sector'] != '') & (df['sector'] != 'nan')]
+        
+        if df_clean.empty:
+            # Return empty chart
+            fig = go.Figure()
+            fig.add_annotation(
+                text="No sector data available",
+                xref="paper", yref="paper",
+                x=0.5, y=0.5, showarrow=False
+            )
+            fig.update_layout(height=600)
+            return fig
+        
+        sector_perf = df_clean.groupby('sector').agg({
+            'ret_30d': 'mean',
+            'ticker': 'count'
+        }).round(2)
+        
+        # Filter sectors with at least minimum stocks
+        sector_perf = sector_perf[sector_perf['ticker'] >= PORTFOLIO_CONSTRAINTS['MIN_STOCKS_FOR_SECTOR_AVG']]
+        
+        if sector_perf.empty:
+            # Return empty chart
+            fig = go.Figure()
+            fig.add_annotation(
+                text="No sectors with sufficient stocks for analysis",
+                xref="paper", yref="paper",
+                x=0.5, y=0.5, showarrow=False
+            )
+            fig.update_layout(height=600)
+            return fig
+        
+        sector_perf = sector_perf.sort_values('ret_30d', ascending=True).tail(15)
+        
+        # Create color scale
+        colors = ['red' if x < 0 else 'green' for x in sector_perf['ret_30d']]
+        
+        fig = go.Figure(go.Bar(
+            x=sector_perf['ret_30d'],
+            y=sector_perf.index,
+            orientation='h',
+            marker_color=colors,
+            text=[f"{x:.1f}% ({sector_perf.loc[idx, 'ticker']} stocks)" 
+                  for idx, x in zip(sector_perf.index, sector_perf['ret_30d'])],
+            textposition='auto'
+        ))
+        
+        fig.update_layout(
+            title="Top 15 Sectors by 30-Day Performance",
+            xaxis_title="Average 30-Day Return (%)",
+            yaxis_title="Sector",
+            height=600,
+            margin=dict(l=200)
+        )
+        
+        return fig
+        
+    except Exception as e:
+        logger.error(f"Error creating sector performance chart: {str(e)}")
+        # Return empty chart on error
+        fig = go.Figure()
+        fig.add_annotation(
+            text="Error creating sector chart",
+            xref="paper", yref="paper",
+            x=0.5, y=0.5, showarrow=False
+        )
+        fig.update_layout(height=600)
+        return fig
 
 def create_signal_distribution_chart(signal_counts: Dict) -> go.Figure:
     """Create signal distribution pie chart"""
@@ -1006,31 +1116,66 @@ def create_signal_distribution_chart(signal_counts: Dict) -> go.Figure:
 
 def create_liquidity_distribution_chart(df: pd.DataFrame) -> go.Figure:
     """Create liquidity tier distribution chart"""
-    liquidity_counts = df['liquidity_tier'].value_counts().sort_index()
-    
-    colors = {
-        'A': '#28a745',  # Green
-        'B': '#20c997',  # Teal
-        'C': '#ffc107',  # Yellow
-        'D': '#dc3545'   # Red
-    }
-    
-    fig = go.Figure(data=[go.Bar(
-        x=liquidity_counts.index,
-        y=liquidity_counts.values,
-        marker_color=[colors.get(x, '#6c757d') for x in liquidity_counts.index],
-        text=liquidity_counts.values,
-        textposition='auto'
-    )])
-    
-    fig.update_layout(
-        title="Stock Distribution by Liquidity Tier",
-        xaxis_title="Liquidity Tier (A=Best, D=Worst)",
-        yaxis_title="Number of Stocks",
-        height=400
-    )
-    
-    return fig
+    try:
+        if 'liquidity_tier' not in df.columns or df.empty:
+            # Return empty chart
+            fig = go.Figure()
+            fig.add_annotation(
+                text="No liquidity data available",
+                xref="paper", yref="paper",
+                x=0.5, y=0.5, showarrow=False
+            )
+            fig.update_layout(height=400)
+            return fig
+        
+        liquidity_counts = df['liquidity_tier'].value_counts().sort_index()
+        
+        if liquidity_counts.empty:
+            # Return empty chart
+            fig = go.Figure()
+            fig.add_annotation(
+                text="No liquidity data available",
+                xref="paper", yref="paper",
+                x=0.5, y=0.5, showarrow=False
+            )
+            fig.update_layout(height=400)
+            return fig
+        
+        colors = {
+            'A': '#28a745',  # Green
+            'B': '#20c997',  # Teal
+            'C': '#ffc107',  # Yellow
+            'D': '#dc3545'   # Red
+        }
+        
+        fig = go.Figure(data=[go.Bar(
+            x=liquidity_counts.index,
+            y=liquidity_counts.values,
+            marker_color=[colors.get(x, '#6c757d') for x in liquidity_counts.index],
+            text=liquidity_counts.values,
+            textposition='auto'
+        )])
+        
+        fig.update_layout(
+            title="Stock Distribution by Liquidity Tier",
+            xaxis_title="Liquidity Tier (A=Best, D=Worst)",
+            yaxis_title="Number of Stocks",
+            height=400
+        )
+        
+        return fig
+        
+    except Exception as e:
+        logger.error(f"Error creating liquidity distribution chart: {str(e)}")
+        # Return empty chart on error
+        fig = go.Figure()
+        fig.add_annotation(
+            text="Error creating liquidity chart",
+            xref="paper", yref="paper",
+            x=0.5, y=0.5, showarrow=False
+        )
+        fig.update_layout(height=400)
+        return fig
 
 # ============================================
 # MAIN APPLICATION
@@ -1067,6 +1212,27 @@ def main():
             # Calculate market health
             market_health = calculate_market_health(df)
             
+            # Ensure market_health has required keys
+            if not market_health or 'regime' not in market_health:
+                market_health = {
+                    'regime': 'UNKNOWN',
+                    'regime_color': 'gray',
+                    'total_stocks': len(df),
+                    'market_score': 50,
+                    'above_sma20_pct': 0,
+                    'above_sma50_pct': 0,
+                    'above_sma200_pct': 0,
+                    'advance_decline_ratio': 1,
+                    'new_highs': 0,
+                    'new_lows': 0,
+                    'high_low_ratio': 1,
+                    'avg_return_1d': 0,
+                    'avg_return_30d': 0,
+                    'avg_rvol': 1,
+                    'high_volume_stocks': 0,
+                    'volume_acceleration_stocks': 0
+                }
+            
             # Filters
             st.markdown("## 🔍 Filters")
             
@@ -1093,7 +1259,7 @@ def main():
             sector_options = []
             sector_counts = df['sector'].value_counts()
             for sector, count in sector_counts.items():
-                if pd.notna(sector) and sector != '':
+                if pd.notna(sector) and sector != '' and sector != 'nan':
                     sector_options.append(f"{sector} ({count} stocks)")
             
             selected_sectors_with_count = st.multiselect(
@@ -1106,8 +1272,13 @@ def main():
             selected_sectors = []
             if 'All' not in selected_sectors_with_count:
                 for sector_with_count in selected_sectors_with_count:
-                    sector_name = sector_with_count.rsplit(' (', 1)[0]
-                    selected_sectors.append(sector_name)
+                    # Handle the case where sector name might contain parentheses
+                    if ' (' in sector_with_count and sector_with_count.endswith(')'):
+                        sector_name = sector_with_count.rsplit(' (', 1)[0]
+                        selected_sectors.append(sector_name)
+                    else:
+                        # Fallback in case format is different
+                        selected_sectors.append(sector_with_count)
             
             # Relative strength filter
             min_rs_score = st.slider(
@@ -1143,16 +1314,17 @@ def main():
         filtered_df = df.copy()
         
         # Liquidity filter
-        liquidity_tiers = ['A', 'B', 'C', 'D']
-        selected_tiers = liquidity_tiers[liquidity_tiers.index(min_liquidity):]
-        filtered_df = filtered_df[filtered_df['liquidity_tier'].isin(selected_tiers)]
+        if 'liquidity_tier' in filtered_df.columns:
+            liquidity_tiers = ['A', 'B', 'C', 'D']
+            selected_tiers = liquidity_tiers[liquidity_tiers.index(min_liquidity):]
+            filtered_df = filtered_df[filtered_df['liquidity_tier'].isin(selected_tiers)]
         
         # Category filter
         if selected_categories and 'All' not in selected_categories:
             filtered_df = filtered_df[filtered_df['category'].isin(selected_categories)]
         
         # Sector filter
-        if selected_sectors and 'All' not in selected_sectors:
+        if selected_sectors and 'All' not in selected_sectors_with_count:
             filtered_df = filtered_df[filtered_df['sector'].isin(selected_sectors)]
         
         # Relative strength filter
@@ -1164,22 +1336,25 @@ def main():
             lambda x: calculate_traffic_light_signal(x, market_health), axis=1
         )
         
-        # Extract signal type
+        # Extract signal type and score for easier filtering
         filtered_df['signal'] = filtered_df['signal_details'].apply(lambda x: x['signal'])
+        filtered_df['signal_score'] = filtered_df['signal_details'].apply(lambda x: x.get('score', 0))
         
         # Separate by signal type
         green_signals = filtered_df[filtered_df['signal'] == 'GREEN'].nlargest(
             position_limit, 
-            'signal_details.str.get("score")'
+            'signal_score'
         )
         yellow_signals = filtered_df[filtered_df['signal'] == 'YELLOW'].nlargest(
             position_limit, 
-            'signal_details.str.get("score")'
+            'signal_score'
         )
         red_signals = filtered_df[filtered_df['signal'] == 'RED']
         
         # Check for exit signals in current positions (simulated)
-        exit_signals = pd.DataFrame()  # In real implementation, load from portfolio
+        # In real implementation, this would load from portfolio
+        
+        # Tab content continues...
         
         # Market Health Dashboard
         st.markdown("## 🌍 Market Health Dashboard")
@@ -1253,9 +1428,13 @@ def main():
                     signal_details = row['signal_details']
                     
                     # Determine card color based on liquidity
-                    if row['liquidity_tier'] == 'A':
+                    liquidity_tier = row.get('liquidity_tier', 'D')
+                    if pd.isna(liquidity_tier):
+                        liquidity_tier = 'D'
+                    
+                    if liquidity_tier == 'A':
                         card_class = "green-signal"
-                    elif row['liquidity_tier'] == 'B':
+                    elif liquidity_tier == 'B':
                         card_class = "green-signal"
                     else:
                         card_class = "yellow-signal"  # Lower liquidity gets yellow background
@@ -1270,8 +1449,8 @@ def main():
                         sector_count = row.get('sector_stock_count', 0)
                         st.markdown(f'<span class="sector-badge">{row["sector"]} ({int(sector_count)} stocks)</span>', 
                                   unsafe_allow_html=True)
-                        if row['liquidity_tier'] not in ['A', 'B']:
-                            st.markdown(f'<span class="liquidity-warning">⚠️ Low Liquidity (Tier {row["liquidity_tier"]})</span>', 
+                        if liquidity_tier not in ['A', 'B']:
+                            st.markdown(f'<span class="liquidity-warning">⚠️ Low Liquidity (Tier {liquidity_tier})</span>', 
                                       unsafe_allow_html=True)
                     
                     with col2:
@@ -1366,7 +1545,7 @@ def main():
             # Check exit signals for all stocks
             all_exit_checks = filtered_df.copy()
             all_exit_checks['exit_details'] = all_exit_checks.apply(check_exit_signals, axis=1)
-            exit_signals = all_exit_checks[all_exit_checks['exit_details'].apply(lambda x: x['has_exit_signal'])]
+            exit_signals = all_exit_checks[all_exit_checks['exit_details'].apply(lambda x: x.get('has_exit_signal', False))]
             
             if not exit_signals.empty:
                 # Separate by urgency
@@ -1478,16 +1657,20 @@ def main():
             st.markdown("## 📈 Download Professional Reports")
             
             # Prepare analysis results
-            sector_perfs = filtered_df.groupby('sector')['ret_30d'].mean()
-            top_sector = sector_perfs.idxmax() if not sector_perfs.empty else "N/A"
-            bottom_sector = sector_perfs.idxmin() if not sector_perfs.empty else "N/A"
+            if not filtered_df.empty:
+                sector_perfs = filtered_df[filtered_df['sector'].notna()].groupby('sector')['ret_30d'].mean()
+                top_sector = sector_perfs.idxmax() if not sector_perfs.empty else "N/A"
+                bottom_sector = sector_perfs.idxmin() if not sector_perfs.empty else "N/A"
+            else:
+                top_sector = "N/A"
+                bottom_sector = "N/A"
             
             analysis_results = {
                 'market_health': market_health,
                 'green_signals': green_signals,
                 'yellow_signals': yellow_signals,
                 'red_signals': red_signals,
-                'exit_signals': exit_signals,
+                'exit_signals': exit_signals if 'exit_signals' in locals() else pd.DataFrame(),
                 'top_sector': top_sector,
                 'bottom_sector': bottom_sector,
                 'portfolio_warnings': []
@@ -1531,7 +1714,7 @@ MARKET STATUS: {market_health['regime']} (Score: {market_health['market_score']}
                     for _, row in yellow_signals.head(5).iterrows():
                         summary += f"\n• {row['ticker']}: Watch for volume > 2x or break above ₹{row['price']*1.02:.0f}"
                     
-                    if not exit_signals.empty:
+                    if 'exit_signals' in locals() and not exit_signals.empty:
                         summary += f"\n\n🔴 EXIT SIGNALS ({len(exit_signals)} stocks):"
                         for _, row in exit_signals.head(3).iterrows():
                             reasons = ", ".join(row['exit_details']['exit_reasons'][:2])
@@ -1561,17 +1744,28 @@ MARKET STATUS: {market_health['regime']} (Score: {market_health['market_score']}
             
             with col2:
                 st.metric("Data Freshness", datetime.now().strftime('%H:%M'))
-                missing_pct = (df.isnull().sum().sum() / (len(df) * len(df.columns)) * 100)
-                st.metric("Data Completeness", f"{100-missing_pct:.1f}%")
+                total_cells = len(df) * len(df.columns)
+                if total_cells > 0:
+                    missing_pct = (df.isnull().sum().sum() / total_cells * 100)
+                    st.metric("Data Completeness", f"{100-missing_pct:.1f}%")
+                else:
+                    st.metric("Data Completeness", "N/A")
             
             with col3:
                 st.metric("Sectors Covered", df['sector'].nunique())
                 st.metric("Categories", df['category'].nunique())
             
             with col4:
-                high_quality = len(df[df['liquidity_tier'].isin(['A', 'B'])])
-                st.metric("High Liquidity Stocks", high_quality)
-                st.metric("Liquidity %", f"{high_quality/len(df)*100:.1f}%")
+                if 'liquidity_tier' in df.columns:
+                    high_quality = len(df[df['liquidity_tier'].isin(['A', 'B'])])
+                    st.metric("High Liquidity Stocks", high_quality)
+                    if len(df) > 0:
+                        st.metric("Liquidity %", f"{high_quality/len(df)*100:.1f}%")
+                    else:
+                        st.metric("Liquidity %", "0%")
+                else:
+                    st.metric("High Liquidity Stocks", "N/A")
+                    st.metric("Liquidity %", "N/A")
             
             # System configuration
             st.markdown("### ⚙️ Configuration")
