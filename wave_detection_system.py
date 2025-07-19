@@ -3087,7 +3087,7 @@ def main():
             "Select Your Style",
             options=list(TradingMode),
             format_func=lambda x: x.value,
-            index=list(TradingMode).index(st.session_state.selected_mode),
+            index=list(TradingMode).index(TradingMode.SWING_TRADER),
             help="Choose your trading/investing style to optimize signals"
         )
         st.session_state.selected_mode = selected_mode
