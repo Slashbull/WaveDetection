@@ -5,7 +5,7 @@ A production-ready stock analysis system with comprehensive scoring,
 filtering, and ranking capabilities.
 
 Author: Professional Implementation
-Version: 6.0.0
+Version: 6.0.1 (Fixed)
 Status: Production Ready
 License: MIT
 """
@@ -42,12 +42,15 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Page configuration
-st.set_page_config(
-    page_title="Wave Detection 6.0 | Professional Analytics",
-    page_icon="📊",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+try:
+    st.set_page_config(
+        page_title="Wave Detection 6.0 | Professional Analytics",
+        page_icon="📊",
+        layout="wide",
+        initial_sidebar_state="expanded"
+    )
+except:
+    pass
 
 # ============================================
 # CONSTANTS
@@ -181,7 +184,6 @@ class DataProcessor:
     """Handles all data loading and cleaning operations"""
     
     @staticmethod
-    @timer_decorator
     def clean_indian_number_format(value: str) -> Optional[float]:
         """Clean Indian formatted numbers (₹, commas, %)"""
         if pd.isna(value) or value == '':
@@ -953,6 +955,10 @@ def load_custom_css():
 def main():
     """Main application entry point"""
     
+    # Initialize session state
+    if 'initialized' not in st.session_state:
+        st.session_state.initialized = True
+    
     # Load custom CSS
     load_custom_css()
     
@@ -987,7 +993,7 @@ def main():
         with col1:
             if st.button("🔄 Refresh Data", help="Clear cache and reload data"):
                 st.cache_data.clear()
-                st.experimental_rerun()
+                st.rerun()
         
         with col2:
             if st.button("ℹ️ Help", help="Show help information"):
@@ -997,15 +1003,6 @@ def main():
         # Filters
         st.markdown("---")
         st.markdown("### 🔍 Smart Filters")
-        
-        # Initialize session state for filters
-        if 'filters_initialized' not in st.session_state:
-            st.session_state.filters_initialized = True
-            st.session_state.selected_categories = ['All']
-            st.session_state.selected_sectors = ['All']
-            st.session_state.selected_eps_tiers = ['All']
-            st.session_state.selected_price_tiers = ['All']
-            st.session_state.selected_pe_tiers = ['All']
     
     # Load and process data
     with st.spinner("Loading market data..."):
@@ -1191,23 +1188,16 @@ def main():
             
             display_df = top_stocks[display_columns].copy()
             
-            # Format numeric columns
-            format_dict = {
-                'master_score': '{:.1f}',
-                'momentum_score': '{:.1f}',
-                'position_score': '{:.1f}',
-                'volume_score': '{:.1f}',
-                'quality_score': '{:.1f}',
-                'price': '₹{:,.2f}',
-                'ret_1d': '{:.2f}%',
-                'ret_7d': '{:.2f}%',
-                'rvol': '{:.2f}x'
-            }
-            
-            # Apply formatting
-            for col, fmt in format_dict.items():
-                if col in display_df.columns:
-                    display_df[col] = display_df[col].apply(lambda x: fmt.format(x) if pd.notna(x) else '')
+            # Format numeric columns for display
+            display_df['master_score'] = display_df['master_score'].round(1)
+            display_df['momentum_score'] = display_df['momentum_score'].round(1)
+            display_df['position_score'] = display_df['position_score'].round(1)
+            display_df['volume_score'] = display_df['volume_score'].round(1)
+            display_df['quality_score'] = display_df['quality_score'].round(1)
+            display_df['price'] = display_df['price'].apply(lambda x: f'₹{x:,.2f}' if pd.notna(x) else '')
+            display_df['ret_1d'] = display_df['ret_1d'].apply(lambda x: f'{x:.2f}%' if pd.notna(x) else '')
+            display_df['ret_7d'] = display_df['ret_7d'].apply(lambda x: f'{x:.2f}%' if pd.notna(x) else '')
+            display_df['rvol'] = display_df['rvol'].apply(lambda x: f'{x:.2f}x' if pd.notna(x) else '')
             
             # Display the table with custom styling
             st.dataframe(
@@ -1216,7 +1206,7 @@ def main():
                 height=600
             )
             
-            # Quick insights
+            # Quick insights - work with original numeric data
             st.markdown("### 💡 Quick Insights")
             
             col1, col2, col3 = st.columns(3)
@@ -1226,11 +1216,13 @@ def main():
                 st.info(f"**Most common sector:** {top_sector}")
             
             with col2:
-                avg_ret_7d = top_stocks['ret_7d'].str.rstrip('%').astype(float).mean()
+                # Use original numeric data for calculations
+                avg_ret_7d = top_stocks['ret_7d'].mean() if 'ret_7d' in top_stocks else 0
                 st.info(f"**Avg 7-day return:** {avg_ret_7d:.2f}%")
             
             with col3:
-                high_quality = (top_stocks['quality_score'].str.rstrip('').astype(float) > 70).mean() * 100
+                # Use original numeric data for calculations
+                high_quality = (top_stocks['quality_score'] > 70).mean() * 100
                 st.info(f"**High quality stocks:** {high_quality:.0f}%")
         
         else:
