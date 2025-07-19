@@ -1,20 +1,23 @@
 """
-Wave Detection System 5.0 - The Ultimate Trading Edge
-=====================================================
-Philosophy: Simple. Fast. Profitable.
+Wave Detection System 5.0 - True Data-Driven Trading
+====================================================
+Philosophy: Let Every Stock Tell Its Story
 
-Core Innovation:
-- Pure relative ranking (no thresholds)
-- Momentum acceleration detection
-- Appearance/disappearance tracking
-- Volume conviction scoring
-- Sector rotation monitoring
-- Statistical edge validation
+ZERO THRESHOLDS - 100% DATA DRIVEN
+- No price cutoffs
+- No volume minimums  
+- No return limits
+- Pure relative ranking
 
-Author: Elite Trading Systems
-Version: 5.0.0
+Smart Categorization:
+- EPS Tiers (5↓, 5↑, 15↑, 35↑, 55↑, 75↑, 95↑)
+- Price Tiers (100↓, 100↑, 200↑, 500↑, 1K↑, 2K↑, 5K↑)
+- Category & Sector filters
+- Let users choose their universe
+
+Author: Data Liberation Front
+Version: 5.0.0 FINAL
 Status: Production Ready
-Performance: Optimized for Speed
 """
 
 import streamlit as st
@@ -27,209 +30,162 @@ import logging
 from io import BytesIO
 from typing import Dict, List, Tuple, Optional, Set, Any
 from dataclasses import dataclass, field
-from enum import Enum, auto
-import json
-import hashlib
+from enum import Enum
 import warnings
-from pathlib import Path
-import pickle
-from functools import lru_cache, wraps
 import time
+from functools import wraps
 
 # ============================================
-# CONFIGURATION AND INITIALIZATION
+# CONFIGURATION
 # ============================================
 
 # Suppress warnings
 warnings.filterwarnings('ignore')
 
-# Configure professional logging
+# Configure logging
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s | %(levelname)s | %(funcName)s | %(message)s',
+    format='%(asctime)s | %(levelname)s | %(message)s',
     datefmt='%H:%M:%S'
 )
 logger = logging.getLogger(__name__)
 
-# Performance monitoring decorator
+# Page config
+try:
+    st.set_page_config(
+        page_title="Wave Detection 5.0 | Pure Data",
+        page_icon="🌊",
+        layout="wide",
+        initial_sidebar_state="expanded"
+    )
+except:
+    pass
+
+# Performance decorator
 def monitor_performance(func):
-    """Decorator to monitor function performance"""
+    """Monitor function performance"""
     @wraps(func)
     def wrapper(*args, **kwargs):
-        start_time = time.time()
+        start = time.time()
         result = func(*args, **kwargs)
-        execution_time = time.time() - start_time
-        if execution_time > 0.1:  # Log if takes more than 100ms
-            logger.warning(f"{func.__name__} took {execution_time:.3f}s")
+        elapsed = time.time() - start
+        if elapsed > 0.1:
+            logger.warning(f"{func.__name__} took {elapsed:.3f}s")
         return result
     return wrapper
 
-# Streamlit page config
-try:
-    st.set_page_config(
-        page_title="Wave Detection 5.0 | The Edge",
-        page_icon="⚡",
-        layout="wide",
-        initial_sidebar_state="expanded",
-        menu_items={
-            'About': "Wave Detection 5.0 - Simple. Fast. Profitable."
-        }
-    )
-except:
-    pass  # Page config already set
-
 # ============================================
-# DATA MODELS AND CONSTANTS
+# DATA MODELS
 # ============================================
-
-@dataclass(frozen=True)
-class TradingConstants:
-    """Immutable trading constants"""
-    # Data quality
-    MIN_PRICE: float = 1.0
-    MIN_VOLUME: float = 50_000
-    MAX_SPREAD: float = 0.10  # 10% max spread
-    
-    # Ranking thresholds
-    TOP_MOMENTUM_PERCENTILE: float = 0.90  # Top 10%
-    VOLUME_CONFIRMATION: float = 1.5  # Min rvol for confirmation
-    
-    # Position sizing
-    MAX_POSITION_SIZE: float = 0.03  # 3% max
-    MIN_POSITION_SIZE: float = 0.005  # 0.5% min
-    MAX_POSITIONS: int = 20
-    
-    # Risk management
-    MAX_SECTOR_EXPOSURE: float = 0.30  # 30% max per sector
-    INITIAL_STOP_LOSS: float = 0.05  # 5% initial stop
-    
-    # Performance tracking
-    TRACKING_LOOKBACK_DAYS: int = 30
-    MIN_SAMPLE_SIZE: int = 20
-
-# Initialize constants
-CONSTANTS = TradingConstants()
 
 @dataclass
 class Signal:
-    """Trading signal with all necessary information"""
+    """Trading signal information"""
     ticker: str
     company_name: str
     sector: str
     category: str
+    price: float
     
-    # Signal properties
-    signal_type: str  # 'BUY', 'HOLD', 'SELL', 'EXIT'
-    signal_strength: float  # 0-100
-    signal_timestamp: datetime
+    # Tiers
+    eps_tier: str
+    price_tier: str
     
-    # Ranking metrics
-    momentum_rank: float  # 0-1 percentile
+    # Rankings (0-1 percentile)
+    momentum_rank: float
     volume_rank: float
+    acceleration_rank: float
     combined_rank: float
     
-    # Raw metrics
-    price: float
+    # Raw scores
     momentum_score: float
     volume_score: float
-    
-    # Acceleration metrics
     momentum_acceleration: float
-    volume_acceleration: float
     
-    # Risk metrics
-    volatility_estimate: float
-    liquidity_score: float
+    # Signal
+    signal_type: str  # 'BUY', 'STRONG_BUY', 'WATCH', 'HOLD'
+    signal_strength: float
     
-    # Position sizing
-    recommended_size: float
-    confidence_level: float
+    # Context
+    days_up: int
+    days_down: int
+    trend_strength: float
     
-    # Lifecycle tracking
-    days_in_list: int
-    first_appearance: Optional[datetime]
-    
-    # Exit conditions
-    exit_reasons: List[str] = field(default_factory=list)
-    
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary for DataFrame"""
-        return {
-            'ticker': self.ticker,
-            'company_name': self.company_name,
-            'sector': self.sector,
-            'category': self.category,
-            'signal_type': self.signal_type,
-            'signal_strength': self.signal_strength,
-            'momentum_rank': self.momentum_rank,
-            'volume_rank': self.volume_rank,
-            'combined_rank': self.combined_rank,
-            'price': self.price,
-            'momentum_score': self.momentum_score,
-            'volume_score': self.volume_score,
-            'momentum_acceleration': self.momentum_acceleration,
-            'recommended_size': self.recommended_size,
-            'days_in_list': self.days_in_list
-        }
+    # Metadata
+    raw_data: Dict[str, Any] = field(default_factory=dict)
 
 @dataclass
-class MarketConditions:
-    """Current market conditions assessment"""
+class MarketProfile:
+    """Current market profile"""
     timestamp: datetime
     total_stocks: int
     
-    # Market regime
-    regime: str  # 'TRENDING', 'RANGING', 'VOLATILE'
-    regime_confidence: float
+    # Distribution
+    eps_tier_distribution: Dict[str, int]
+    price_tier_distribution: Dict[str, int]
+    category_distribution: Dict[str, int]
+    sector_distribution: Dict[str, int]
     
-    # Breadth metrics
-    advancing_pct: float
-    declining_pct: float
-    new_highs_pct: float
-    new_lows_pct: float
-    
-    # Momentum distribution
+    # Market character
     avg_momentum: float
-    momentum_dispersion: float
-    positive_momentum_pct: float
+    avg_volume: float
+    breadth_positive: float
+    breadth_negative: float
     
-    # Volume metrics
-    avg_relative_volume: float
-    high_volume_pct: float
-    
-    # Sector analysis
-    leading_sectors: List[Tuple[str, float]]
-    sector_rotation_intensity: float
-    
-    # Risk metrics
-    market_volatility: float
-    correlation_level: float
+    # Top movers
+    top_gainers: List[str]
+    top_volume: List[str]
+    top_momentum: List[str]
 
-@dataclass
-class PerformanceMetrics:
-    """Track system performance"""
-    date: datetime
-    signal_type: str
-    ticker: str
-    entry_price: float
-    exit_price: Optional[float]
-    return_pct: Optional[float]
-    holding_days: int
-    exit_reason: Optional[str]
-    
 # ============================================
-# PROFESSIONAL CSS STYLING
+# TIER DEFINITIONS
 # ============================================
 
-PROFESSIONAL_CSS = """
+def get_eps_tier(eps: float) -> str:
+    """Categorize EPS into tiers"""
+    if pd.isna(eps) or eps < 5:
+        return "5↓"
+    elif eps < 15:
+        return "5↑"
+    elif eps < 35:
+        return "15↑"
+    elif eps < 55:
+        return "35↑"
+    elif eps < 75:
+        return "55↑"
+    elif eps < 95:
+        return "75↑"
+    else:
+        return "95↑"
+
+def get_price_tier(price: float) -> str:
+    """Categorize price into tiers"""
+    if pd.isna(price) or price < 100:
+        return "100↓"
+    elif price < 200:
+        return "100↑"
+    elif price < 500:
+        return "200↑"
+    elif price < 1000:
+        return "500↑"
+    elif price < 2000:
+        return "1K↑"
+    elif price < 5000:
+        return "2K↑"
+    else:
+        return "5K↑"
+
+# ============================================
+# CSS STYLING
+# ============================================
+
+CUSTOM_CSS = """
 <style>
-    /* Global Reset and Base */
+    /* Clean Modern Design */
     .main {
         padding: 0;
-        max-width: 100%;
     }
     
-    /* Typography */
     .main-header {
         font-size: 3.5rem;
         font-weight: 900;
@@ -238,19 +194,17 @@ PROFESSIONAL_CSS = """
         -webkit-text-fill-color: transparent;
         text-align: center;
         padding: 2rem 0;
-        margin-bottom: 1rem;
-        letter-spacing: -1px;
+        margin-bottom: 2rem;
     }
     
     .sub-header {
         text-align: center;
-        color: #6b7280;
         font-size: 1.25rem;
-        margin-bottom: 2rem;
-        font-weight: 300;
+        color: #6b7280;
+        margin-bottom: 3rem;
     }
     
-    /* Cards and Containers */
+    /* Signal Cards */
     .signal-card {
         background: white;
         border-radius: 12px;
@@ -258,8 +212,7 @@ PROFESSIONAL_CSS = """
         margin: 1rem 0;
         box-shadow: 0 2px 8px rgba(0,0,0,0.08);
         transition: all 0.3s ease;
-        position: relative;
-        overflow: hidden;
+        border-left: 5px solid;
     }
     
     .signal-card:hover {
@@ -267,31 +220,41 @@ PROFESSIONAL_CSS = """
         box-shadow: 0 8px 16px rgba(0,0,0,0.12);
     }
     
-    .signal-card::before {
-        content: '';
-        position: absolute;
-        top: 0;
-        left: 0;
-        width: 5px;
-        height: 100%;
-        background: var(--signal-color);
+    .signal-strong-buy {
+        border-left-color: #10b981;
+        background: linear-gradient(to right, #f0fdf4, white);
     }
     
-    /* Signal Types */
     .signal-buy {
-        --signal-color: #10b981;
+        border-left-color: #3b82f6;
+        background: linear-gradient(to right, #eff6ff, white);
     }
     
-    .signal-hold {
-        --signal-color: #f59e0b;
+    .signal-watch {
+        border-left-color: #f59e0b;
+        background: linear-gradient(to right, #fffbeb, white);
     }
     
-    .signal-sell {
-        --signal-color: #ef4444;
+    /* Tier Badges */
+    .tier-badge {
+        display: inline-block;
+        padding: 0.25rem 0.75rem;
+        border-radius: 9999px;
+        font-size: 0.75rem;
+        font-weight: 700;
+        margin: 0.25rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
     }
     
-    .signal-exit {
-        --signal-color: #991b1b;
+    .eps-tier {
+        background: linear-gradient(135deg, #3b82f6, #8b5cf6);
+        color: white;
+    }
+    
+    .price-tier {
+        background: linear-gradient(135deg, #10b981, #34d399);
+        color: white;
     }
     
     /* Metrics */
@@ -299,14 +262,14 @@ PROFESSIONAL_CSS = """
         background: white;
         padding: 1.5rem;
         border-radius: 12px;
-        text-align: center;
         box-shadow: 0 2px 4px rgba(0,0,0,0.06);
+        text-align: center;
         height: 100%;
     }
     
     .metric-value {
         font-size: 2.5rem;
-        font-weight: 700;
+        font-weight: 800;
         margin: 0.5rem 0;
     }
     
@@ -317,884 +280,474 @@ PROFESSIONAL_CSS = """
         letter-spacing: 0.05em;
     }
     
-    /* Badges */
-    .badge {
-        display: inline-block;
-        padding: 0.25rem 0.75rem;
-        border-radius: 9999px;
-        font-size: 0.75rem;
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.05em;
-        margin: 0.25rem;
-    }
-    
-    .badge-momentum {
-        background-color: #8b5cf6;
-        color: white;
-    }
-    
-    .badge-volume {
-        background-color: #3b82f6;
-        color: white;
-    }
-    
-    .badge-new {
-        background-color: #10b981;
-        color: white;
-        animation: pulse 2s infinite;
-    }
-    
-    .badge-exit {
-        background-color: #ef4444;
-        color: white;
-    }
-    
-    /* Rank Indicators */
+    /* Rank Visualization */
     .rank-bar {
         width: 100%;
-        height: 8px;
-        background-color: #e5e7eb;
-        border-radius: 4px;
+        height: 12px;
+        background: #e5e7eb;
+        border-radius: 6px;
         overflow: hidden;
         margin: 0.5rem 0;
     }
     
     .rank-fill {
         height: 100%;
-        background: linear-gradient(90deg, #3b82f6 0%, #8b5cf6 100%);
-        transition: width 0.3s ease;
+        background: linear-gradient(90deg, #3b82f6 0%, #8b5cf6 50%, #ec4899 100%);
+        transition: width 0.5s ease;
     }
     
     /* Tables */
     .dataframe {
         font-size: 0.875rem;
-        width: 100%;
     }
     
     .dataframe th {
-        background-color: #f9fafb;
-        font-weight: 600;
+        background: #f9fafb;
+        font-weight: 700;
         text-transform: uppercase;
         font-size: 0.75rem;
         letter-spacing: 0.05em;
-        padding: 0.75rem;
-        text-align: left;
-    }
-    
-    .dataframe td {
-        padding: 0.75rem;
-        border-bottom: 1px solid #e5e7eb;
-    }
-    
-    /* Animations */
-    @keyframes pulse {
-        0%, 100% {
-            opacity: 1;
-        }
-        50% {
-            opacity: 0.7;
-        }
-    }
-    
-    @keyframes slideIn {
-        from {
-            transform: translateX(-100%);
-            opacity: 0;
-        }
-        to {
-            transform: translateX(0);
-            opacity: 1;
-        }
-    }
-    
-    .slide-in {
-        animation: slideIn 0.3s ease-out;
-    }
-    
-    /* Responsive */
-    @media (max-width: 768px) {
-        .main-header {
-            font-size: 2.5rem;
-        }
-        
-        .signal-card {
-            padding: 1rem;
-        }
-        
-        .metric-value {
-            font-size: 2rem;
-        }
+        position: sticky;
+        top: 0;
     }
     
     /* Dark mode support */
     @media (prefers-color-scheme: dark) {
         .signal-card, .metric-card {
             background: #1f2937;
-            color: #f9fafb;
-        }
-        
-        .dataframe th {
-            background-color: #374151;
-            color: #f9fafb;
-        }
-        
-        .dataframe td {
-            border-color: #374151;
+            color: white;
         }
     }
 </style>
 """
 
 # ============================================
-# DATA STORAGE AND PERSISTENCE
-# ============================================
-
-class DataStore:
-    """Handle data persistence for tracking"""
-    
-    def __init__(self, base_path: str = "wave_detection_data"):
-        self.base_path = Path(base_path)
-        self.base_path.mkdir(exist_ok=True)
-        
-    def save_daily_snapshot(self, df: pd.DataFrame, date: datetime) -> None:
-        """Save daily data snapshot"""
-        try:
-            filename = self.base_path / f"snapshot_{date.strftime('%Y%m%d')}.pkl"
-            df.to_pickle(filename)
-            logger.info(f"Saved snapshot: {filename}")
-        except Exception as e:
-            logger.error(f"Failed to save snapshot: {e}")
-    
-    def load_daily_snapshot(self, date: datetime) -> Optional[pd.DataFrame]:
-        """Load daily data snapshot"""
-        try:
-            filename = self.base_path / f"snapshot_{date.strftime('%Y%m%d')}.pkl"
-            if filename.exists():
-                return pd.read_pickle(filename)
-        except Exception as e:
-            logger.error(f"Failed to load snapshot: {e}")
-        return None
-    
-    def save_signals(self, signals: List[Signal], date: datetime) -> None:
-        """Save trading signals"""
-        try:
-            filename = self.base_path / f"signals_{date.strftime('%Y%m%d')}.json"
-            signal_data = [s.to_dict() for s in signals]
-            with open(filename, 'w') as f:
-                json.dump(signal_data, f, indent=2, default=str)
-            logger.info(f"Saved {len(signals)} signals")
-        except Exception as e:
-            logger.error(f"Failed to save signals: {e}")
-    
-    def get_appearance_history(self, ticker: str) -> List[datetime]:
-        """Get dates when ticker appeared in data"""
-        appearances = []
-        for snapshot_file in sorted(self.base_path.glob("snapshot_*.pkl")):
-            try:
-                date_str = snapshot_file.stem.split('_')[1]
-                date = datetime.strptime(date_str, '%Y%m%d')
-                df = pd.read_pickle(snapshot_file)
-                if ticker in df['ticker'].values:
-                    appearances.append(date)
-            except:
-                continue
-        return appearances
-
-# ============================================
-# CORE CALCULATION ENGINE
+# CALCULATION ENGINES
 # ============================================
 
 class MomentumEngine:
-    """Core momentum calculation engine"""
+    """Pure momentum calculations - no thresholds"""
     
     @staticmethod
     @monitor_performance
     def calculate_momentum_score(row: pd.Series) -> float:
-        """Calculate pure momentum score with acceleration"""
+        """Calculate momentum score - let any value speak"""
         try:
-            # Base momentum (weighted by recency)
+            # Time-weighted momentum
             momentum = (
-                row.get('ret_1d', 0) * 3 +    # Today heavily weighted
-                row.get('ret_3d', 0) * 2 +    # Recent confirmation
-                row.get('ret_7d', 0) * 1      # Trend context
-            ) / 6  # Normalize
+                row.get('ret_1d', 0) * 4 +     # Today is most important
+                row.get('ret_3d', 0) * 2 +     # Recent confirmation
+                row.get('ret_7d', 0) * 1.5 +   # Weekly trend
+                row.get('ret_30d', 0) * 0.5    # Monthly context
+            ) / 8
             
-            # Momentum acceleration
-            if row.get('ret_7d', 0) != 0:
-                acceleration = (row.get('ret_1d', 0) - row.get('ret_7d', 0) / 7) / abs(row.get('ret_7d', 0) / 7)
-            else:
-                acceleration = row.get('ret_1d', 0)
+            # Trend alignment multiplier
+            trend_multiplier = 1.0
+            if row.get('price', 0) > row.get('sma_20d', float('inf')):
+                trend_multiplier += 0.1
+            if row.get('sma_20d', 0) > row.get('sma_50d', float('inf')):
+                trend_multiplier += 0.1
+            if row.get('sma_50d', 0) > row.get('sma_200d', float('inf')):
+                trend_multiplier += 0.1
             
-            # Trend alignment bonus
-            trend_bonus = 0
-            if row.get('price', 0) > row.get('sma_20d', 0):
-                trend_bonus += 0.2
-            if row.get('sma_20d', 0) > row.get('sma_50d', 0):
-                trend_bonus += 0.1
-            if row.get('sma_50d', 0) > row.get('sma_200d', 0):
-                trend_bonus += 0.1
-            
-            # Combined score
-            score = momentum * (1 + acceleration) * (1 + trend_bonus)
-            
-            return score
+            return momentum * trend_multiplier
             
         except Exception as e:
-            logger.error(f"Momentum calculation error: {e}")
+            logger.debug(f"Momentum calc error: {e}")
             return 0.0
     
     @staticmethod
-    def calculate_momentum_acceleration(row: pd.Series) -> float:
-        """Calculate momentum acceleration rate"""
+    def calculate_acceleration(row: pd.Series) -> float:
+        """Calculate momentum acceleration"""
         try:
-            # Daily acceleration
-            daily_acc = row.get('ret_1d', 0)
-            
-            # 3-day acceleration
-            if row.get('ret_3d', 0) != 0:
-                three_day_acc = (row.get('ret_1d', 0) - row.get('ret_3d', 0) / 3)
-            else:
-                three_day_acc = daily_acc
-            
-            # 7-day acceleration
+            # Is momentum speeding up?
             if row.get('ret_7d', 0) != 0:
-                seven_day_acc = (row.get('ret_1d', 0) - row.get('ret_7d', 0) / 7)
+                current_speed = row.get('ret_1d', 0)
+                average_speed = row.get('ret_7d', 0) / 7
+                acceleration = (current_speed - average_speed) / abs(average_speed) if average_speed != 0 else current_speed
             else:
-                seven_day_acc = daily_acc
-            
-            # Weighted acceleration
-            acceleration = (daily_acc * 0.5 + three_day_acc * 0.3 + seven_day_acc * 0.2)
+                acceleration = row.get('ret_1d', 0)
             
             return acceleration
             
         except Exception:
             return 0.0
+    
+    @staticmethod
+    def calculate_trend_strength(row: pd.Series) -> float:
+        """How many periods are positive?"""
+        try:
+            positive_periods = 0
+            total_periods = 0
+            
+            for period in ['ret_1d', 'ret_3d', 'ret_7d', 'ret_30d', 'ret_3m']:
+                if period in row and not pd.isna(row[period]):
+                    total_periods += 1
+                    if row[period] > 0:
+                        positive_periods += 1
+            
+            return positive_periods / total_periods if total_periods > 0 else 0.5
+            
+        except Exception:
+            return 0.5
 
 class VolumeEngine:
-    """Volume analysis engine"""
+    """Pure volume analysis - no thresholds"""
     
     @staticmethod
     @monitor_performance
     def calculate_volume_score(row: pd.Series) -> float:
-        """Calculate volume conviction score"""
+        """Volume conviction score"""
         try:
-            # Relative volume is primary factor
+            # Base: relative volume
             rvol = row.get('rvol', 1.0)
             
-            # Volume trend (30d vs 90d)
-            vol_trend = row.get('vol_ratio_30d_90d', 1.0)
+            # Volume trend
+            vol_trend = 1.0
+            if row.get('vol_ratio_30d_90d', 0) > 0:
+                vol_trend = row.get('vol_ratio_30d_90d', 1.0)
             
-            # Volume acceleration (recent vs historical)
+            # Volume acceleration
             vol_accel = 1.0
-            if row.get('vol_ratio_1d_90d', 0) > 0 and row.get('vol_ratio_7d_90d', 0) > 0:
-                vol_accel = row.get('vol_ratio_1d_90d', 1.0) / row.get('vol_ratio_7d_90d', 1.0)
+            if row.get('vol_ratio_7d_90d', 0) > 0 and row.get('vol_ratio_1d_90d', 0) > 0:
+                short_term = row.get('vol_ratio_1d_90d', 1.0)
+                medium_term = row.get('vol_ratio_7d_90d', 1.0)
+                vol_accel = short_term / medium_term if medium_term > 0 else 1.0
             
-            # Smart volume (volume efficiency)
-            price_move = abs(row.get('ret_1d', 0))
-            if price_move > 0.1:  # Minimum price movement
-                volume_efficiency = price_move / max(rvol, 0.1)
-            else:
-                volume_efficiency = 0
-            
-            # Combined score
-            score = rvol * vol_trend * vol_accel * (1 + volume_efficiency)
-            
-            return score
+            # Combined score - no limits!
+            return rvol * vol_trend * vol_accel
             
         except Exception as e:
-            logger.error(f"Volume calculation error: {e}")
+            logger.debug(f"Volume calc error: {e}")
             return 1.0
     
     @staticmethod
-    def calculate_volume_acceleration(row: pd.Series) -> float:
-        """Calculate volume acceleration"""
+    def calculate_volume_character(row: pd.Series) -> str:
+        """What's the volume telling us?"""
         try:
-            # Compare recent ratios to longer-term ratios
-            short_term = row.get('vol_ratio_7d_90d', 1.0)
-            long_term = row.get('vol_ratio_30d_180d', 1.0)
+            rvol = row.get('rvol', 1.0)
+            price_move = row.get('ret_1d', 0)
             
-            acceleration = short_term - long_term
-            
-            return acceleration
-            
+            if rvol > 3 and abs(price_move) > 5:
+                return "EXPLOSIVE"
+            elif rvol > 2 and price_move > 0:
+                return "ACCUMULATION"
+            elif rvol > 2 and price_move < 0:
+                return "DISTRIBUTION"
+            elif rvol < 0.5:
+                return "DORMANT"
+            else:
+                return "NORMAL"
+                
         except Exception:
-            return 0.0
-
-class RankingEngine:
-    """Handle all ranking operations"""
-    
-    @staticmethod
-    @monitor_performance
-    def calculate_relative_ranks(df: pd.DataFrame) -> pd.DataFrame:
-        """Calculate percentile ranks for all metrics"""
-        try:
-            # Momentum rank
-            df['momentum_rank'] = df['momentum_score'].rank(pct=True, method='dense')
-            
-            # Volume rank
-            df['volume_rank'] = df['volume_score'].rank(pct=True, method='dense')
-            
-            # Acceleration ranks
-            df['momentum_accel_rank'] = df['momentum_acceleration'].rank(pct=True, method='dense')
-            df['volume_accel_rank'] = df['volume_acceleration'].rank(pct=True, method='dense')
-            
-            # Combined rank (weighted)
-            df['combined_rank'] = (
-                df['momentum_rank'] * 0.4 +
-                df['volume_rank'] * 0.3 +
-                df['momentum_accel_rank'] * 0.2 +
-                df['volume_accel_rank'] * 0.1
-            )
-            
-            # Overall rank
-            df['overall_rank'] = df['combined_rank'].rank(pct=True, method='dense')
-            
-            return df
-            
-        except Exception as e:
-            logger.error(f"Ranking calculation error: {e}")
-            return df
-    
-    @staticmethod
-    def get_top_percentile(df: pd.DataFrame, percentile: float) -> pd.DataFrame:
-        """Get top percentile of stocks"""
-        try:
-            threshold = df['combined_rank'].quantile(percentile)
-            return df[df['combined_rank'] >= threshold].sort_values('combined_rank', ascending=False)
-        except Exception:
-            return pd.DataFrame()
+            return "NORMAL"
 
 # ============================================
 # SIGNAL GENERATION
 # ============================================
 
 class SignalGenerator:
-    """Generate trading signals from ranked data"""
+    """Generate signals from pure rankings"""
     
-    def __init__(self, data_store: DataStore):
-        self.data_store = data_store
-    
+    @staticmethod
     @monitor_performance
-    def generate_signals(self, df: pd.DataFrame, previous_df: Optional[pd.DataFrame] = None) -> List[Signal]:
-        """Generate all trading signals"""
+    def generate_signals(df: pd.DataFrame) -> List[Signal]:
+        """Generate signals for ALL stocks"""
         signals = []
         
         try:
-            # Get appearance/disappearance sets
-            if previous_df is not None:
-                current_tickers = set(df['ticker'])
-                previous_tickers = set(previous_df['ticker'])
-                
-                new_appearances = current_tickers - previous_tickers
-                disappearances = previous_tickers - current_tickers
-            else:
-                new_appearances = set(df['ticker'])
-                disappearances = set()
-            
-            # Process each stock
             for _, row in df.iterrows():
-                ticker = row['ticker']
-                
-                # Calculate days in list
-                appearances = self.data_store.get_appearance_history(ticker)
-                days_in_list = len(appearances)
-                first_appearance = min(appearances) if appearances else datetime.now()
-                
-                # Determine signal type
-                signal_type = self._determine_signal_type(
-                    row, 
-                    is_new=ticker in new_appearances,
-                    days_in_list=days_in_list
-                )
+                # Determine signal type from pure rank
+                signal_type = SignalGenerator._determine_signal_type(row)
                 
                 # Calculate signal strength
-                signal_strength = self._calculate_signal_strength(row, signal_type)
+                signal_strength = row.get('combined_rank', 0) * 100
                 
-                # Calculate position size
-                position_size = self._calculate_position_size(
-                    row, 
-                    signal_type, 
-                    signal_strength
-                )
+                # Count trend days
+                days_up = sum(1 for period in ['ret_1d', 'ret_3d', 'ret_7d'] 
+                             if row.get(period, 0) > 0)
+                days_down = 3 - days_up
                 
-                # Create signal
+                # Create signal for EVERY stock
                 signal = Signal(
-                    ticker=ticker,
-                    company_name=row.get('company_name', ticker),
+                    ticker=row['ticker'],
+                    company_name=row.get('company_name', row['ticker']),
                     sector=row.get('sector', 'Unknown'),
                     category=row.get('category', 'Unknown'),
-                    signal_type=signal_type,
-                    signal_strength=signal_strength,
-                    signal_timestamp=datetime.now(),
+                    price=row.get('price', 0),
+                    eps_tier=row.get('eps_tier', 'Unknown'),
+                    price_tier=row.get('price_tier', 'Unknown'),
                     momentum_rank=row.get('momentum_rank', 0),
                     volume_rank=row.get('volume_rank', 0),
+                    acceleration_rank=row.get('acceleration_rank', 0),
                     combined_rank=row.get('combined_rank', 0),
-                    price=row.get('price', 0),
                     momentum_score=row.get('momentum_score', 0),
                     volume_score=row.get('volume_score', 0),
                     momentum_acceleration=row.get('momentum_acceleration', 0),
-                    volume_acceleration=row.get('volume_acceleration', 0),
-                    volatility_estimate=self._estimate_volatility(row),
-                    liquidity_score=row.get('volume_30d', 0) / 1e6,  # In millions
-                    recommended_size=position_size,
-                    confidence_level=signal_strength / 100,
-                    days_in_list=days_in_list,
-                    first_appearance=first_appearance
+                    signal_type=signal_type,
+                    signal_strength=signal_strength,
+                    days_up=days_up,
+                    days_down=days_down,
+                    trend_strength=row.get('trend_strength', 0),
+                    raw_data=row.to_dict()
                 )
                 
                 signals.append(signal)
             
-            # Add exit signals for disappearances
-            for ticker in disappearances:
-                exit_signal = self._create_exit_signal(ticker, "Stock removed from data")
-                if exit_signal:
-                    signals.append(exit_signal)
+            # Sort by combined rank
+            signals.sort(key=lambda x: x.combined_rank, reverse=True)
             
-            # Sort by signal strength
-            signals.sort(key=lambda x: x.signal_strength, reverse=True)
-            
+            logger.info(f"Generated {len(signals)} signals")
             return signals
             
         except Exception as e:
             logger.error(f"Signal generation error: {e}")
             return []
     
-    def _determine_signal_type(self, row: pd.Series, is_new: bool, days_in_list: int) -> str:
-        """Determine signal type based on conditions"""
-        try:
-            # Strong buy conditions
-            if (row.get('combined_rank', 0) >= CONSTANTS.TOP_MOMENTUM_PERCENTILE and
-                row.get('rvol', 0) >= CONSTANTS.VOLUME_CONFIRMATION and
-                (is_new or days_in_list <= 3)):
-                return 'BUY'
-            
-            # Exit conditions
-            elif (row.get('momentum_rank', 0) < 0.3 or
-                  row.get('momentum_acceleration', 0) < -5 or
-                  days_in_list > 15):
-                return 'SELL'
-            
-            # Hold conditions
-            elif row.get('combined_rank', 0) >= 0.7:
-                return 'HOLD'
-            
-            else:
-                return 'SELL'
-                
-        except Exception:
+    @staticmethod
+    def _determine_signal_type(row: pd.Series) -> str:
+        """Determine signal type from rank"""
+        combined_rank = row.get('combined_rank', 0)
+        momentum_rank = row.get('momentum_rank', 0)
+        volume_rank = row.get('volume_rank', 0)
+        
+        # Top 5% with volume = STRONG BUY
+        if combined_rank >= 0.95 and volume_rank >= 0.8:
+            return 'STRONG_BUY'
+        # Top 10% = BUY
+        elif combined_rank >= 0.90:
+            return 'BUY'
+        # Top 25% = WATCH
+        elif combined_rank >= 0.75:
+            return 'WATCH'
+        # Rest = HOLD
+        else:
             return 'HOLD'
-    
-    def _calculate_signal_strength(self, row: pd.Series, signal_type: str) -> float:
-        """Calculate signal strength (0-100)"""
-        try:
-            base_strength = row.get('combined_rank', 0.5) * 100
-            
-            # Adjust for signal type
-            if signal_type == 'BUY':
-                # Boost for strong momentum acceleration
-                if row.get('momentum_acceleration', 0) > 2:
-                    base_strength *= 1.2
-                # Boost for volume confirmation
-                if row.get('rvol', 1) > 2:
-                    base_strength *= 1.1
-            
-            elif signal_type == 'SELL':
-                # Invert for sell signals
-                base_strength = 100 - base_strength
-            
-            return min(100, max(0, base_strength))
-            
-        except Exception:
-            return 50.0
-    
-    def _calculate_position_size(self, row: pd.Series, signal_type: str, signal_strength: float) -> float:
-        """Calculate recommended position size"""
-        try:
-            if signal_type != 'BUY':
-                return 0.0
-            
-            # Base size on signal strength
-            base_size = (signal_strength / 100) * CONSTANTS.MAX_POSITION_SIZE
-            
-            # Adjust for volatility
-            volatility = self._estimate_volatility(row)
-            if volatility > 5:  # High volatility
-                base_size *= 0.7
-            elif volatility < 2:  # Low volatility
-                base_size *= 1.2
-            
-            # Adjust for liquidity
-            volume_30d = row.get('volume_30d', 0)
-            if volume_30d < 100_000:
-                base_size *= 0.5
-            elif volume_30d > 1_000_000:
-                base_size *= 1.1
-            
-            return max(CONSTANTS.MIN_POSITION_SIZE, min(base_size, CONSTANTS.MAX_POSITION_SIZE))
-            
-        except Exception:
-            return CONSTANTS.MIN_POSITION_SIZE
-    
-    def _estimate_volatility(self, row: pd.Series) -> float:
-        """Estimate stock volatility"""
-        try:
-            # Use return ranges as volatility proxy
-            daily_vol = abs(row.get('ret_1d', 0))
-            weekly_vol = abs(row.get('ret_7d', 0)) / 5  # Approximate daily from weekly
-            monthly_vol = abs(row.get('ret_30d', 0)) / 22  # Approximate daily from monthly
-            
-            # Weight recent volatility more
-            estimated_vol = (daily_vol * 0.5 + weekly_vol * 0.3 + monthly_vol * 0.2)
-            
-            return estimated_vol
-            
-        except Exception:
-            return 3.0  # Default medium volatility
-    
-    def _create_exit_signal(self, ticker: str, reason: str) -> Optional[Signal]:
-        """Create exit signal for disappeared stocks"""
-        try:
-            return Signal(
-                ticker=ticker,
-                company_name=ticker,
-                sector='Unknown',
-                category='Unknown',
-                signal_type='EXIT',
-                signal_strength=100,
-                signal_timestamp=datetime.now(),
-                momentum_rank=0,
-                volume_rank=0,
-                combined_rank=0,
-                price=0,
-                momentum_score=0,
-                volume_score=0,
-                momentum_acceleration=0,
-                volume_acceleration=0,
-                volatility_estimate=0,
-                liquidity_score=0,
-                recommended_size=0,
-                confidence_level=1,
-                days_in_list=0,
-                first_appearance=None,
-                exit_reasons=[reason]
-            )
-        except Exception:
-            return None
-
-# ============================================
-# MARKET ANALYSIS
-# ============================================
-
-class MarketAnalyzer:
-    """Analyze overall market conditions"""
-    
-    @staticmethod
-    @monitor_performance
-    def analyze_market(df: pd.DataFrame) -> MarketConditions:
-        """Comprehensive market analysis"""
-        try:
-            total_stocks = len(df)
-            
-            # Market breadth
-            advancing = len(df[df['ret_1d'] > 0])
-            declining = len(df[df['ret_1d'] < 0])
-            
-            # Momentum distribution
-            avg_momentum = df['momentum_score'].mean()
-            momentum_dispersion = df['momentum_score'].std()
-            positive_momentum = len(df[df['momentum_score'] > 0])
-            
-            # Volume analysis
-            avg_rvol = df['rvol'].mean()
-            high_volume = len(df[df['rvol'] > CONSTANTS.VOLUME_CONFIRMATION])
-            
-            # Sector analysis
-            sector_performance = df.groupby('sector')['ret_7d'].mean().sort_values(ascending=False)
-            leading_sectors = [(s, p) for s, p in sector_performance.head(5).items()]
-            
-            # Determine regime
-            regime = MarketAnalyzer._determine_regime(df)
-            
-            # Calculate volatility
-            market_volatility = df['ret_1d'].std()
-            
-            return MarketConditions(
-                timestamp=datetime.now(),
-                total_stocks=total_stocks,
-                regime=regime['type'],
-                regime_confidence=regime['confidence'],
-                advancing_pct=(advancing / total_stocks * 100) if total_stocks > 0 else 0,
-                declining_pct=(declining / total_stocks * 100) if total_stocks > 0 else 0,
-                new_highs_pct=len(df[df['from_high_pct'] > -5]) / total_stocks * 100 if total_stocks > 0 else 0,
-                new_lows_pct=len(df[df['from_low_pct'] < 5]) / total_stocks * 100 if total_stocks > 0 else 0,
-                avg_momentum=avg_momentum,
-                momentum_dispersion=momentum_dispersion,
-                positive_momentum_pct=(positive_momentum / total_stocks * 100) if total_stocks > 0 else 0,
-                avg_relative_volume=avg_rvol,
-                high_volume_pct=(high_volume / total_stocks * 100) if total_stocks > 0 else 0,
-                leading_sectors=leading_sectors,
-                sector_rotation_intensity=sector_performance.std(),
-                market_volatility=market_volatility,
-                correlation_level=MarketAnalyzer._calculate_correlation_level(df)
-            )
-            
-        except Exception as e:
-            logger.error(f"Market analysis error: {e}")
-            return MarketConditions(
-                timestamp=datetime.now(),
-                total_stocks=0,
-                regime='UNKNOWN',
-                regime_confidence=0,
-                advancing_pct=0,
-                declining_pct=0,
-                new_highs_pct=0,
-                new_lows_pct=0,
-                avg_momentum=0,
-                momentum_dispersion=0,
-                positive_momentum_pct=0,
-                avg_relative_volume=1,
-                high_volume_pct=0,
-                leading_sectors=[],
-                sector_rotation_intensity=0,
-                market_volatility=0,
-                correlation_level=0
-            )
-    
-    @staticmethod
-    def _determine_regime(df: pd.DataFrame) -> Dict[str, Any]:
-        """Determine market regime"""
-        try:
-            # Check trend consistency
-            above_sma20 = len(df[df['price'] > df['sma_20d']]) / len(df)
-            above_sma50 = len(df[df['price'] > df['sma_50d']]) / len(df)
-            
-            # Check momentum
-            positive_momentum = len(df[df['ret_7d'] > 0]) / len(df)
-            
-            # Determine regime
-            if above_sma50 > 0.65 and positive_momentum > 0.6:
-                return {'type': 'TRENDING', 'confidence': min(above_sma50, positive_momentum)}
-            elif above_sma50 < 0.35 and positive_momentum < 0.4:
-                return {'type': 'DECLINING', 'confidence': 1 - max(above_sma50, positive_momentum)}
-            elif df['ret_1d'].std() > df['ret_30d'].std() / 5:
-                return {'type': 'VOLATILE', 'confidence': 0.7}
-            else:
-                return {'type': 'RANGING', 'confidence': 0.5}
-                
-        except Exception:
-            return {'type': 'UNKNOWN', 'confidence': 0}
-    
-    @staticmethod
-    def _calculate_correlation_level(df: pd.DataFrame) -> float:
-        """Calculate market correlation level"""
-        try:
-            # Simple correlation proxy: how many stocks moving in same direction
-            if len(df) == 0:
-                return 0
-                
-            same_direction = len(df[
-                (df['ret_1d'] > 0) == (df['ret_7d'] > 0)
-            ])
-            
-            return same_direction / len(df)
-            
-        except Exception:
-            return 0.5
 
 # ============================================
 # DATA PROCESSING PIPELINE
 # ============================================
 
 class DataPipeline:
-    """Main data processing pipeline"""
+    """Process all data without thresholds"""
     
     def __init__(self):
-        self.data_store = DataStore()
         self.momentum_engine = MomentumEngine()
         self.volume_engine = VolumeEngine()
-        self.ranking_engine = RankingEngine()
-        self.signal_generator = SignalGenerator(self.data_store)
-        self.market_analyzer = MarketAnalyzer()
+        self.signal_generator = SignalGenerator()
     
     @monitor_performance
-    def process_data(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, List[Signal], MarketConditions]:
-        """Complete data processing pipeline"""
+    def process_data(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, List[Signal], MarketProfile]:
+        """Process ALL data - no filtering!"""
         try:
-            # Clean and validate data
-            df = self._clean_data(df)
+            # Step 1: Clean only truly invalid data
+            df = self._minimal_clean(df)
             
             if df.empty:
-                logger.warning("No data after cleaning")
-                return df, [], self.market_analyzer.analyze_market(df)
+                logger.warning("No valid data")
+                return df, [], self._empty_market_profile()
             
-            # Calculate scores
+            # Step 2: Add tiers
+            df = self._add_tiers(df)
+            
+            # Step 3: Calculate scores for ALL stocks
             df = self._calculate_scores(df)
             
-            # Calculate ranks
-            df = self.ranking_engine.calculate_relative_ranks(df)
+            # Step 4: Rank everything
+            df = self._calculate_ranks(df)
             
-            # Load previous data for comparison
-            yesterday = datetime.now() - timedelta(days=1)
-            previous_df = self.data_store.load_daily_snapshot(yesterday)
+            # Step 5: Generate signals
+            signals = self.signal_generator.generate_signals(df)
             
-            # Generate signals
-            signals = self.signal_generator.generate_signals(df, previous_df)
+            # Step 6: Create market profile
+            market_profile = self._create_market_profile(df)
             
-            # Analyze market
-            market_conditions = self.market_analyzer.analyze_market(df)
+            logger.info(f"Processed {len(df)} stocks, generated {len(signals)} signals")
             
-            # Save data
-            self.data_store.save_daily_snapshot(df, datetime.now())
-            self.data_store.save_signals(signals, datetime.now())
-            
-            return df, signals, market_conditions
+            return df, signals, market_profile
             
         except Exception as e:
-            logger.error(f"Pipeline processing error: {e}")
-            return pd.DataFrame(), [], self.market_analyzer.analyze_market(pd.DataFrame())
+            logger.error(f"Pipeline error: {e}")
+            return pd.DataFrame(), [], self._empty_market_profile()
     
-    def _clean_data(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Clean and validate data"""
+    def _minimal_clean(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Minimal cleaning - only remove truly invalid"""
         try:
-            # Remove invalid prices
-            df = df[df['price'] >= CONSTANTS.MIN_PRICE]
+            initial_count = len(df)
             
-            # Remove low volume stocks
-            df = df[df['volume_30d'] >= CONSTANTS.MIN_VOLUME]
+            # Only remove if price is literally invalid
+            df = df[df['price'].notna()]
+            df = df[df['price'] > 0]  # Can't have negative price
             
-            # Remove extreme values
-            df = df[df['ret_1d'].between(-30, 30)]  # Circuit limit protection
-            
-            # Remove duplicates
+            # Remove complete duplicates
             df = df.drop_duplicates(subset=['ticker'], keep='first')
             
-            # Ensure required columns have valid data
-            required_columns = ['price', 'ret_1d', 'ret_7d', 'rvol', 'volume_30d']
-            for col in required_columns:
-                if col in df.columns:
-                    df = df[df[col].notna()]
+            final_count = len(df)
+            logger.info(f"Minimal clean: {initial_count} → {final_count} rows")
             
-            logger.info(f"Data cleaned: {len(df)} stocks remain")
             return df
             
         except Exception as e:
-            logger.error(f"Data cleaning error: {e}")
+            logger.error(f"Cleaning error: {e}")
             return pd.DataFrame()
     
-    def _calculate_scores(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Calculate all scores"""
+    def _add_tiers(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Add EPS and Price tiers"""
         try:
-            # Calculate momentum scores
+            # Add EPS tier
+            df['eps_tier'] = df['eps_current'].apply(get_eps_tier)
+            
+            # Add Price tier  
+            df['price_tier'] = df['price'].apply(get_price_tier)
+            
+            logger.info("Added EPS and Price tiers")
+            return df
+            
+        except Exception as e:
+            logger.error(f"Tier calculation error: {e}")
+            return df
+    
+    def _calculate_scores(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Calculate scores for all stocks"""
+        try:
+            # Momentum scores
             df['momentum_score'] = df.apply(self.momentum_engine.calculate_momentum_score, axis=1)
-            df['momentum_acceleration'] = df.apply(self.momentum_engine.calculate_momentum_acceleration, axis=1)
+            df['momentum_acceleration'] = df.apply(self.momentum_engine.calculate_acceleration, axis=1)
+            df['trend_strength'] = df.apply(self.momentum_engine.calculate_trend_strength, axis=1)
             
-            # Calculate volume scores
+            # Volume scores
             df['volume_score'] = df.apply(self.volume_engine.calculate_volume_score, axis=1)
-            df['volume_acceleration'] = df.apply(self.volume_engine.calculate_volume_acceleration, axis=1)
+            df['volume_character'] = df.apply(self.volume_engine.calculate_volume_character, axis=1)
             
+            logger.info("Calculated all scores")
             return df
             
         except Exception as e:
             logger.error(f"Score calculation error: {e}")
             return df
+    
+    def _calculate_ranks(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Rank everything - this is where the magic happens"""
+        try:
+            # Individual ranks (0-1 percentile)
+            df['momentum_rank'] = df['momentum_score'].rank(pct=True, method='average')
+            df['volume_rank'] = df['volume_score'].rank(pct=True, method='average')
+            df['acceleration_rank'] = df['momentum_acceleration'].rank(pct=True, method='average')
+            
+            # Combined rank with weights
+            df['combined_rank'] = (
+                df['momentum_rank'] * 0.4 +
+                df['volume_rank'] * 0.3 +
+                df['acceleration_rank'] * 0.2 +
+                df['trend_strength'] * 0.1
+            )
+            
+            # Final overall rank
+            df['overall_rank'] = df['combined_rank'].rank(pct=True, method='average')
+            
+            logger.info("Calculated all rankings")
+            return df
+            
+        except Exception as e:
+            logger.error(f"Ranking error: {e}")
+            return df
+    
+    def _create_market_profile(self, df: pd.DataFrame) -> MarketProfile:
+        """Create market profile"""
+        try:
+            # Distributions
+            eps_dist = df['eps_tier'].value_counts().to_dict()
+            price_dist = df['price_tier'].value_counts().to_dict()
+            category_dist = df['category'].value_counts().to_dict()
+            sector_dist = df['sector'].value_counts().head(10).to_dict()
+            
+            # Market character
+            avg_momentum = df['momentum_score'].mean()
+            avg_volume = df['volume_score'].mean()
+            breadth_positive = (df['ret_1d'] > 0).mean() * 100
+            breadth_negative = (df['ret_1d'] < 0).mean() * 100
+            
+            # Top movers
+            top_gainers = df.nlargest(5, 'ret_1d')['ticker'].tolist()
+            top_volume = df.nlargest(5, 'volume_score')['ticker'].tolist()
+            top_momentum = df.nlargest(5, 'momentum_score')['ticker'].tolist()
+            
+            return MarketProfile(
+                timestamp=datetime.now(),
+                total_stocks=len(df),
+                eps_tier_distribution=eps_dist,
+                price_tier_distribution=price_dist,
+                category_distribution=category_dist,
+                sector_distribution=sector_dist,
+                avg_momentum=avg_momentum,
+                avg_volume=avg_volume,
+                breadth_positive=breadth_positive,
+                breadth_negative=breadth_negative,
+                top_gainers=top_gainers,
+                top_volume=top_volume,
+                top_momentum=top_momentum
+            )
+            
+        except Exception as e:
+            logger.error(f"Market profile error: {e}")
+            return self._empty_market_profile()
+    
+    def _empty_market_profile(self) -> MarketProfile:
+        """Empty market profile"""
+        return MarketProfile(
+            timestamp=datetime.now(),
+            total_stocks=0,
+            eps_tier_distribution={},
+            price_tier_distribution={},
+            category_distribution={},
+            sector_distribution={},
+            avg_momentum=0,
+            avg_volume=1,
+            breadth_positive=0,
+            breadth_negative=0,
+            top_gainers=[],
+            top_volume=[],
+            top_momentum=[]
+        )
 
 # ============================================
-# VISUALIZATION COMPONENTS
+# VISUALIZATION
 # ============================================
 
 class Visualizer:
-    """Create all visualizations"""
+    """Create visualizations"""
     
     @staticmethod
-    def create_market_overview(market_conditions: MarketConditions) -> go.Figure:
-        """Create market overview dashboard"""
-        fig = go.Figure()
+    def create_tier_distribution(market_profile: MarketProfile, tier_type: str) -> go.Figure:
+        """Create tier distribution chart"""
+        if tier_type == 'eps':
+            data = market_profile.eps_tier_distribution
+            title = "EPS Tier Distribution"
+            colors = px.colors.sequential.Blues
+        else:
+            data = market_profile.price_tier_distribution
+            title = "Price Tier Distribution"
+            colors = px.colors.sequential.Greens
         
-        # Market regime indicator
-        regime_colors = {
-            'TRENDING': '#10b981',
-            'DECLINING': '#ef4444',
-            'VOLATILE': '#f59e0b',
-            'RANGING': '#6b7280',
-            'UNKNOWN': '#9ca3af'
-        }
-        
-        fig.add_trace(go.Indicator(
-            mode="gauge+number",
-            value=market_conditions.regime_confidence * 100,
-            title={'text': f"{market_conditions.regime} Market"},
-            domain={'x': [0, 0.5], 'y': [0.5, 1]},
-            gauge={
-                'axis': {'range': [0, 100]},
-                'bar': {'color': regime_colors.get(market_conditions.regime, '#6b7280')},
-                'steps': [
-                    {'range': [0, 30], 'color': '#fee2e2'},
-                    {'range': [30, 70], 'color': '#fef3c7'},
-                    {'range': [70, 100], 'color': '#d4f1e4'}
-                ]
-            }
-        ))
-        
-        # Breadth indicator
-        fig.add_trace(go.Indicator(
-            mode="number+delta",
-            value=market_conditions.advancing_pct,
-            title={'text': "Advancing %"},
-            delta={'reference': 50, 'relative': False},
-            domain={'x': [0.5, 1], 'y': [0.5, 1]}
-        ))
-        
-        # Volume indicator
-        fig.add_trace(go.Indicator(
-            mode="number",
-            value=market_conditions.avg_relative_volume,
-            title={'text': "Avg Relative Volume"},
-            number={'suffix': "x"},
-            domain={'x': [0, 0.5], 'y': [0, 0.5]}
-        ))
-        
-        # Momentum indicator
-        fig.add_trace(go.Indicator(
-            mode="number+delta",
-            value=market_conditions.positive_momentum_pct,
-            title={'text': "Positive Momentum %"},
-            delta={'reference': 50, 'relative': False},
-            domain={'x': [0.5, 1], 'y': [0, 0.5]}
-        ))
-        
-        fig.update_layout(
-            title="Market Conditions Overview",
-            height=400,
-            showlegend=False
-        )
-        
-        return fig
-    
-    @staticmethod
-    def create_signal_distribution(signals: List[Signal]) -> go.Figure:
-        """Create signal distribution chart"""
-        if not signals:
+        if not data:
             return go.Figure()
         
-        # Count by signal type
-        signal_counts = {}
-        for signal in signals:
-            signal_counts[signal.signal_type] = signal_counts.get(signal.signal_type, 0) + 1
+        # Sort tiers properly
+        tier_order = ['5↓', '5↑', '15↑', '35↑', '55↑', '75↑', '95↑'] if tier_type == 'eps' else ['100↓', '100↑', '200↑', '500↑', '1K↑', '2K↑', '5K↑']
+        sorted_data = {k: data.get(k, 0) for k in tier_order if k in data}
         
-        # Create bar chart
         fig = go.Figure(go.Bar(
-            x=list(signal_counts.keys()),
-            y=list(signal_counts.values()),
-            marker_color=['#10b981', '#f59e0b', '#ef4444', '#991b1b'],
-            text=list(signal_counts.values()),
+            x=list(sorted_data.keys()),
+            y=list(sorted_data.values()),
+            marker_color=colors[0:len(sorted_data)],
+            text=list(sorted_data.values()),
             textposition='auto'
         ))
         
         fig.update_layout(
-            title="Signal Distribution",
-            xaxis_title="Signal Type",
-            yaxis_title="Count",
+            title=title,
+            xaxis_title="Tier",
+            yaxis_title="Number of Stocks",
             height=300,
             showlegend=False
         )
@@ -1202,102 +755,71 @@ class Visualizer:
         return fig
     
     @staticmethod
-    def create_sector_momentum(df: pd.DataFrame) -> go.Figure:
-        """Create sector momentum chart"""
+    def create_rank_heatmap(df: pd.DataFrame, top_n: int = 50) -> go.Figure:
+        """Create ranking heatmap"""
         if df.empty:
             return go.Figure()
         
-        # Calculate sector metrics
-        sector_data = df.groupby('sector').agg({
-            'momentum_score': 'mean',
-            'volume_score': 'mean',
-            'ticker': 'count'
-        }).round(2)
+        # Get top N stocks
+        top_stocks = df.nlargest(top_n, 'combined_rank')
         
-        # Filter sectors with enough stocks
-        sector_data = sector_data[sector_data['ticker'] >= 3]
-        
-        if sector_data.empty:
+        if top_stocks.empty:
             return go.Figure()
         
-        # Sort by momentum
-        sector_data = sector_data.sort_values('momentum_score', ascending=True).tail(15)
+        # Create heatmap data
+        heatmap_data = []
+        labels = []
         
-        # Create horizontal bar chart
-        fig = go.Figure()
+        rank_columns = ['momentum_rank', 'volume_rank', 'acceleration_rank', 'combined_rank']
         
-        fig.add_trace(go.Bar(
-            y=sector_data.index,
-            x=sector_data['momentum_score'],
-            orientation='h',
-            name='Momentum Score',
-            marker_color='#8b5cf6',
-            text=[f"{x:.2f}" for x in sector_data['momentum_score']],
-            textposition='auto'
+        for col in rank_columns:
+            if col in top_stocks.columns:
+                heatmap_data.append(top_stocks[col].values)
+                labels.append(col.replace('_rank', '').title())
+        
+        fig = go.Figure(go.Heatmap(
+            z=heatmap_data,
+            x=top_stocks['ticker'].values,
+            y=labels,
+            colorscale='Viridis',
+            text=[[f"{val:.2%}" for val in row] for row in heatmap_data],
+            texttemplate="%{text}",
+            textfont={"size": 10}
         ))
         
         fig.update_layout(
-            title="Top 15 Sectors by Momentum",
-            xaxis_title="Average Momentum Score",
-            yaxis_title="",
-            height=500,
-            showlegend=False
+            title=f"Top {top_n} Stocks - Ranking Heatmap",
+            height=400,
+            xaxis_title="",
+            yaxis_title=""
         )
         
         return fig
     
     @staticmethod
-    def create_rank_scatter(df: pd.DataFrame) -> go.Figure:
-        """Create momentum vs volume rank scatter"""
-        if df.empty:
+    def create_scatter_matrix(df: pd.DataFrame) -> go.Figure:
+        """Create interactive scatter matrix"""
+        if df.empty or len(df) < 10:
             return go.Figure()
         
-        # Get top stocks
-        top_stocks = df.nlargest(50, 'combined_rank')
+        # Get top 100 for clarity
+        plot_df = df.nlargest(100, 'combined_rank')
         
-        if top_stocks.empty:
-            return go.Figure()
+        # Select columns for scatter matrix
+        columns = ['momentum_score', 'volume_score', 'ret_7d', 'rvol']
         
-        # Create scatter plot
-        fig = go.Figure()
-        
-        # Color by combined rank
-        fig.add_trace(go.Scatter(
-            x=top_stocks['momentum_rank'],
-            y=top_stocks['volume_rank'],
-            mode='markers+text',
-            text=top_stocks['ticker'],
-            textposition="top center",
-            marker=dict(
-                size=top_stocks['combined_rank'] * 20,
-                color=top_stocks['combined_rank'],
-                colorscale='Viridis',
-                showscale=True,
-                colorbar=dict(title="Combined Rank")
-            ),
-            hovertemplate="<b>%{text}</b><br>" +
-                         "Momentum Rank: %{x:.2f}<br>" +
-                         "Volume Rank: %{y:.2f}<br>" +
-                         "<extra></extra>"
-        ))
-        
-        # Add diagonal line
-        fig.add_trace(go.Scatter(
-            x=[0, 1],
-            y=[0, 1],
-            mode='lines',
-            line=dict(dash='dash', color='gray'),
-            showlegend=False
-        ))
-        
-        fig.update_layout(
-            title="Top 50 Stocks: Momentum vs Volume Rank",
-            xaxis_title="Momentum Rank (Percentile)",
-            yaxis_title="Volume Rank (Percentile)",
-            height=600,
-            xaxis=dict(range=[0, 1]),
-            yaxis=dict(range=[0, 1])
+        # Create scatter matrix
+        fig = px.scatter_matrix(
+            plot_df,
+            dimensions=columns,
+            color='combined_rank',
+            color_continuous_scale='Viridis',
+            title="Multi-Dimensional Analysis (Top 100)",
+            height=800,
+            hover_data=['ticker']
         )
+        
+        fig.update_traces(diagonal_visible=False)
         
         return fig
 
@@ -1305,495 +827,391 @@ class Visualizer:
 # REPORT GENERATION
 # ============================================
 
-class ReportGenerator:
-    """Generate Excel and text reports"""
+def generate_excel_report(df: pd.DataFrame, signals: List[Signal], market_profile: MarketProfile) -> BytesIO:
+    """Generate Excel report"""
+    output = BytesIO()
     
-    @staticmethod
-    def generate_excel_report(
-        df: pd.DataFrame, 
-        signals: List[Signal], 
-        market_conditions: MarketConditions
-    ) -> BytesIO:
-        """Generate comprehensive Excel report"""
-        output = BytesIO()
-        
-        try:
-            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                workbook = writer.book
-                
-                # Define formats
-                header_format = workbook.add_format({
-                    'bold': True,
-                    'text_wrap': True,
-                    'valign': 'vcenter',
-                    'align': 'center',
-                    'fg_color': '#4A5568',
-                    'font_color': 'white',
-                    'border': 1
-                })
-                
-                number_format = workbook.add_format({'num_format': '#,##0.00'})
-                percent_format = workbook.add_format({'num_format': '0.00%'})
-                currency_format = workbook.add_format({'num_format': '₹#,##0.00'})
-                
-                # Sheet 1: Summary
-                summary_data = pd.DataFrame({
-                    'Metric': [
-                        'Analysis Date',
-                        'Market Regime',
-                        'Total Stocks Analyzed',
-                        'Buy Signals',
-                        'Hold Signals',
-                        'Sell Signals',
-                        'Exit Signals',
-                        'Market Volatility',
-                        'Average Volume',
-                        'Top Sector'
-                    ],
-                    'Value': [
-                        market_conditions.timestamp.strftime('%Y-%m-%d %H:%M'),
-                        f"{market_conditions.regime} ({market_conditions.regime_confidence:.1%})",
-                        str(market_conditions.total_stocks),
-                        str(sum(1 for s in signals if s.signal_type == 'BUY')),
-                        str(sum(1 for s in signals if s.signal_type == 'HOLD')),
-                        str(sum(1 for s in signals if s.signal_type == 'SELL')),
-                        str(sum(1 for s in signals if s.signal_type == 'EXIT')),
-                        f"{market_conditions.market_volatility:.2%}",
-                        f"{market_conditions.avg_relative_volume:.2f}x",
-                        market_conditions.leading_sectors[0][0] if market_conditions.leading_sectors else 'N/A'
-                    ]
-                })
-                
-                summary_data.to_excel(writer, sheet_name='Summary', index=False)
-                
-                # Sheet 2: Buy Signals
-                buy_signals = [s for s in signals if s.signal_type == 'BUY']
-                if buy_signals:
-                    buy_df = pd.DataFrame([s.to_dict() for s in buy_signals])
-                    buy_df = buy_df[[
-                        'ticker', 'company_name', 'sector', 'price',
-                        'signal_strength', 'momentum_rank', 'volume_rank',
-                        'combined_rank', 'recommended_size', 'days_in_list'
-                    ]]
-                    buy_df.to_excel(writer, sheet_name='Buy Signals', index=False)
-                
-                # Sheet 3: All Signals
-                if signals:
-                    all_signals_df = pd.DataFrame([s.to_dict() for s in signals])
-                    all_signals_df.to_excel(writer, sheet_name='All Signals', index=False)
-                
-                # Sheet 4: Market Analysis
-                market_df = pd.DataFrame({
-                    'Metric': [
-                        'Advancing %',
-                        'Declining %',
-                        'New Highs %',
-                        'New Lows %',
-                        'Positive Momentum %',
-                        'High Volume %'
-                    ],
-                    'Value': [
-                        f"{market_conditions.advancing_pct:.1f}%",
-                        f"{market_conditions.declining_pct:.1f}%",
-                        f"{market_conditions.new_highs_pct:.1f}%",
-                        f"{market_conditions.new_lows_pct:.1f}%",
-                        f"{market_conditions.positive_momentum_pct:.1f}%",
-                        f"{market_conditions.high_volume_pct:.1f}%"
-                    ]
-                })
-                market_df.to_excel(writer, sheet_name='Market Analysis', index=False)
-                
-                # Format all sheets
-                for sheet_name in writer.sheets:
-                    worksheet = writer.sheets[sheet_name]
-                    worksheet.freeze_panes(1, 0)
-                    
-                    # Auto-fit columns
-                    for i in range(20):
-                        worksheet.set_column(i, i, 15)
+    try:
+        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+            workbook = writer.book
             
-            output.seek(0)
-            return output
+            # Header format
+            header_format = workbook.add_format({
+                'bold': True,
+                'bg_color': '#4A5568',
+                'font_color': 'white',
+                'border': 1
+            })
             
-        except Exception as e:
-            logger.error(f"Excel generation error: {e}")
-            output.seek(0)
-            return output
-    
-    @staticmethod
-    def generate_text_summary(
-        signals: List[Signal], 
-        market_conditions: MarketConditions
-    ) -> str:
-        """Generate text summary"""
-        buy_signals = [s for s in signals if s.signal_type == 'BUY']
-        exit_signals = [s for s in signals if s.signal_type == 'EXIT']
+            # Sheet 1: Top Signals
+            if signals:
+                signals_data = []
+                for s in signals[:100]:  # Top 100
+                    signals_data.append({
+                        'Ticker': s.ticker,
+                        'Company': s.company_name,
+                        'Signal': s.signal_type,
+                        'Rank': f"{s.combined_rank:.1%}",
+                        'Price': s.price,
+                        'EPS Tier': s.eps_tier,
+                        'Price Tier': s.price_tier,
+                        'Momentum Rank': f"{s.momentum_rank:.1%}",
+                        'Volume Rank': f"{s.volume_rank:.1%}",
+                        'Momentum Score': f"{s.momentum_score:.2f}",
+                        'Volume Score': f"{s.volume_score:.2f}"
+                    })
+                
+                signals_df = pd.DataFrame(signals_data)
+                signals_df.to_excel(writer, sheet_name='Top 100 Signals', index=False)
+            
+            # Sheet 2: All Rankings
+            rank_df = df[['ticker', 'company_name', 'price', 'eps_tier', 'price_tier',
+                         'momentum_rank', 'volume_rank', 'combined_rank']].copy()
+            rank_df = rank_df.sort_values('combined_rank', ascending=False)
+            rank_df.to_excel(writer, sheet_name='All Rankings', index=False)
+            
+            # Sheet 3: Market Profile
+            profile_data = {
+                'Metric': [
+                    'Total Stocks',
+                    'Average Momentum',
+                    'Average Volume',
+                    'Breadth Positive %',
+                    'Breadth Negative %'
+                ],
+                'Value': [
+                    market_profile.total_stocks,
+                    f"{market_profile.avg_momentum:.2f}",
+                    f"{market_profile.avg_volume:.2f}",
+                    f"{market_profile.breadth_positive:.1f}%",
+                    f"{market_profile.breadth_negative:.1f}%"
+                ]
+            }
+            
+            pd.DataFrame(profile_data).to_excel(writer, sheet_name='Market Profile', index=False)
+            
+            # Format all sheets
+            for sheet in writer.sheets.values():
+                sheet.freeze_panes(1, 0)
         
-        summary = f"""
-WAVE DETECTION 5.0 - DAILY SUMMARY
-{datetime.now().strftime('%Y-%m-%d %H:%M')}
-
-MARKET CONDITIONS:
-- Regime: {market_conditions.regime} (Confidence: {market_conditions.regime_confidence:.1%})
-- Volatility: {market_conditions.market_volatility:.1%}
-- Advancing: {market_conditions.advancing_pct:.1f}% | Declining: {market_conditions.declining_pct:.1f}%
-- Average Volume: {market_conditions.avg_relative_volume:.2f}x
-
-TOP SECTORS:
-"""
+        output.seek(0)
+        return output
         
-        for sector, perf in market_conditions.leading_sectors[:5]:
-            summary += f"- {sector}: {perf:.1f}%\n"
-        
-        summary += f"\nBUY SIGNALS ({len(buy_signals)}):\n"
-        for signal in buy_signals[:10]:
-            summary += f"""
-{signal.ticker} - {signal.company_name[:30]}
-  Signal Strength: {signal.signal_strength:.0f} | Rank: {signal.combined_rank:.2%}
-  Price: ₹{signal.price:.2f} | Position: {signal.recommended_size:.1%}
-  Momentum Rank: {signal.momentum_rank:.2%} | Volume Rank: {signal.volume_rank:.2%}
-"""
-        
-        if exit_signals:
-            summary += f"\nEXIT SIGNALS ({len(exit_signals)}):\n"
-            for signal in exit_signals[:5]:
-                summary += f"- {signal.ticker}: {', '.join(signal.exit_reasons)}\n"
-        
-        summary += f"""
-TRADING RULES:
-1. Buy top-ranked stocks at market open
-2. Exit when stock disappears or momentum dies
-3. Position size based on signal strength
-4. Maximum {CONSTANTS.MAX_POSITIONS} positions
-5. Review daily before market open
-
-Generated by Wave Detection 5.0
-"""
-        
-        return summary
+    except Exception as e:
+        logger.error(f"Excel generation error: {e}")
+        return output
 
 # ============================================
 # MAIN APPLICATION
 # ============================================
 
 def main():
-    """Main application entry point"""
+    """Main application"""
     
-    # Apply custom CSS
-    st.markdown(PROFESSIONAL_CSS, unsafe_allow_html=True)
+    # Apply CSS
+    st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
     
     # Header
-    st.markdown('<h1 class="main-header">⚡ Wave Detection 5.0</h1>', unsafe_allow_html=True)
-    st.markdown('<p class="sub-header">The Ultimate Trading Edge - Simple. Fast. Profitable.</p>', unsafe_allow_html=True)
+    st.markdown('<h1 class="main-header">🌊 Wave Detection 5.0</h1>', unsafe_allow_html=True)
+    st.markdown('<p class="sub-header">Let Every Stock Tell Its Story - No Thresholds, Pure Rankings</p>', unsafe_allow_html=True)
     
-    # Initialize session state
-    if 'data_pipeline' not in st.session_state:
-        st.session_state.data_pipeline = DataPipeline()
+    # Initialize
+    if 'pipeline' not in st.session_state:
+        st.session_state.pipeline = DataPipeline()
     
     # Sidebar
     with st.sidebar:
-        st.markdown("## 📊 Data Configuration")
+        st.markdown("## 📊 Data Source")
         
-        # Data source
         sheet_url = st.text_input(
             "Google Sheets URL",
-            value="https://docs.google.com/spreadsheets/d/1Wa4-4K7hyTTCrqJ0pUzS-NaLFiRQpBgI8KBdHx9obKk/edit?usp=sharing",
-            help="Your momentum watchlist Google Sheets URL"
+            value="https://docs.google.com/spreadsheets/d/1Wa4-4K7hyTTCrqJ0pUzS-NaLFiRQpBgI8KBdHx9obKk/edit?usp=sharing"
         )
         
         gid = st.text_input(
             "Sheet GID",
-            value="2026492216",
-            help="Sheet identifier (found in URL after gid=)"
+            value="2026492216"
         )
         
-        # Action buttons
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("🔄 Refresh", type="primary", use_container_width=True):
-                st.rerun()
-        
-        with col2:
-            if st.button("🧹 Clear Cache", type="secondary", use_container_width=True):
-                st.cache_data.clear()
-                st.success("Cache cleared!")
+        if st.button("🔄 Refresh Data", type="primary", use_container_width=True):
+            st.cache_data.clear()
+            st.rerun()
         
         st.markdown("---")
+        st.markdown("## 🎯 Smart Filters")
+        st.info("Filter by categories - don't remove data!")
         
-        # Settings
-        st.markdown("## ⚙️ Settings")
-        
-        # Percentile threshold
-        top_percentile = st.slider(
-            "Signal Percentile Threshold",
-            min_value=0.80,
-            max_value=0.99,
-            value=0.90,
-            step=0.01,
-            help="Top X% of stocks to consider for signals"
+        # EPS Tier Filter
+        eps_tiers = ['All', '5↓', '5↑', '15↑', '35↑', '55↑', '75↑', '95↑']
+        selected_eps_tiers = st.multiselect(
+            "EPS Tiers",
+            options=eps_tiers,
+            default=['All'],
+            help="Filter by EPS tiers"
         )
         
-        # Volume confirmation
-        min_rvol = st.number_input(
-            "Minimum Volume Confirmation",
-            min_value=1.0,
-            max_value=5.0,
-            value=1.5,
-            step=0.1,
-            help="Minimum relative volume for buy signals"
+        # Price Tier Filter
+        price_tiers = ['All', '100↓', '100↑', '200↑', '500↑', '1K↑', '2K↑', '5K↑']
+        selected_price_tiers = st.multiselect(
+            "Price Tiers",
+            options=price_tiers,
+            default=['All'],
+            help="Filter by price tiers"
         )
         
-        # Max positions
-        max_positions = st.number_input(
-            "Maximum Positions",
-            min_value=5,
-            max_value=50,
-            value=20,
-            step=5,
-            help="Maximum number of concurrent positions"
+        # Category Filter
+        st.markdown("#### Category Filter")
+        categories = ['All', 'Large Cap', 'Mid Cap', 'Small Cap', 'Micro Cap']
+        selected_categories = st.multiselect(
+            "Categories",
+            options=categories,
+            default=['All']
         )
         
-        # Update constants
-        CONSTANTS = TradingConstants(
-            MIN_PRICE=1.0,
-            MIN_VOLUME=50_000,
-            MAX_SPREAD=0.10,
-            TOP_MOMENTUM_PERCENTILE=top_percentile,
-            VOLUME_CONFIRMATION=min_rvol,
-            MAX_POSITION_SIZE=0.03,
-            MIN_POSITION_SIZE=0.005,
-            MAX_POSITIONS=max_positions,
-            MAX_SECTOR_EXPOSURE=0.30,
-            INITIAL_STOP_LOSS=0.05,
-            TRACKING_LOOKBACK_DAYS=30,
-            MIN_SAMPLE_SIZE=20
+        # Signal Type Filter
+        st.markdown("#### Signal Filter")
+        signal_types = ['All', 'STRONG_BUY', 'BUY', 'WATCH', 'HOLD']
+        selected_signals = st.multiselect(
+            "Signal Types",
+            options=signal_types,
+            default=['STRONG_BUY', 'BUY']
         )
     
     # Main content
     try:
         # Load data
         @st.cache_data(ttl=300)
-        def load_data(url: str, gid: str) -> pd.DataFrame:
+        def load_data(url: str, gid_val: str) -> pd.DataFrame:
             """Load data from Google Sheets"""
             try:
-                csv_url = f"{url.split('/edit')[0]}/export?format=csv&gid={gid}"
+                csv_url = f"{url.split('/edit')[0]}/export?format=csv&gid={gid_val}"
                 df = pd.read_csv(csv_url)
                 logger.info(f"Loaded {len(df)} rows")
                 return df
             except Exception as e:
-                logger.error(f"Data loading failed: {e}")
                 st.error(f"Failed to load data: {e}")
                 return pd.DataFrame()
         
-        with st.spinner("Loading market data..."):
+        with st.spinner("Loading ALL stocks..."):
             raw_df = load_data(sheet_url, gid)
         
         if raw_df.empty:
-            st.error("No data loaded. Please check your URL and GID.")
+            st.error("No data loaded!")
             st.stop()
         
-        # Process data
-        with st.spinner("Processing signals..."):
-            df, signals, market_conditions = st.session_state.data_pipeline.process_data(raw_df)
+        # Process ALL data
+        with st.spinner(f"Processing {len(raw_df)} stocks..."):
+            df, signals, market_profile = st.session_state.pipeline.process_data(raw_df)
+        
+        # Apply filters to signals (not data!)
+        filtered_signals = signals
+        
+        if 'All' not in selected_eps_tiers:
+            filtered_signals = [s for s in filtered_signals if s.eps_tier in selected_eps_tiers]
+        
+        if 'All' not in selected_price_tiers:
+            filtered_signals = [s for s in filtered_signals if s.price_tier in selected_price_tiers]
+        
+        if 'All' not in selected_categories:
+            filtered_signals = [s for s in filtered_signals if s.category in selected_categories]
+        
+        if 'All' not in selected_signals:
+            filtered_signals = [s for s in filtered_signals if s.signal_type in selected_signals]
         
         # Market Overview
-        st.markdown("## 📈 Market Overview")
+        st.markdown("## 📊 Market Overview")
         
-        col1, col2, col3, col4 = st.columns(4)
+        col1, col2, col3, col4, col5 = st.columns(5)
         
         with col1:
-            regime_colors = {
-                'TRENDING': '#10b981',
-                'DECLINING': '#ef4444',
-                'VOLATILE': '#f59e0b',
-                'RANGING': '#6b7280'
-            }
-            color = regime_colors.get(market_conditions.regime, '#6b7280')
-            
             st.markdown(f"""
             <div class="metric-card">
-                <div class="metric-label">Market Regime</div>
-                <div class="metric-value" style="color: {color};">{market_conditions.regime}</div>
-                <div class="metric-label">Confidence: {market_conditions.regime_confidence:.0%}</div>
+                <div class="metric-label">Total Stocks</div>
+                <div class="metric-value">{market_profile.total_stocks}</div>
             </div>
             """, unsafe_allow_html=True)
         
         with col2:
+            color = "#10b981" if market_profile.breadth_positive > 50 else "#ef4444"
             st.markdown(f"""
             <div class="metric-card">
-                <div class="metric-label">Market Breadth</div>
-                <div class="metric-value">{market_conditions.advancing_pct:.0f}%</div>
-                <div class="metric-label">Advancing</div>
+                <div class="metric-label">Positive Breadth</div>
+                <div class="metric-value" style="color: {color};">{market_profile.breadth_positive:.0f}%</div>
             </div>
             """, unsafe_allow_html=True)
         
         with col3:
+            st.markdown(f"""
+            <div class="metric-card">
+                <div class="metric-label">Avg Momentum</div>
+                <div class="metric-value">{market_profile.avg_momentum:.2f}</div>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        with col4:
             st.markdown(f"""
             <div class="metric-card">
                 <div class="metric-label">Avg Volume</div>
-                <div class="metric-value">{market_conditions.avg_relative_volume:.1f}x</div>
-                <div class="metric-label">Relative to Normal</div>
+                <div class="metric-value">{market_profile.avg_volume:.1f}x</div>
             </div>
             """, unsafe_allow_html=True)
         
-        with col4:
+        with col5:
             st.markdown(f"""
             <div class="metric-card">
-                <div class="metric-label">Volatility</div>
-                <div class="metric-value">{market_conditions.market_volatility:.1%}</div>
-                <div class="metric-label">Daily</div>
+                <div class="metric-label">Filtered Signals</div>
+                <div class="metric-value">{len(filtered_signals)}</div>
             </div>
             """, unsafe_allow_html=True)
         
-        # Charts
+        # Tier Distributions
         col1, col2 = st.columns(2)
         
         with col1:
-            market_fig = Visualizer.create_market_overview(market_conditions)
-            st.plotly_chart(market_fig, use_container_width=True)
+            eps_fig = Visualizer.create_tier_distribution(market_profile, 'eps')
+            st.plotly_chart(eps_fig, use_container_width=True)
         
         with col2:
-            signal_dist = Visualizer.create_signal_distribution(signals)
-            st.plotly_chart(signal_dist, use_container_width=True)
-        
-        # Signals Section
-        st.markdown("## 🎯 Trading Signals")
-        
-        # Signal summary
-        buy_signals = [s for s in signals if s.signal_type == 'BUY']
-        hold_signals = [s for s in signals if s.signal_type == 'HOLD']
-        sell_signals = [s for s in signals if s.signal_type == 'SELL']
-        exit_signals = [s for s in signals if s.signal_type == 'EXIT']
-        
-        col1, col2, col3, col4 = st.columns(4)
-        
-        with col1:
-            st.metric("🟢 Buy", len(buy_signals))
-        with col2:
-            st.metric("🟡 Hold", len(hold_signals))
-        with col3:
-            st.metric("🔴 Sell", len(sell_signals))
-        with col4:
-            st.metric("⚫ Exit", len(exit_signals))
+            price_fig = Visualizer.create_tier_distribution(market_profile, 'price')
+            st.plotly_chart(price_fig, use_container_width=True)
         
         # Tabs
         tab1, tab2, tab3, tab4, tab5 = st.tabs([
-            "🟢 Buy Signals",
-            "⚫ Exit Alerts",
-            "📊 Analysis",
-            "📈 Rankings",
+            "🎯 Top Signals",
+            "📊 Rankings",
+            "🔥 Analysis", 
+            "📈 Visualizations",
             "📥 Reports"
         ])
         
         with tab1:
-            st.markdown("### 🟢 Buy Signals - Act Now!")
+            st.markdown("### 🎯 Top Trading Signals")
             
-            if buy_signals:
-                for signal in buy_signals[:10]:  # Top 10
-                    st.markdown(f'<div class="signal-card signal-buy slide-in">', unsafe_allow_html=True)
+            if filtered_signals:
+                # Signal summary
+                signal_summary = {}
+                for s in filtered_signals:
+                    signal_summary[s.signal_type] = signal_summary.get(s.signal_type, 0) + 1
+                
+                cols = st.columns(len(signal_summary))
+                for i, (sig_type, count) in enumerate(signal_summary.items()):
+                    with cols[i]:
+                        st.metric(sig_type, count)
+                
+                st.markdown("---")
+                
+                # Display top signals
+                for i, signal in enumerate(filtered_signals[:20]):
+                    # Determine card style
+                    if signal.signal_type == 'STRONG_BUY':
+                        card_class = 'signal-strong-buy'
+                    elif signal.signal_type == 'BUY':
+                        card_class = 'signal-buy'
+                    else:
+                        card_class = 'signal-watch'
+                    
+                    st.markdown(f'<div class="signal-card {card_class}">', unsafe_allow_html=True)
                     
                     col1, col2, col3, col4, col5 = st.columns([2.5, 1.5, 1.5, 1.5, 1])
                     
                     with col1:
-                        st.markdown(f"### {signal.ticker}")
-                        st.markdown(f"{signal.company_name[:40]}...")
-                        st.markdown(f"**Sector:** {signal.sector} | **Category:** {signal.category}")
-                        
-                        # New appearance badge
-                        if signal.days_in_list <= 1:
-                            st.markdown('<span class="badge badge-new">NEW</span>', unsafe_allow_html=True)
+                        st.markdown(f"### #{i+1} - {signal.ticker}")
+                        st.caption(f"{signal.company_name[:50]}...")
+                        st.markdown(
+                            f'<span class="tier-badge eps-tier">{signal.eps_tier}</span>'
+                            f'<span class="tier-badge price-tier">{signal.price_tier}</span>',
+                            unsafe_allow_html=True
+                        )
+                        st.caption(f"**{signal.category}** | {signal.sector}")
                     
                     with col2:
-                        st.metric("Price", f"₹{signal.price:.2f}")
-                        st.metric("Signal", f"{signal.signal_strength:.0f}/100")
+                        st.metric("Price", f"₹{signal.price:,.2f}")
+                        st.metric("Signal", signal.signal_type)
                     
                     with col3:
-                        st.metric("Momentum Rank", f"{signal.momentum_rank:.0%}")
-                        st.metric("Volume Rank", f"{signal.volume_rank:.0%}")
+                        st.metric("Rank", f"{signal.combined_rank:.1%}")
+                        st.markdown(
+                            f'<div class="rank-bar">'
+                            f'<div class="rank-fill" style="width: {signal.combined_rank*100}%"></div>'
+                            f'</div>',
+                            unsafe_allow_html=True
+                        )
                     
                     with col4:
-                        st.metric("Combined Rank", f"{signal.combined_rank:.0%}")
-                        st.metric("Position Size", f"{signal.recommended_size:.1%}")
+                        st.metric("Momentum", f"{signal.momentum_rank:.0%}")
+                        st.metric("Volume", f"{signal.volume_rank:.0%}")
                     
                     with col5:
-                        st.metric("Days Listed", signal.days_in_list)
-                        
-                        # Rank visualization
-                        st.markdown(f"""
-                        <div class="rank-bar">
-                            <div class="rank-fill" style="width: {signal.combined_rank*100}%"></div>
-                        </div>
-                        """, unsafe_allow_html=True)
+                        st.metric("Score", f"{signal.signal_strength:.0f}")
+                        if signal.days_up > signal.days_down:
+                            st.success(f"↑ {signal.days_up}/{3}")
+                        else:
+                            st.error(f"↓ {signal.days_down}/{3}")
                     
                     st.markdown('</div>', unsafe_allow_html=True)
-                    st.markdown("")
             else:
-                st.info("No buy signals at current thresholds. Try adjusting settings.")
+                st.info("No signals match your filters. Try adjusting the criteria.")
         
         with tab2:
-            st.markdown("### ⚫ Exit Alerts - Immediate Action Required!")
+            st.markdown("### 📊 Complete Rankings")
             
-            if exit_signals:
-                for signal in exit_signals:
-                    st.markdown(f'<div class="signal-card signal-exit">', unsafe_allow_html=True)
-                    
-                    col1, col2 = st.columns([3, 1])
-                    
-                    with col1:
-                        st.markdown(f"### {signal.ticker} - EXIT NOW")
-                        st.markdown(f"**Reasons:** {', '.join(signal.exit_reasons)}")
-                    
-                    with col2:
-                        st.markdown('<span class="badge badge-exit">IMMEDIATE EXIT</span>', unsafe_allow_html=True)
-                    
-                    st.markdown('</div>', unsafe_allow_html=True)
-            else:
-                st.success("No exit signals - all positions can be held.")
+            # Ranking heatmap
+            heatmap = Visualizer.create_rank_heatmap(df, 50)
+            st.plotly_chart(heatmap, use_container_width=True)
+            
+            # Top 50 table
+            st.markdown("#### Top 50 Stocks by Combined Rank")
+            
+            display_df = df.nlargest(50, 'combined_rank')[[
+                'ticker', 'company_name', 'price', 'eps_tier', 'price_tier',
+                'category', 'sector', 'combined_rank', 'momentum_rank', 'volume_rank'
+            ]].copy()
+            
+            # Format ranks as percentages
+            for col in ['combined_rank', 'momentum_rank', 'volume_rank']:
+                display_df[col] = display_df[col].apply(lambda x: f"{x:.1%}")
+            
+            st.dataframe(display_df, use_container_width=True, height=600)
         
         with tab3:
-            st.markdown("### 📊 Market Analysis")
+            st.markdown("### 🔥 Market Analysis")
             
-            # Sector momentum
-            sector_fig = Visualizer.create_sector_momentum(df)
-            st.plotly_chart(sector_fig, use_container_width=True)
+            # Top movers
+            col1, col2, col3 = st.columns(3)
             
-            # Leading sectors details
-            if market_conditions.leading_sectors:
-                st.markdown("#### 🏆 Leading Sectors")
-                
-                cols = st.columns(5)
-                for i, (sector, perf) in enumerate(market_conditions.leading_sectors[:5]):
-                    with cols[i]:
-                        color = "#10b981" if perf > 0 else "#ef4444"
-                        st.markdown(f"""
-                        <div class="metric-card">
-                            <div class="metric-label">{sector[:15]}</div>
-                            <div class="metric-value" style="color: {color};">{perf:.1f}%</div>
-                        </div>
-                        """, unsafe_allow_html=True)
+            with col1:
+                st.markdown("#### 📈 Top Gainers")
+                for ticker in market_profile.top_gainers:
+                    stock_data = df[df['ticker'] == ticker].iloc[0]
+                    st.write(f"**{ticker}**: +{stock_data['ret_1d']:.1f}%")
+            
+            with col2:
+                st.markdown("#### 📊 Top Volume")
+                for ticker in market_profile.top_volume:
+                    stock_data = df[df['ticker'] == ticker].iloc[0]
+                    st.write(f"**{ticker}**: {stock_data['rvol']:.1f}x")
+            
+            with col3:
+                st.markdown("#### 🚀 Top Momentum")
+                for ticker in market_profile.top_momentum:
+                    stock_data = df[df['ticker'] == ticker].iloc[0]
+                    st.write(f"**{ticker}**: Score {stock_data['momentum_score']:.1f}")
+            
+            # Sector performance
+            st.markdown("#### 🏢 Top Sectors")
+            sector_df = pd.DataFrame(
+                list(market_profile.sector_distribution.items()),
+                columns=['Sector', 'Count']
+            ).sort_values('Count', ascending=False)
+            
+            st.bar_chart(sector_df.set_index('Sector')['Count'])
         
         with tab4:
-            st.markdown("### 📈 Stock Rankings")
+            st.markdown("### 📈 Interactive Visualizations")
             
-            # Rank scatter plot
-            rank_fig = Visualizer.create_rank_scatter(df)
-            st.plotly_chart(rank_fig, use_container_width=True)
-            
-            # Top ranked stocks table
-            st.markdown("#### 🏆 Top 20 Ranked Stocks")
-            
-            if not df.empty:
-                top_20 = df.nlargest(20, 'combined_rank')[[
-                    'ticker', 'company_name', 'sector', 'price',
-                    'momentum_rank', 'volume_rank', 'combined_rank',
-                    'momentum_score', 'volume_score'
-                ]].round(3)
-                
-                st.dataframe(
-                    top_20,
-                    use_container_width=True,
-                    height=400
-                )
+            # Scatter matrix
+            scatter = Visualizer.create_scatter_matrix(df)
+            st.plotly_chart(scatter, use_container_width=True)
         
         with tab5:
             st.markdown("### 📥 Download Reports")
@@ -1802,41 +1220,51 @@ def main():
             
             with col1:
                 if st.button("📊 Generate Excel Report", type="primary", use_container_width=True):
-                    excel_file = ReportGenerator.generate_excel_report(df, signals, market_conditions)
+                    excel = generate_excel_report(df, signals, market_profile)
                     
                     st.download_button(
-                        label="📥 Download Excel",
-                        data=excel_file,
-                        file_name=f"wave_detection_5_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        use_container_width=True
+                        "📥 Download Excel",
+                        data=excel,
+                        file_name=f"wave_detection_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                     )
             
             with col2:
-                if st.button("📝 Generate Text Summary", type="secondary", use_container_width=True):
-                    summary = ReportGenerator.generate_text_summary(signals, market_conditions)
+                if st.button("📝 Generate Summary", type="secondary", use_container_width=True):
+                    summary = f"""
+WAVE DETECTION 5.0 - MARKET SUMMARY
+{datetime.now().strftime('%Y-%m-%d %H:%M')}
+
+MARKET PROFILE:
+- Total Stocks: {market_profile.total_stocks}
+- Positive Breadth: {market_profile.breadth_positive:.1f}%
+- Average Momentum: {market_profile.avg_momentum:.2f}
+- Average Volume: {market_profile.avg_volume:.1f}x
+
+TOP SIGNALS:
+"""
+                    for i, signal in enumerate(filtered_signals[:10], 1):
+                        summary += f"""
+{i}. {signal.ticker} ({signal.signal_type})
+   Rank: {signal.combined_rank:.1%} | Price: ₹{signal.price:,.0f}
+   EPS Tier: {signal.eps_tier} | Price Tier: {signal.price_tier}
+"""
                     
-                    st.text_area(
-                        "Daily Summary",
-                        summary,
-                        height=600
-                    )
+                    st.text_area("Summary", summary, height=500)
         
     except Exception as e:
         logger.error(f"Application error: {e}")
-        st.error(f"An error occurred: {e}")
-        st.info("Please check your data and try again.")
+        st.error(f"Error: {e}")
     
     # Footer
     st.markdown("---")
     st.markdown("""
-    <div style="text-align: center; color: #6b7280; font-size: 0.875rem; padding: 1rem;">
-        Wave Detection 5.0 - The Ultimate Trading Edge<br>
-        Simple. Fast. Profitable.<br>
-        © 2024 - Professional Trading Systems
-    </div>
+    <p style="text-align: center; color: #6b7280; font-size: 0.875rem;">
+        Wave Detection 5.0 - Let Every Stock Tell Its Story<br>
+        No Thresholds. Pure Rankings. Total Freedom.<br>
+        © 2024
+    </p>
     """, unsafe_allow_html=True)
 
-# Entry point
 if __name__ == "__main__":
     main()
