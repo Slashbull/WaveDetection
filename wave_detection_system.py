@@ -808,7 +808,7 @@ def generate_professional_excel_report(df: pd.DataFrame, analysis_results: Dict)
             percent_format = workbook.add_format({'num_format': '0.00%'})
             currency_format = workbook.add_format({'num_format': '₹#,##0.00'})
             
-            # Sheet 1: Executive Summary
+            # Sheet 1: Executive Summary - FIX: Convert all values to strings
             summary_data = {
                 'Metric': [
                     'Analysis Date',
@@ -824,15 +824,15 @@ def generate_professional_excel_report(df: pd.DataFrame, analysis_results: Dict)
                 ],
                 'Value': [
                     datetime.now().strftime('%Y-%m-%d %H:%M'),
-                    analysis_results['market_health']['regime'],
+                    str(analysis_results['market_health']['regime']),
                     f"{analysis_results['market_health']['market_score']}/100",
-                    len(df),
-                    len(analysis_results['green_signals']),
-                    len(analysis_results['yellow_signals']),
-                    len(analysis_results['red_signals']),
+                    str(len(df)),
+                    str(len(analysis_results['green_signals'])),
+                    str(len(analysis_results['yellow_signals'])),
+                    str(len(analysis_results['red_signals'])),
                     f"{analysis_results['market_health']['avg_return_30d']:.2f}%",
-                    analysis_results['top_sector'],
-                    analysis_results['bottom_sector']
+                    str(analysis_results['top_sector']),
+                    str(analysis_results['bottom_sector'])
                 ]
             }
             summary_df = pd.DataFrame(summary_data)
@@ -897,10 +897,10 @@ def generate_professional_excel_report(df: pd.DataFrame, analysis_results: Dict)
                     f"{analysis_results['market_health']['above_sma50_pct']:.1f}%",
                     f"{analysis_results['market_health']['above_sma200_pct']:.1f}%",
                     f"{analysis_results['market_health']['advance_decline_ratio']:.2f}",
-                    analysis_results['market_health']['new_highs'],
-                    analysis_results['market_health']['new_lows'],
-                    analysis_results['market_health']['high_volume_stocks'],
-                    analysis_results['market_health']['volume_acceleration_stocks']
+                    str(analysis_results['market_health']['new_highs']),
+                    str(analysis_results['market_health']['new_lows']),
+                    str(analysis_results['market_health']['high_volume_stocks']),
+                    str(analysis_results['market_health']['volume_acceleration_stocks'])
                 ]
             }
             market_df = pd.DataFrame(market_data)
@@ -1767,7 +1767,7 @@ MARKET STATUS: {market_health['regime']} (Score: {market_health['market_score']}
                     st.metric("High Liquidity Stocks", "N/A")
                     st.metric("Liquidity %", "N/A")
             
-            # System configuration
+            # System configuration - FIX: Convert all values to strings
             st.markdown("### ⚙️ Configuration")
             
             config_data = {
@@ -1781,8 +1781,8 @@ MARKET STATUS: {market_health['regime']} (Score: {market_health['market_score']}
                 ],
                 'Value': [
                     'Enabled' if apply_regime_filter else 'Disabled',
-                    min_liquidity,
-                    position_limit,
+                    str(min_liquidity),  # Convert to string
+                    str(position_limit),  # Convert to string
                     f"{PORTFOLIO_CONSTRAINTS['MAX_PER_SECTOR']*100:.0f}%",
                     f"{PORTFOLIO_CONSTRAINTS['MAX_PER_CATEGORY']*100:.0f}%",
                     '5 minutes'
