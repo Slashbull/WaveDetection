@@ -614,13 +614,13 @@ class AdvancedScoringEngine:
         conditions = [
             # ACCUMULATION: Deep pullback + volume returning + positive momentum
             (df['from_high_pct'] < -50) & 
-            (df['vol_ratio_30d_90d'] > 1.0) & 
+            (df.get('vol_ratio_30d_90d', 1) > 1.0) & 
             (df['ret_7d'] > -5),
             
             # EARLY_MARKUP: Above MAs + momentum positive + volume expanding
             (df['price'] > df['sma_50d']) & 
             (df['ret_30d'] > 0) & 
-            (df['vol_ratio_30d_90d'] > 1.1),
+            (df.get('vol_ratio_30d_90d', 1) > 1.1),
             
             # LATE_MARKUP: Near highs + momentum slowing
             (df['from_high_pct'] > -20) & 
@@ -628,7 +628,7 @@ class AdvancedScoringEngine:
             
             # DISTRIBUTION: Near highs + volume declining + momentum negative
             (df['from_high_pct'] > -10) & 
-            (df['vol_ratio_30d_90d'] < 0.9) & 
+            (df.get('vol_ratio_30d_90d', 1) < 0.9) & 
             (df['ret_7d'] < 0),
             
             # MARKDOWN: Below MAs + negative momentum
@@ -1484,6 +1484,11 @@ class WaveDetectionApp:
         self.viz_engine = VisualizationEngine()
         self.export_engine = ExportEngine()
         self.ui = UIComponents()
+        
+        # Initialize session state
+        if 'initialized' not in st.session_state:
+            st.session_state.initialized = True
+            st.session_state.available_sectors = []
     
     @st.cache_data(ttl=config.CACHE_TTL)
     def load_and_process_data(_self, sheet_url: str, gid: str) -> pd.DataFrame:
@@ -1567,18 +1572,24 @@ class WaveDetectionApp:
             
             # Advanced filters (collapsible)
             with st.expander("🔧 Advanced Filters"):
-                # Sector filter
+                # Get available sectors from session state
+                if st.session_state.available_sectors:
+                    sector_options = ["All"] + st.session_state.available_sectors
+                else:
+                    sector_options = ["All"]
+                
                 sector_filter = st.multiselect(
                     "Sectors",
-                    options=["All"],
+                    options=sector_options,
                     default=["All"],
-                    help="Filter by sector (populated after data loads)"
+                    help="Filter by sector"
                 )
                 
-                # Lifecycle filter
+                # Lifecycle filter - Fixed to include "All" in options
+                lifecycle_options = ["All"] + [stage.value for stage in LifecycleStage]
                 lifecycle_filter = st.multiselect(
                     "Lifecycle Stages",
-                    options=[stage.value for stage in LifecycleStage],
+                    options=lifecycle_options,
                     default=["All"],
                     help="Filter by lifecycle stage"
                 )
@@ -1970,10 +1981,11 @@ class WaveDetectionApp:
                         filters['gid']
                     )
                 
-                # Update sector filter options
+                # Update available sectors in session state
                 if 'sector' in df.columns:
-                    unique_sectors = ['All'] + sorted(df['sector'].unique().tolist())
-                    # Note: Can't dynamically update multiselect options in current Streamlit
+                    st.session_state.available_sectors = sorted(
+                        [s for s in df['sector'].unique() if s != 'Unknown']
+                    )
                 
             except Exception as e:
                 st.error(f"❌ Failed to load data: {str(e)}")
