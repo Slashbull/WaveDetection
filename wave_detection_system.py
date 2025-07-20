@@ -62,7 +62,7 @@ try:
         initial_sidebar_state="expanded"
     )
 except:
-    pass
+    pass  # Already configured
 
 # ============================================
 # CONSTANTS
@@ -511,8 +511,7 @@ class ScoringEngine:
                 'long_term_momentum': 0,
                 'momentum_divergence': 0
             }
-    
-    @staticmethod
+            @staticmethod
     def calculate_position_score(row: pd.Series) -> float:
         """Calculate position score based on price levels"""
         try:
@@ -694,11 +693,6 @@ class ScoringEngine:
             volume_acceleration = vol_30d_90d - vol_30d_180d
             
             # Convert to score (0-100)
-            # Strong accumulation: > 0.15
-            # Accumulation: > 0.05
-            # Distribution: < -0.05
-            # Strong distribution: < -0.15
-            
             if volume_acceleration > 0.15:
                 return 100
             elif volume_acceleration > 0.10:
@@ -1104,12 +1098,13 @@ class Visualizer:
         colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4']
         
         for score, color in zip(scores, colors):
-            fig.add_trace(go.Box(
-                y=df[score],
-                name=score.replace('_', ' ').title(),
-                marker_color=color,
-                boxpoints='outliers'
-            ))
+            if score in df.columns:
+                fig.add_trace(go.Box(
+                    y=df[score],
+                    name=score.replace('_', ' ').title(),
+                    marker_color=color,
+                    boxpoints='outliers'
+                ))
         
         fig.update_layout(
             title="Score Distribution Analysis",
@@ -1118,6 +1113,8 @@ class Visualizer:
             height=400
         )
         
+        return fig  # Fixed: Added missing return statement
+    
     @staticmethod
     def create_lifecycle_distribution(df: pd.DataFrame) -> go.Figure:
         """Create lifecycle stage distribution chart"""
@@ -1559,7 +1556,6 @@ def load_custom_css():
 
 def main():
     """Main application entry point"""
-    
     try:
         # Initialize session state
         if 'initialized' not in st.session_state:
@@ -1710,14 +1706,6 @@ def main():
         
         filtered_df = filtered_df[filtered_df['master_score'] >= min_score]
         
-        # Continue with the rest of the main function...
-        # (Summary metrics and tabs section remains the same)
-        
-    except Exception as e:
-        logger.error(f"Application error: {e}")
-        st.error(f"An error occurred: {str(e)}")
-        st.error("Please refresh the page or contact support if the issue persists.")
-    
         # Main content area
         # Summary metrics
         col1, col2, col3, col4, col5 = st.columns(5)
@@ -1806,537 +1794,551 @@ def main():
             "🔍 Search",
             "📥 Export"
         ])
-    
-    with tab1:
-        st.markdown("### 🏆 Top Performing Stocks")
         
-        if not filtered_df.empty:
-            # Display controls
-            col1, col2, col3 = st.columns([2, 2, 1])
-            with col1:
-                display_count = st.selectbox(
-                    "Number of stocks to display",
-                    options=[10, 20, 50, 100],
-                    index=1
-                )
+        with tab1:
+            st.markdown("### 🏆 Top Performing Stocks")
             
-            with col2:
-                scoring_mode = st.selectbox(
-                    "Scoring Mode",
-                    options=["Classic", "Enhanced", "Future Potential"],
-                    index=1,
-                    help="Classic: Original scoring | Enhanced: Advanced pattern detection | Future: Lifecycle-based potential"
-                )
-            
-            # Get top stocks based on selected scoring mode
-            if scoring_mode == "Classic":
-                sort_column = 'master_score'
-                rank_column = 'rank'
-            elif scoring_mode == "Enhanced":
-                sort_column = 'enhanced_master_score'
-                rank_column = 'enhanced_rank'
-            else:  # Future Potential
-                sort_column = 'future_weighted_score'
-                rank_column = 'future_rank'
-            
-            top_stocks = filtered_df.nlargest(display_count, sort_column)
-            
-            # Create display dataframe based on mode
-            if scoring_mode == "Classic":
-                display_columns = [
-                    rank_column, 'ticker', 'company_name', 'master_score',
-                    'momentum_score', 'position_score', 'volume_score', 'quality_score',
-                    'price', 'ret_1d', 'ret_7d', 'rvol',
-                    'category', 'sector', 'eps_tier', 'price_tier', 'pe_tier'
-                ]
-            else:
-                display_columns = [
-                    rank_column, 'ticker', 'company_name', sort_column,
-                    'lifecycle_stage', 'future_potential_score',
-                    'momentum_acceleration_score', 'volume_pattern',
-                    'position_opportunity', 'eps_momentum_score',
-                    'price', 'ret_1d', 'ret_7d', 'rvol',
-                    'category', 'sector'
-                ]
-            
-            display_df = top_stocks[display_columns].copy()
-            
-            # Format numeric columns for display
-            numeric_format_cols = [
-                'master_score', 'enhanced_master_score', 'future_weighted_score',
-                'momentum_score', 'position_score', 'volume_score', 'quality_score',
-                'momentum_acceleration_score', 'volume_pattern_score',
-                'position_opportunity_score', 'eps_momentum_score',
-                'future_potential_score', 'lifecycle_score'
-            ]
-            
-            for col in numeric_format_cols:
-                if col in display_df.columns:
-                    display_df[col] = display_df[col].round(1)
-            
-            if 'price' in display_df.columns:
-                display_df['price'] = display_df['price'].apply(lambda x: f'₹{x:,.2f}' if pd.notna(x) else '')
-            if 'ret_1d' in display_df.columns:
-                display_df['ret_1d'] = display_df['ret_1d'].apply(lambda x: f'{x:.2f}%' if pd.notna(x) else '')
-            if 'ret_7d' in display_df.columns:
-                display_df['ret_7d'] = display_df['ret_7d'].apply(lambda x: f'{x:.2f}%' if pd.notna(x) else '')
-            if 'rvol' in display_df.columns:
-                display_df['rvol'] = display_df['rvol'].apply(lambda x: f'{x:.2f}x' if pd.notna(x) else '')
-            
-            # Rename columns for better display
-            display_df = display_df.rename(columns={
-                'rank': 'Rank',
-                'enhanced_rank': 'Rank',
-                'future_rank': 'Rank',
-                'ticker': 'Ticker',
-                'company_name': 'Company',
-                'master_score': 'Score',
-                'enhanced_master_score': 'Score',
-                'future_weighted_score': 'Score',
-                'lifecycle_stage': 'Stage',
-                'future_potential_score': 'Potential',
-                'momentum_acceleration_score': 'Mom Accel',
-                'volume_pattern': 'Vol Pattern',
-                'position_opportunity': 'Opportunity',
-                'eps_momentum_score': 'EPS Mom'
-            })
-            
-            # Display the table with custom styling
-            st.dataframe(
-                display_df,
-                use_container_width=True,
-                height=600
-            )
-            
-            # Enhanced insights section
-            st.markdown("### 💡 Enhanced Insights")
-            
-            col1, col2, col3, col4 = st.columns(4)
-            
-            with col1:
-                # Lifecycle distribution
-                lifecycle_dist = top_stocks['lifecycle_stage'].value_counts()
-                st.metric(
-                    "Top Stage",
-                    lifecycle_dist.index[0] if len(lifecycle_dist) > 0 else "N/A",
-                    f"{lifecycle_dist.iloc[0] if len(lifecycle_dist) > 0 else 0} stocks"
-                )
-            
-            with col2:
-                # Volume patterns
-                vol_patterns = top_stocks['volume_pattern'].value_counts()
-                accumulating = vol_patterns.get('EXPANDING', 0) + vol_patterns.get('ACCUMULATION', 0)
-                st.metric(
-                    "Accumulation",
-                    f"{accumulating} stocks",
-                    "Volume expanding" if accumulating > 0 else ""
-                )
-            
-            with col3:
-                # Position opportunities
-                opportunities = top_stocks['position_opportunity'].value_counts()
-                breakouts = opportunities.get('BREAKOUT', 0)
-                reversals = opportunities.get('REVERSAL', 0)
-                st.metric(
-                    "Key Setups",
-                    f"{breakouts + reversals}",
-                    f"{breakouts} breakouts, {reversals} reversals"
-                )
-            
-            with col4:
-                # Average future potential
-                avg_potential = top_stocks['future_potential_score'].mean()
-                high_potential = (top_stocks['future_potential_score'] > 80).sum()
-                st.metric(
-                    "Avg Potential",
-                    f"{avg_potential:.0f}/100",
-                    f"{high_potential} high potential"
-                )
-            
-            # Show comparison if in enhanced mode
-            if scoring_mode != "Classic":
-                st.markdown("### 📊 Classic vs Enhanced Comparison")
-                
-                comparison_df = top_stocks[['ticker', 'company_name', 'master_score', 
-                                          'enhanced_master_score', 'future_weighted_score',
-                                          'rank', 'enhanced_rank', 'future_rank']].head(20)
-                
-                comparison_df['Classic Rank'] = comparison_df['rank']
-                comparison_df['Enhanced Rank'] = comparison_df['enhanced_rank']
-                comparison_df['Rank Change'] = comparison_df['rank'] - comparison_df['enhanced_rank']
-                
-                st.dataframe(
-                    comparison_df[['ticker', 'company_name', 'Classic Rank', 
-                                 'Enhanced Rank', 'Rank Change']],
-                    use_container_width=True
-                )
-        
-        else:
-            st.warning("No stocks match the selected filters.")
-    
-    with tab2:
-        st.markdown("### 📊 Market Analysis")
-        
-        if not filtered_df.empty:
-            try:
-                # Score distribution
-                col1, col2 = st.columns(2)
-                
+            if not filtered_df.empty:
+                # Display controls
+                col1, col2, col3 = st.columns([2, 2, 1])
                 with col1:
-                    try:
-                        fig_dist = Visualizer.create_score_distribution(filtered_df)
-                        if fig_dist:
-                            st.plotly_chart(fig_dist, use_container_width=True, key="score_dist")
-                    except Exception as e:
-                        logger.error(f"Error creating score distribution: {e}")
-                        st.warning("Unable to create score distribution chart")
+                    display_count = st.selectbox(
+                        "Number of stocks to display",
+                        options=[10, 20, 50, 100],
+                        index=1
+                    )
                 
                 with col2:
-                    # Category breakdown
-                    try:
-                        if 'category' in filtered_df.columns:
-                            cat_stats = filtered_df.groupby('category').agg({
-                                'master_score': ['mean', 'count']
-                            }).round(2)
-                            
-                            st.markdown("#### Category Performance")
-                            st.dataframe(cat_stats, use_container_width=True)
-                    except Exception as e:
-                        logger.error(f"Error creating category stats: {e}")
-                        st.warning("Unable to create category statistics")
+                    scoring_mode = st.selectbox(
+                        "Scoring Mode",
+                        options=["Classic", "Enhanced", "Future Potential"],
+                        index=1,
+                        help="Classic: Original scoring | Enhanced: Advanced pattern detection | Future: Lifecycle-based potential"
+                    )
                 
-                # Enhanced Analysis Section
-                if 'lifecycle_stage' in filtered_df.columns:
-                    st.markdown("#### 🔄 Lifecycle Stage Analysis")
-                    
-                    try:
-                        # Create lifecycle summary
-                        lifecycle_summary = filtered_df.groupby('lifecycle_stage').agg({
-                            'ticker': 'count',
-                            'master_score': 'mean',
-                            'future_potential_score': 'mean',
-                            'momentum_acceleration_score': 'mean',
-                            'volume_acceleration_score': 'mean'
-                        }).round(2)
-                        
-                        lifecycle_summary.columns = ['Count', 'Avg Score', 'Avg Potential', 'Mom Accel', 'Vol Accel']
-                        lifecycle_summary = lifecycle_summary.sort_values('Avg Potential', ascending=False)
-                        
-                        st.dataframe(lifecycle_summary, use_container_width=True)
-                    except Exception as e:
-                        logger.error(f"Error creating lifecycle summary: {e}")
-                    
-                    # Pattern Analysis
-                    st.markdown("#### 📊 Pattern Analysis")
-                    
-                    col1, col2, col3 = st.columns(3)
-                    
-                    with col1:
-                        try:
-                            # Volume patterns
-                            if 'volume_pattern' in filtered_df.columns:
-                                vol_pattern_dist = filtered_df['volume_pattern'].value_counts()
-                                st.markdown("**Volume Patterns**")
-                                for pattern, count in vol_pattern_dist.items():
-                                    pct = count / len(filtered_df) * 100
-                                    st.write(f"{pattern}: {count} ({pct:.1f}%)")
-                        except Exception as e:
-                            logger.error(f"Error displaying volume patterns: {e}")
-                    
-                    with col2:
-                        try:
-                            # Position opportunities
-                            if 'position_opportunity' in filtered_df.columns:
-                                pos_opp_dist = filtered_df['position_opportunity'].value_counts()
-                                st.markdown("**Position Opportunities**")
-                                for opp, count in pos_opp_dist.items():
-                                    pct = count / len(filtered_df) * 100
-                                    st.write(f"{opp}: {count} ({pct:.1f}%)")
-                        except Exception as e:
-                            logger.error(f"Error displaying position opportunities: {e}")
-                    
-                    with col3:
-                        try:
-                            # Momentum acceleration
-                            if 'momentum_acceleration_score' in filtered_df.columns:
-                                high_accel = (filtered_df['momentum_acceleration_score'] > 80).sum()
-                                low_accel = (filtered_df['momentum_acceleration_score'] < 20).sum()
-                                st.markdown("**Momentum Status**")
-                                st.write(f"Accelerating: {high_accel}")
-                                st.write(f"Decelerating: {low_accel}")
-                                st.write(f"Neutral: {len(filtered_df) - high_accel - low_accel}")
-                        except Exception as e:
-                            logger.error(f"Error displaying momentum status: {e}")
+                # Get top stocks based on selected scoring mode
+                if scoring_mode == "Classic":
+                    sort_column = 'master_score'
+                    rank_column = 'rank'
+                elif scoring_mode == "Enhanced":
+                    sort_column = 'enhanced_master_score'
+                    rank_column = 'enhanced_rank'
+                else:  # Future Potential
+                    sort_column = 'future_weighted_score'
+                    rank_column = 'future_rank'
                 
-                # Sector performance
-                try:
-                    st.markdown("#### Sector Performance")
-                    fig_sector = Visualizer.create_sector_performance(filtered_df)
-                    if fig_sector:
-                        st.plotly_chart(fig_sector, use_container_width=True, key="sector_perf")
-                except Exception as e:
-                    logger.error(f"Error creating sector performance chart: {e}")
-                    st.warning("Unable to create sector performance chart")
+                top_stocks = filtered_df.nlargest(display_count, sort_column)
                 
-                # Correlation analysis
-                st.markdown("#### Score Correlations")
+                # Create display dataframe based on mode
+                if scoring_mode == "Classic":
+                    display_columns = [
+                        rank_column, 'ticker', 'company_name', 'master_score',
+                        'momentum_score', 'position_score', 'volume_score', 'quality_score',
+                        'price', 'ret_1d', 'ret_7d', 'rvol',
+                        'category', 'sector', 'eps_tier', 'price_tier', 'pe_tier'
+                    ]
+                else:
+                    display_columns = [
+                        rank_column, 'ticker', 'company_name', sort_column,
+                        'lifecycle_stage', 'future_potential_score',
+                        'momentum_acceleration_score', 'volume_pattern',
+                        'position_opportunity', 'eps_momentum_score',
+                        'price', 'ret_1d', 'ret_7d', 'rvol',
+                        'category', 'sector'
+                    ]
                 
-                try:
-                    # Include enhanced scores if available
-                    if 'momentum_acceleration_score' in filtered_df.columns:
-                        score_cols = [
-                            'momentum_score', 'position_score', 'volume_score', 'quality_score',
-                            'momentum_acceleration_score', 'volume_acceleration_score',
-                            'eps_momentum_score', 'future_potential_score'
-                        ]
+                # Filter display columns to only include existing columns
+                display_columns = [col for col in display_columns if col in top_stocks.columns]
+                display_df = top_stocks[display_columns].copy()
+                
+                # Format numeric columns for display
+                numeric_format_cols = [
+                    'master_score', 'enhanced_master_score', 'future_weighted_score',
+                    'momentum_score', 'position_score', 'volume_score', 'quality_score',
+                    'momentum_acceleration_score', 'volume_pattern_score',
+                    'position_opportunity_score', 'eps_momentum_score',
+                    'future_potential_score', 'lifecycle_score'
+                ]
+                
+                for col in numeric_format_cols:
+                    if col in display_df.columns:
+                        display_df[col] = display_df[col].round(1)
+                
+                if 'price' in display_df.columns:
+                    display_df['price'] = display_df['price'].apply(lambda x: f'₹{x:,.2f}' if pd.notna(x) else '')
+                if 'ret_1d' in display_df.columns:
+                    display_df['ret_1d'] = display_df['ret_1d'].apply(lambda x: f'{x:.2f}%' if pd.notna(x) else '')
+                if 'ret_7d' in display_df.columns:
+                    display_df['ret_7d'] = display_df['ret_7d'].apply(lambda x: f'{x:.2f}%' if pd.notna(x) else '')
+                if 'rvol' in display_df.columns:
+                    display_df['rvol'] = display_df['rvol'].apply(lambda x: f'{x:.2f}x' if pd.notna(x) else '')
+                
+                # Rename columns for better display
+                rename_dict = {
+                    'rank': 'Rank',
+                    'enhanced_rank': 'Rank',
+                    'future_rank': 'Rank',
+                    'ticker': 'Ticker',
+                    'company_name': 'Company',
+                    'master_score': 'Score',
+                    'enhanced_master_score': 'Score',
+                    'future_weighted_score': 'Score',
+                    'lifecycle_stage': 'Stage',
+                    'future_potential_score': 'Potential',
+                    'momentum_acceleration_score': 'Mom Accel',
+                    'volume_pattern': 'Vol Pattern',
+                    'position_opportunity': 'Opportunity',
+                    'eps_momentum_score': 'EPS Mom'
+                }
+                
+                display_df = display_df.rename(columns={k: v for k, v in rename_dict.items() if k in display_df.columns})
+                
+                # Display the table with custom styling
+                st.dataframe(
+                    display_df,
+                    use_container_width=True,
+                    height=600
+                )
+                
+                # Enhanced insights section
+                st.markdown("### 💡 Enhanced Insights")
+                
+                col1, col2, col3, col4 = st.columns(4)
+                
+                with col1:
+                    # Lifecycle distribution
+                    if 'lifecycle_stage' in top_stocks.columns:
+                        lifecycle_dist = top_stocks['lifecycle_stage'].value_counts()
+                        st.metric(
+                            "Top Stage",
+                            lifecycle_dist.index[0] if len(lifecycle_dist) > 0 else "N/A",
+                            f"{lifecycle_dist.iloc[0] if len(lifecycle_dist) > 0 else 0} stocks"
+                        )
                     else:
-                        score_cols = ['momentum_score', 'position_score', 'volume_score', 'quality_score']
-                    
-                    # Filter to only existing columns
-                    score_cols = [col for col in score_cols if col in filtered_df.columns]
-                    
-                    if score_cols:
-                        correlation_matrix = filtered_df[score_cols].corr()
-                        
-                        fig_corr = go.Figure(data=go.Heatmap(
-                            z=correlation_matrix.values,
-                            x=correlation_matrix.columns,
-                            y=correlation_matrix.columns,
-                            colorscale='RdBu',
-                            zmid=0,
-                            text=correlation_matrix.values.round(2),
-                            texttemplate='%{text}',
-                            textfont={"size": 10}
-                        ))
-                        
-                        fig_corr.update_layout(
-                            title="Score Correlation Matrix",
-                            height=500
+                        st.metric("Top Stage", "N/A", "Feature not available")
+                
+                with col2:
+                    # Volume patterns
+                    if 'volume_pattern' in top_stocks.columns:
+                        vol_patterns = top_stocks['volume_pattern'].value_counts()
+                        accumulating = vol_patterns.get('EXPANDING', 0) + vol_patterns.get('ACCUMULATION', 0)
+                        st.metric(
+                            "Accumulation",
+                            f"{accumulating} stocks",
+                            "Volume expanding" if accumulating > 0 else ""
                         )
-                        
-                        st.plotly_chart(fig_corr, use_container_width=True, key="corr_matrix")
-                except Exception as e:
-                    logger.error(f"Error creating correlation matrix: {e}")
-                    st.warning("Unable to create correlation matrix")
+                    else:
+                        st.metric("Accumulation", "N/A", "Feature not available")
+                
+                with col3:
+                    # Position opportunities
+                    if 'position_opportunity' in top_stocks.columns:
+                        opportunities = top_stocks['position_opportunity'].value_counts()
+                        breakouts = opportunities.get('BREAKOUT', 0)
+                        reversals = opportunities.get('REVERSAL', 0)
+                        st.metric(
+                            "Key Setups",
+                            f"{breakouts + reversals}",
+                            f"{breakouts} breakouts, {reversals} reversals"
+                        )
+                    else:
+                        st.metric("Key Setups", "N/A", "Feature not available")
+                
+                with col4:
+                    # Average future potential
+                    if 'future_potential_score' in top_stocks.columns:
+                        avg_potential = top_stocks['future_potential_score'].mean()
+                        high_potential = (top_stocks['future_potential_score'] > 80).sum()
+                        st.metric(
+                            "Avg Potential",
+                            f"{avg_potential:.0f}/100",
+                            f"{high_potential} high potential"
+                        )
+                    else:
+                        st.metric("Avg Potential", "N/A", "Feature not available")
+                
+                # Show comparison if in enhanced mode
+                if scoring_mode != "Classic" and all(col in top_stocks.columns for col in ['rank', 'enhanced_rank']):
+                    st.markdown("### 📊 Classic vs Enhanced Comparison")
+                    
+                    comparison_df = top_stocks[['ticker', 'company_name', 'master_score', 
+                                              'enhanced_master_score', 'future_weighted_score',
+                                              'rank', 'enhanced_rank', 'future_rank']].head(20)
+                    
+                    comparison_df['Classic Rank'] = comparison_df['rank']
+                    comparison_df['Enhanced Rank'] = comparison_df['enhanced_rank']
+                    comparison_df['Rank Change'] = comparison_df['rank'] - comparison_df['enhanced_rank']
+                    
+                    st.dataframe(
+                        comparison_df[['ticker', 'company_name', 'Classic Rank', 
+                                     'Enhanced Rank', 'Rank Change']],
+                        use_container_width=True
+                    )
             
-            except Exception as e:
-                logger.error(f"Error in analysis tab: {e}")
-                st.error("An error occurred in the analysis section. Please try refreshing the page.")
+            else:
+                st.warning("No stocks match the selected filters.")
         
-        else:
-            st.warning("No data available for analysis.")
-    
-    with tab3:
-        st.markdown("### 📈 Visualizations")
-        
-        if not filtered_df.empty:
-            try:
-                # Top stocks breakdown
-                fig_top = Visualizer.create_top_stocks_chart(filtered_df, 20)
-                if fig_top:
-                    st.plotly_chart(fig_top, use_container_width=True, key="top_stocks_chart")
-                
-                # Scatter plot - Master Score vs Momentum
-                if len(filtered_df) > 0:
-                    scatter_df = filtered_df.nlargest(min(100, len(filtered_df)), 'master_score')
-                    if not scatter_df.empty:
-                        fig_scatter = px.scatter(
-                            scatter_df,
-                            x='momentum_score',
-                            y='master_score',
-                            size='volume_score',
-                            color='quality_score',
-                            hover_data=['ticker', 'company_name', 'price'],
-                            title='Master Score vs Momentum Score (Top 100)',
-                            labels={
-                                'momentum_score': 'Momentum Score',
-                                'master_score': 'Master Score',
-                                'volume_score': 'Volume Score',
-                                'quality_score': 'Quality Score'
-                            },
-                            color_continuous_scale='Viridis'
-                        )
-                        
-                        fig_scatter.update_layout(height=500)
-                        st.plotly_chart(fig_scatter, use_container_width=True, key="scatter_plot")
-                
-                # Lifecycle analysis (if available)
-                if 'lifecycle_stage' in filtered_df.columns:
+        with tab2:
+            st.markdown("### 📊 Market Analysis")
+            
+            if not filtered_df.empty:
+                try:
+                    # Score distribution
                     col1, col2 = st.columns(2)
                     
                     with col1:
-                        # Lifecycle distribution
                         try:
-                            fig_lifecycle = Visualizer.create_lifecycle_distribution(filtered_df)
-                            if fig_lifecycle:
-                                st.plotly_chart(fig_lifecycle, use_container_width=True, key="lifecycle_dist")
+                            fig_dist = Visualizer.create_score_distribution(filtered_df)
+                            if fig_dist:
+                                st.plotly_chart(fig_dist, use_container_width=True, key="score_dist")
                         except Exception as e:
-                            logger.error(f"Error creating lifecycle distribution: {e}")
-                            st.warning("Unable to create lifecycle distribution chart")
+                            logger.error(f"Error creating score distribution: {e}")
+                            st.warning("Unable to create score distribution chart")
                     
                     with col2:
-                        # Future potential scatter
+                        # Category breakdown
                         try:
-                            fig_potential = Visualizer.create_future_potential_scatter(filtered_df)
-                            if fig_potential:
-                                st.plotly_chart(fig_potential, use_container_width=True, key="future_potential")
+                            if 'category' in filtered_df.columns:
+                                cat_stats = filtered_df.groupby('category').agg({
+                                    'master_score': ['mean', 'count']
+                                }).round(2)
+                                
+                                st.markdown("#### Category Performance")
+                                st.dataframe(cat_stats, use_container_width=True)
                         except Exception as e:
-                            logger.error(f"Error creating future potential scatter: {e}")
-                            st.warning("Unable to create future potential chart")
-                
-                # Tier distribution
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    try:
-                        if 'eps_tier' in filtered_df.columns:
-                            eps_dist = filtered_df['eps_tier'].value_counts()
-                            if not eps_dist.empty:
-                                fig_eps = px.pie(
-                                    values=eps_dist.values,
-                                    names=eps_dist.index,
-                                    title='EPS Tier Distribution',
-                                    hole=0.4
-                                )
-                                st.plotly_chart(fig_eps, use_container_width=True, key="eps_dist")
-                    except Exception as e:
-                        logger.error(f"Error creating EPS distribution: {e}")
-                        st.warning("Unable to create EPS tier chart")
-                
-                with col2:
-                    try:
-                        if 'pe_tier' in filtered_df.columns:
-                            pe_dist = filtered_df['pe_tier'].value_counts()
-                            if not pe_dist.empty:
-                                fig_pe = px.pie(
-                                    values=pe_dist.values,
-                                    names=pe_dist.index,
-                                    title='PE Tier Distribution',
-                                    hole=0.4
-                                )
-                                st.plotly_chart(fig_pe, use_container_width=True, key="pe_dist")
-                    except Exception as e:
-                        logger.error(f"Error creating PE distribution: {e}")
-                        st.warning("Unable to create PE tier chart")
-            
-            except Exception as e:
-                logger.error(f"Error in visualizations tab: {e}")
-                st.error("An error occurred while creating visualizations. Please try refreshing the page.")
-        
-        else:
-            st.warning("No data available for visualization.")
-    
-    with tab4:
-        st.markdown("### 🔍 Stock Search")
-        
-        # Search box
-        search_term = st.text_input(
-            "Search by ticker or company name",
-            placeholder="Enter ticker symbol or company name..."
-        )
-        
-        if search_term:
-            # Search in both ticker and company name
-            search_results = filtered_df[
-                (filtered_df['ticker'].str.contains(search_term, case=False)) |
-                (filtered_df['company_name'].str.contains(search_term, case=False))
-            ]
-            
-            if not search_results.empty:
-                st.success(f"Found {len(search_results)} matching stocks")
-                
-                # Display search results
-                for _, stock in search_results.iterrows():
-                    with st.expander(f"{stock['ticker']} - {stock['company_name']}"):
+                            logger.error(f"Error creating category stats: {e}")
+                            st.warning("Unable to create category statistics")
+                    
+                    # Enhanced Analysis Section
+                    if 'lifecycle_stage' in filtered_df.columns:
+                        st.markdown("#### 🔄 Lifecycle Stage Analysis")
+                        
+                        try:
+                            # Create lifecycle summary
+                            lifecycle_summary = filtered_df.groupby('lifecycle_stage').agg({
+                                'ticker': 'count',
+                                'master_score': 'mean',
+                                'future_potential_score': 'mean',
+                                'momentum_acceleration_score': 'mean',
+                                'volume_acceleration_score': 'mean'
+                            }).round(2)
+                            
+                            lifecycle_summary.columns = ['Count', 'Avg Score', 'Avg Potential', 'Mom Accel', 'Vol Accel']
+                            lifecycle_summary = lifecycle_summary.sort_values('Avg Potential', ascending=False)
+                            
+                            st.dataframe(lifecycle_summary, use_container_width=True)
+                        except Exception as e:
+                            logger.error(f"Error creating lifecycle summary: {e}")
+                        
+                        # Pattern Analysis
+                        st.markdown("#### 📊 Pattern Analysis")
+                        
                         col1, col2, col3 = st.columns(3)
                         
                         with col1:
-                            st.metric("Master Score", f"{stock['master_score']:.1f}")
-                            st.metric("Price", f"₹{stock['price']:,.2f}")
-                            st.metric("Category", stock['category'])
+                            try:
+                                # Volume patterns
+                                if 'volume_pattern' in filtered_df.columns:
+                                    vol_pattern_dist = filtered_df['volume_pattern'].value_counts()
+                                    st.markdown("**Volume Patterns**")
+                                    for pattern, count in vol_pattern_dist.items():
+                                        pct = count / len(filtered_df) * 100
+                                        st.write(f"{pattern}: {count} ({pct:.1f}%)")
+                            except Exception as e:
+                                logger.error(f"Error displaying volume patterns: {e}")
                         
                         with col2:
-                            st.metric("Momentum", f"{stock['momentum_score']:.1f}")
-                            st.metric("Position", f"{stock['position_score']:.1f}")
-                            st.metric("Sector", stock['sector'])
+                            try:
+                                # Position opportunities
+                                if 'position_opportunity' in filtered_df.columns:
+                                    pos_opp_dist = filtered_df['position_opportunity'].value_counts()
+                                    st.markdown("**Position Opportunities**")
+                                    for opp, count in pos_opp_dist.items():
+                                        pct = count / len(filtered_df) * 100
+                                        st.write(f"{opp}: {count} ({pct:.1f}%)")
+                            except Exception as e:
+                                logger.error(f"Error displaying position opportunities: {e}")
                         
                         with col3:
-                            st.metric("Volume", f"{stock['volume_score']:.1f}")
-                            st.metric("Quality", f"{stock['quality_score']:.1f}")
-                            st.metric("Rank", f"#{stock['rank']}")
+                            try:
+                                # Momentum acceleration
+                                if 'momentum_acceleration_score' in filtered_df.columns:
+                                    high_accel = (filtered_df['momentum_acceleration_score'] > 80).sum()
+                                    low_accel = (filtered_df['momentum_acceleration_score'] < 20).sum()
+                                    st.markdown("**Momentum Status**")
+                                    st.write(f"Accelerating: {high_accel}")
+                                    st.write(f"Decelerating: {low_accel}")
+                                    st.write(f"Neutral: {len(filtered_df) - high_accel - low_accel}")
+                            except Exception as e:
+                                logger.error(f"Error displaying momentum status: {e}")
+                    
+                    # Sector performance
+                    try:
+                        st.markdown("#### Sector Performance")
+                        fig_sector = Visualizer.create_sector_performance(filtered_df)
+                        if fig_sector:
+                            st.plotly_chart(fig_sector, use_container_width=True, key="sector_perf")
+                    except Exception as e:
+                        logger.error(f"Error creating sector performance chart: {e}")
+                        st.warning("Unable to create sector performance chart")
+                    
+                    # Correlation analysis
+                    st.markdown("#### Score Correlations")
+                    
+                    try:
+                        # Include enhanced scores if available
+                        score_cols = ['momentum_score', 'position_score', 'volume_score', 'quality_score']
                         
-                        # Additional details
-                        st.markdown("#### Recent Performance")
-                        perf_col1, perf_col2, perf_col3, perf_col4 = st.columns(4)
+                        # Add enhanced columns if they exist
+                        enhanced_cols = ['momentum_acceleration_score', 'volume_acceleration_score',
+                                       'eps_momentum_score', 'future_potential_score']
                         
-                        with perf_col1:
-                            st.metric("1 Day", f"{stock['ret_1d']:.2f}%")
-                        with perf_col2:
-                            st.metric("7 Days", f"{stock['ret_7d']:.2f}%")
-                        with perf_col3:
-                            st.metric("30 Days", f"{stock['ret_30d']:.2f}%")
-                        with perf_col4:
-                            st.metric("RVOL", f"{stock['rvol']:.2f}x")
-            else:
-                st.warning(f"No stocks found matching '{search_term}'")
-    
-    with tab5:
-        st.markdown("### 📥 Export Data")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.markdown("#### Excel Report")
-            st.markdown("Download comprehensive Excel report with multiple sheets:")
-            st.markdown("- Top 100 stocks with full metrics")
-            st.markdown("- All stocks ranked")
-            st.markdown("- Sector analysis")
-            st.markdown("- Category analysis")
+                        for col in enhanced_cols:
+                            if col in filtered_df.columns:
+                                score_cols.append(col)
+                        
+                        if score_cols:
+                            correlation_matrix = filtered_df[score_cols].corr()
+                            
+                            fig_corr = go.Figure(data=go.Heatmap(
+                                z=correlation_matrix.values,
+                                x=correlation_matrix.columns,
+                                y=correlation_matrix.columns,
+                                colorscale='RdBu',
+                                zmid=0,
+                                text=correlation_matrix.values.round(2),
+                                texttemplate='%{text}',
+                                textfont={"size": 10}
+                            ))
+                            
+                            fig_corr.update_layout(
+                                title="Score Correlation Matrix",
+                                height=500
+                            )
+                            
+                            st.plotly_chart(fig_corr, use_container_width=True, key="corr_matrix")
+                    except Exception as e:
+                        logger.error(f"Error creating correlation matrix: {e}")
+                        st.warning("Unable to create correlation matrix")
+                
+                except Exception as e:
+                    logger.error(f"Error in analysis tab: {e}")
+                    st.error("An error occurred in the analysis section. Please try refreshing the page.")
             
-            if st.button("📊 Generate Excel Report", key="excel_btn"):
-                with st.spinner("Generating Excel report..."):
-                    excel_file = generate_excel_report(filtered_df)
+            else:
+                st.warning("No data available for analysis.")
+        
+        with tab3:
+            st.markdown("### 📈 Visualizations")
+            
+            if not filtered_df.empty:
+                try:
+                    # Top stocks breakdown
+                    fig_top = Visualizer.create_top_stocks_chart(filtered_df, 20)
+                    if fig_top:
+                        st.plotly_chart(fig_top, use_container_width=True, key="top_stocks_chart")
+                    
+                    # Scatter plot - Master Score vs Momentum
+                    if len(filtered_df) > 0:
+                        scatter_df = filtered_df.nlargest(min(100, len(filtered_df)), 'master_score')
+                        if not scatter_df.empty:
+                            fig_scatter = px.scatter(
+                                scatter_df,
+                                x='momentum_score',
+                                y='master_score',
+                                size='volume_score',
+                                color='quality_score',
+                                hover_data=['ticker', 'company_name', 'price'],
+                                title='Master Score vs Momentum Score (Top 100)',
+                                labels={
+                                    'momentum_score': 'Momentum Score',
+                                    'master_score': 'Master Score',
+                                    'volume_score': 'Volume Score',
+                                    'quality_score': 'Quality Score'
+                                },
+                                color_continuous_scale='Viridis'
+                            )
+                            
+                            fig_scatter.update_layout(height=500)
+                            st.plotly_chart(fig_scatter, use_container_width=True, key="scatter_plot")
+                    
+                    # Lifecycle analysis (if available)
+                    if 'lifecycle_stage' in filtered_df.columns:
+                        col1, col2 = st.columns(2)
+                        
+                        with col1:
+                            # Lifecycle distribution
+                            try:
+                                fig_lifecycle = Visualizer.create_lifecycle_distribution(filtered_df)
+                                if fig_lifecycle:
+                                    st.plotly_chart(fig_lifecycle, use_container_width=True, key="lifecycle_dist")
+                            except Exception as e:
+                                logger.error(f"Error creating lifecycle distribution: {e}")
+                                st.warning("Unable to create lifecycle distribution chart")
+                        
+                        with col2:
+                            # Future potential scatter
+                            try:
+                                fig_potential = Visualizer.create_future_potential_scatter(filtered_df)
+                                if fig_potential:
+                                    st.plotly_chart(fig_potential, use_container_width=True, key="future_potential")
+                            except Exception as e:
+                                logger.error(f"Error creating future potential scatter: {e}")
+                                st.warning("Unable to create future potential chart")
+                    
+                    # Tier distribution
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        try:
+                            if 'eps_tier' in filtered_df.columns:
+                                eps_dist = filtered_df['eps_tier'].value_counts()
+                                if not eps_dist.empty:
+                                    fig_eps = px.pie(
+                                        values=eps_dist.values,
+                                        names=eps_dist.index,
+                                        title='EPS Tier Distribution',
+                                        hole=0.4
+                                    )
+                                    st.plotly_chart(fig_eps, use_container_width=True, key="eps_dist")
+                        except Exception as e:
+                            logger.error(f"Error creating EPS distribution: {e}")
+                            st.warning("Unable to create EPS tier chart")
+                    
+                    with col2:
+                        try:
+                            if 'pe_tier' in filtered_df.columns:
+                                pe_dist = filtered_df['pe_tier'].value_counts()
+                                if not pe_dist.empty:
+                                    fig_pe = px.pie(
+                                        values=pe_dist.values,
+                                        names=pe_dist.index,
+                                        title='PE Tier Distribution',
+                                        hole=0.4
+                                    )
+                                    st.plotly_chart(fig_pe, use_container_width=True, key="pe_dist")
+                        except Exception as e:
+                            logger.error(f"Error creating PE distribution: {e}")
+                            st.warning("Unable to create PE tier chart")
+                
+                except Exception as e:
+                    logger.error(f"Error in visualizations tab: {e}")
+                    st.error("An error occurred while creating visualizations. Please try refreshing the page.")
+            
+            else:
+                st.warning("No data available for visualization.")
+        
+        with tab4:
+            st.markdown("### 🔍 Stock Search")
+            
+            # Search box
+            search_term = st.text_input(
+                "Search by ticker or company name",
+                placeholder="Enter ticker symbol or company name..."
+            )
+            
+            if search_term:
+                # Search in both ticker and company name
+                search_results = filtered_df[
+                    (filtered_df['ticker'].str.contains(search_term, case=False)) |
+                    (filtered_df['company_name'].str.contains(search_term, case=False))
+                ]
+                
+                if not search_results.empty:
+                    st.success(f"Found {len(search_results)} matching stocks")
+                    
+                    # Display search results
+                    for _, stock in search_results.iterrows():
+                        with st.expander(f"{stock['ticker']} - {stock['company_name']}"):
+                            col1, col2, col3 = st.columns(3)
+                            
+                            with col1:
+                                st.metric("Master Score", f"{stock['master_score']:.1f}")
+                                st.metric("Price", f"₹{stock['price']:,.2f}")
+                                st.metric("Category", stock['category'])
+                            
+                            with col2:
+                                st.metric("Momentum", f"{stock['momentum_score']:.1f}")
+                                st.metric("Position", f"{stock['position_score']:.1f}")
+                                st.metric("Sector", stock['sector'])
+                            
+                            with col3:
+                                st.metric("Volume", f"{stock['volume_score']:.1f}")
+                                st.metric("Quality", f"{stock['quality_score']:.1f}")
+                                st.metric("Rank", f"#{stock['rank']}")
+                            
+                            # Additional details
+                            st.markdown("#### Recent Performance")
+                            perf_col1, perf_col2, perf_col3, perf_col4 = st.columns(4)
+                            
+                            with perf_col1:
+                                st.metric("1 Day", f"{stock['ret_1d']:.2f}%")
+                            with perf_col2:
+                                st.metric("7 Days", f"{stock['ret_7d']:.2f}%")
+                            with perf_col3:
+                                st.metric("30 Days", f"{stock['ret_30d']:.2f}%")
+                            with perf_col4:
+                                st.metric("RVOL", f"{stock['rvol']:.2f}x")
+                else:
+                    st.warning(f"No stocks found matching '{search_term}'")
+        
+        with tab5:
+            st.markdown("### 📥 Export Data")
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.markdown("#### Excel Report")
+                st.markdown("Download comprehensive Excel report with multiple sheets:")
+                st.markdown("- Top 100 stocks with full metrics")
+                st.markdown("- All stocks ranked")
+                st.markdown("- Sector analysis")
+                st.markdown("- Category analysis")
+                
+                if st.button("📊 Generate Excel Report", key="excel_btn"):
+                    with st.spinner("Generating Excel report..."):
+                        excel_file = generate_excel_report(filtered_df)
+                        
+                        st.download_button(
+                            label="📥 Download Excel Report",
+                            data=excel_file,
+                            file_name=f"wave_detection_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                        )
+            
+            with col2:
+                st.markdown("#### CSV Export")
+                st.markdown("Download filtered data as CSV for further analysis")
+                
+                if st.button("📄 Generate CSV", key="csv_btn"):
+                    csv_data = filtered_df.to_csv(index=False)
                     
                     st.download_button(
-                        label="📥 Download Excel Report",
-                        data=excel_file,
-                        file_name=f"wave_detection_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                        label="📥 Download CSV",
+                        data=csv_data,
+                        file_name=f"wave_detection_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                        mime="text/csv"
                     )
-        
-        with col2:
-            st.markdown("#### CSV Export")
-            st.markdown("Download filtered data as CSV for further analysis")
             
-            if st.button("📄 Generate CSV", key="csv_btn"):
-                csv_data = filtered_df.to_csv(index=False)
-                
-                st.download_button(
-                    label="📥 Download CSV",
-                    data=csv_data,
-                    file_name=f"wave_detection_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                    mime="text/csv"
-                )
+            # Summary statistics
+            st.markdown("---")
+            st.markdown("#### 📊 Summary Statistics")
+            
+            summary_stats = pd.DataFrame({
+                'Metric': ['Total Stocks', 'Average Master Score', 'Stocks Above 70', 
+                          'Stocks Above 50', 'Highest Score', 'Lowest Score'],
+                'Value': [
+                    len(filtered_df),
+                    f"{filtered_df['master_score'].mean():.2f}" if not filtered_df.empty else "0",
+                    f"{(filtered_df['master_score'] > 70).sum()} ({(filtered_df['master_score'] > 70).mean() * 100:.1f}%)" if not filtered_df.empty else "0 (0%)",
+                    f"{(filtered_df['master_score'] > 50).sum()} ({(filtered_df['master_score'] > 50).mean() * 100:.1f}%)" if not filtered_df.empty else "0 (0%)",
+                    f"{filtered_df['master_score'].max():.2f}" if not filtered_df.empty else "0",
+                    f"{filtered_df['master_score'].min():.2f}" if not filtered_df.empty else "0"
+                ]
+            })
+            
+            st.table(summary_stats)
         
-        # Summary statistics
-        st.markdown("---")
-        st.markdown("#### 📊 Summary Statistics")
-        
-        summary_stats = pd.DataFrame({
-            'Metric': ['Total Stocks', 'Average Master Score', 'Stocks Above 70', 
-                      'Stocks Above 50', 'Highest Score', 'Lowest Score'],
-            'Value': [
-                len(filtered_df),
-                f"{filtered_df['master_score'].mean():.2f}",
-                f"{(filtered_df['master_score'] > 70).sum()} ({(filtered_df['master_score'] > 70).mean() * 100:.1f}%)",
-                f"{(filtered_df['master_score'] > 50).sum()} ({(filtered_df['master_score'] > 50).mean() * 100:.1f}%)",
-                f"{filtered_df['master_score'].max():.2f}",
-                f"{filtered_df['master_score'].min():.2f}"
-            ]
-        })
-        
-        st.table(summary_stats)
-    
         # Footer
         st.markdown("---")
         st.markdown("""
@@ -2347,8 +2349,8 @@ def main():
         """.format(datetime.now().strftime("%Y-%m-%d %H:%M:%S")), unsafe_allow_html=True)
         
     except Exception as e:
-        logger.error(f"Application error: {e}")
-        st.error(f"An error occurred: {str(e)}")
+        logger.error(f"Critical application error: {e}")
+        st.error(f"A critical error occurred: {str(e)}")
         st.error("Please refresh the page or contact support if the issue persists.")
 
 # ============================================
