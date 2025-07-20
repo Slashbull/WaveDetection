@@ -1,9 +1,9 @@
 """
 Wave Detection Ultimate - Professional Stock Ranking System
 =========================================================
-Complete implementation with all filters and tier systems.
+Complete implementation with all filters and robust error handling.
 
-Version: 2.0.0 - Production Ready
+Version: 3.0.0 - Production Ready
 Author: Professional Implementation
 License: MIT
 """
@@ -112,7 +112,7 @@ def timer(func):
     return wrapper
 
 # ============================================
-# DATA LOADING (FIXED CACHING)
+# DATA LOADING
 # ============================================
 
 @st.cache_data(ttl=CONFIG.CACHE_TTL)
@@ -158,7 +158,7 @@ class DataProcessor:
     def clean_indian_number(value: Any) -> Optional[float]:
         """Clean Indian number format"""
         if pd.isna(value) or value == '':
-            return None
+            return np.nan
         
         try:
             cleaned = str(value)
@@ -169,11 +169,11 @@ class DataProcessor:
             
             # Handle special cases
             if cleaned in ['', '-', 'N/A', 'n/a', '#N/A', 'nan', 'None']:
-                return None
+                return np.nan
             
             return float(cleaned)
         except:
-            return None
+            return np.nan
     
     @staticmethod
     @timer
@@ -219,7 +219,8 @@ class DataProcessor:
         
         for col in volume_ratio_columns:
             if col in df.columns:
-                df[col] = (100 + df[col]) / 100
+                # Convert percentage to multiplier, handling NaN values
+                df[col] = df[col].apply(lambda x: (100 + x) / 100 if pd.notna(x) else np.nan)
         
         # Remove invalid rows
         initial_count = len(df)
@@ -281,35 +282,62 @@ class RankingEngine:
     """Core ranking calculations"""
     
     @staticmethod
+    def safe_rank(series: pd.Series, pct: bool = False, ascending: bool = True) -> pd.Series:
+        """Safely rank a series handling NaN values"""
+        # Replace inf values with NaN
+        series = series.replace([np.inf, -np.inf], np.nan)
+        
+        # Perform ranking
+        if pct:
+            return series.rank(pct=True, ascending=ascending, na_option='bottom')
+        else:
+            return series.rank(ascending=ascending, method='min', na_option='bottom')
+    
+    @staticmethod
     @timer
     def calculate_rankings(df: pd.DataFrame) -> pd.DataFrame:
-        """Calculate all rankings"""
+        """Calculate all rankings with proper error handling"""
         if df.empty:
             return df
         
-        # Calculate percentile ranks for all key metrics
-        df['rank_from_low'] = df['from_low_pct'].rank(pct=True) * 100
-        df['rank_from_high'] = (100 + df['from_high_pct']).rank(pct=True) * 100
-        df['rank_vol_1d'] = df['vol_ratio_1d_90d'].rank(pct=True) * 100
-        df['rank_vol_7d'] = df['vol_ratio_7d_90d'].rank(pct=True) * 100
-        df['rank_vol_30d'] = df['vol_ratio_30d_90d'].rank(pct=True) * 100
-        df['rank_ret_1d'] = df['ret_1d'].rank(pct=True) * 100
-        df['rank_ret_7d'] = df['ret_7d'].rank(pct=True) * 100
-        df['rank_ret_30d'] = df['ret_30d'].rank(pct=True) * 100
+        # Create a copy to avoid modifying original
+        df = df.copy()
         
-        # Component scores
+        # Calculate percentile ranks for all key metrics with NaN handling
+        df['rank_from_low'] = RankingEngine.safe_rank(df['from_low_pct'], pct=True) * 100
+        df['rank_from_high'] = RankingEngine.safe_rank(100 + df['from_high_pct'], pct=True) * 100
+        
+        # Volume ranks with default value for NaN
+        df['vol_ratio_1d_90d'] = df['vol_ratio_1d_90d'].fillna(1.0)  # Default to 1x (no change)
+        df['vol_ratio_7d_90d'] = df['vol_ratio_7d_90d'].fillna(1.0)
+        df['vol_ratio_30d_90d'] = df['vol_ratio_30d_90d'].fillna(1.0)
+        
+        df['rank_vol_1d'] = RankingEngine.safe_rank(df['vol_ratio_1d_90d'], pct=True) * 100
+        df['rank_vol_7d'] = RankingEngine.safe_rank(df['vol_ratio_7d_90d'], pct=True) * 100
+        df['rank_vol_30d'] = RankingEngine.safe_rank(df['vol_ratio_30d_90d'], pct=True) * 100
+        
+        # Momentum ranks with default value for NaN
+        df['ret_1d'] = df['ret_1d'].fillna(0.0)
+        df['ret_7d'] = df['ret_7d'].fillna(0.0)
+        df['ret_30d'] = df['ret_30d'].fillna(0.0)
+        
+        df['rank_ret_1d'] = RankingEngine.safe_rank(df['ret_1d'], pct=True) * 100
+        df['rank_ret_7d'] = RankingEngine.safe_rank(df['ret_7d'], pct=True) * 100
+        df['rank_ret_30d'] = RankingEngine.safe_rank(df['ret_30d'], pct=True) * 100
+        
+        # Component scores (handle NaN by using fillna)
         df['position_score'] = (
-            df['rank_from_low'] * 0.6 +
-            df['rank_from_high'] * 0.4
+            df['rank_from_low'].fillna(50) * 0.6 +
+            df['rank_from_high'].fillna(50) * 0.4
         )
         
         df['volume_score'] = (
-            df['rank_vol_30d'] * 0.5 +
-            df['rank_vol_7d'] * 0.3 +
-            df['rank_vol_1d'] * 0.2
+            df['rank_vol_30d'].fillna(50) * 0.5 +
+            df['rank_vol_7d'].fillna(50) * 0.3 +
+            df['rank_vol_1d'].fillna(50) * 0.2
         )
         
-        df['momentum_score'] = df['rank_ret_30d']
+        df['momentum_score'] = df['rank_ret_30d'].fillna(50)
         
         # Master score
         df['master_score'] = (
@@ -318,9 +346,12 @@ class RankingEngine:
             df['momentum_score'] * CONFIG.MOMENTUM_WEIGHT
         )
         
-        # Final ranking
-        df['rank'] = df['master_score'].rank(ascending=False, method='min').astype(int)
-        df['percentile'] = df['master_score'].rank(pct=True) * 100
+        # Final ranking - handle NaN values properly
+        df['rank'] = RankingEngine.safe_rank(df['master_score'], ascending=False)
+        df['rank'] = df['rank'].fillna(9999).astype(int)  # Put NaN ranks at the end
+        
+        df['percentile'] = RankingEngine.safe_rank(df['master_score'], pct=True) * 100
+        df['percentile'] = df['percentile'].fillna(0)
         
         # Pattern detection
         df = RankingEngine.detect_patterns(df)
@@ -329,30 +360,40 @@ class RankingEngine:
     
     @staticmethod
     def detect_patterns(df: pd.DataFrame) -> pd.DataFrame:
-        """Detect trading patterns"""
+        """Detect trading patterns with NaN handling"""
         patterns = []
         
         for idx, row in df.iterrows():
             stock_patterns = []
             
+            # Handle NaN values in pattern detection
+            rank_from_high = row.get('rank_from_high', 0)
+            rank_vol_7d = row.get('rank_vol_7d', 0)
+            rank_vol_30d = row.get('rank_vol_30d', 0)
+            rank_from_low = row.get('rank_from_low', 50)
+            percentile = row.get('percentile', 0)
+            rank_vol_1d = row.get('rank_vol_1d', 0)
+            rank_ret_7d = row.get('rank_ret_7d', 0)
+            rank_ret_30d = row.get('rank_ret_30d', 0)
+            
             # Breakout pattern
-            if row['rank_from_high'] > 90 and row['rank_vol_7d'] > 70:
+            if rank_from_high > 90 and rank_vol_7d > 70:
                 stock_patterns.append("🚀 BREAKOUT")
             
             # Accumulation pattern
-            if row['rank_vol_30d'] > 80 and row['rank_from_low'] < 50:
+            if rank_vol_30d > 80 and rank_from_low < 50:
                 stock_patterns.append("🏦 ACCUMULATION")
             
             # Leader pattern
-            if row['percentile'] > 95:
+            if percentile > 95:
                 stock_patterns.append("👑 LEADER")
             
             # Volume surge
-            if row['rank_vol_1d'] > 95:
+            if rank_vol_1d > 95:
                 stock_patterns.append("🔥 VOLUME")
             
             # Momentum surge
-            if row['rank_ret_7d'] > 90 and row['rank_ret_30d'] > 80:
+            if rank_ret_7d > 90 and rank_ret_30d > 80:
                 stock_patterns.append("⚡ MOMENTUM")
             
             patterns.append(", ".join(stock_patterns) if stock_patterns else "")
@@ -375,7 +416,7 @@ class FilterEngine:
         
         values = df[column].unique().tolist()
         # Remove 'Unknown' and sort
-        values = [v for v in values if v != 'Unknown']
+        values = [v for v in values if v != 'Unknown' and pd.notna(v)]
         return sorted(values)
     
     @staticmethod
@@ -409,7 +450,10 @@ class FilterEngine:
         
         # EPS change filter
         if filters.get('min_eps_change') is not None:
-            filtered_df = filtered_df[filtered_df['eps_change_pct'] >= filters['min_eps_change']]
+            filtered_df = filtered_df[
+                (filtered_df['eps_change_pct'] >= filters['min_eps_change']) | 
+                (filtered_df['eps_change_pct'].isna())
+            ]
         
         return filtered_df
 
@@ -430,12 +474,15 @@ class Visualizer:
         
         for score, color in zip(scores, colors):
             if score in df.columns:
-                fig.add_trace(go.Box(
-                    y=df[score],
-                    name=score.replace('_', ' ').title(),
-                    marker_color=color,
-                    boxpoints='outliers'
-                ))
+                # Filter out NaN values for box plot
+                score_data = df[score].dropna()
+                if len(score_data) > 0:
+                    fig.add_trace(go.Box(
+                        y=score_data,
+                        name=score.replace('_', ' ').title(),
+                        marker_color=color,
+                        boxpoints='outliers'
+                    ))
         
         fig.update_layout(
             title="Score Component Distribution",
@@ -449,7 +496,12 @@ class Visualizer:
     @staticmethod
     def create_top_stocks_chart(df: pd.DataFrame, n: int = 20) -> go.Figure:
         """Top stocks breakdown"""
-        top_df = df.nlargest(n, 'master_score')
+        # Get top stocks with valid scores
+        valid_df = df[df['master_score'].notna()]
+        top_df = valid_df.nlargest(min(n, len(valid_df)), 'master_score')
+        
+        if len(top_df) == 0:
+            return go.Figure()
         
         fig = go.Figure()
         
@@ -478,11 +530,11 @@ class Visualizer:
         ))
         
         fig.update_layout(
-            title=f"Top {n} Stocks - Score Breakdown",
+            title=f"Top {len(top_df)} Stocks - Score Breakdown",
             xaxis_title="Weighted Score",
             barmode='stack',
             template='plotly_white',
-            height=max(400, n * 25)
+            height=max(400, len(top_df) * 25)
         )
         
         return fig
@@ -490,7 +542,10 @@ class Visualizer:
     @staticmethod
     def create_sector_performance(df: pd.DataFrame) -> go.Figure:
         """Sector performance analysis"""
-        sector_stats = df.groupby('sector').agg({
+        # Group by sector with valid scores
+        valid_df = df[df['master_score'].notna()]
+        
+        sector_stats = valid_df.groupby('sector').agg({
             'master_score': 'mean',
             'position_score': 'mean',
             'ticker': 'count'
@@ -498,6 +553,9 @@ class Visualizer:
         
         # Filter sectors with at least 3 stocks
         sector_stats = sector_stats[sector_stats['ticker'] >= 3]
+        
+        if len(sector_stats) == 0:
+            return go.Figure()
         
         fig = px.scatter(
             sector_stats,
@@ -534,42 +592,48 @@ class ExportEngine:
         """Create Excel report"""
         output = BytesIO()
         
-        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            # Top 100 stocks
-            top_100 = df.nlargest(100, 'master_score')
-            export_cols = [
-                'rank', 'ticker', 'company_name', 'master_score',
-                'position_score', 'volume_score', 'momentum_score',
-                'price', 'from_low_pct', 'from_high_pct',
-                'ret_30d', 'vol_ratio_30d_90d', 'patterns',
-                'category', 'sector', 'eps_tier', 'pe_tier', 'price_tier'
-            ]
-            export_cols = [col for col in export_cols if col in top_100.columns]
-            top_100[export_cols].to_excel(writer, sheet_name='Top 100', index=False)
-            
-            # All stocks summary
-            summary_cols = ['rank', 'ticker', 'company_name', 'master_score', 'category', 'sector']
-            summary_cols = [col for col in summary_cols if col in df.columns]
-            df[summary_cols].to_excel(writer, sheet_name='All Stocks', index=False)
-            
-            # Sector analysis
-            sector_stats = df.groupby('sector').agg({
-                'master_score': ['mean', 'std', 'count'],
-                'position_score': 'mean',
-                'volume_score': 'mean',
-                'momentum_score': 'mean'
-            }).round(2)
-            sector_stats.to_excel(writer, sheet_name='Sector Analysis')
-            
-            # Category analysis
-            category_stats = df.groupby('category').agg({
-                'master_score': ['mean', 'std', 'count'],
-                'position_score': 'mean',
-                'volume_score': 'mean',
-                'momentum_score': 'mean'
-            }).round(2)
-            category_stats.to_excel(writer, sheet_name='Category Analysis')
+        try:
+            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                # Top 100 stocks
+                valid_df = df[df['master_score'].notna()]
+                top_100 = valid_df.nlargest(min(100, len(valid_df)), 'master_score')
+                
+                export_cols = [
+                    'rank', 'ticker', 'company_name', 'master_score',
+                    'position_score', 'volume_score', 'momentum_score',
+                    'price', 'from_low_pct', 'from_high_pct',
+                    'ret_30d', 'vol_ratio_30d_90d', 'patterns',
+                    'category', 'sector', 'eps_tier', 'pe_tier', 'price_tier'
+                ]
+                export_cols = [col for col in export_cols if col in top_100.columns]
+                top_100[export_cols].to_excel(writer, sheet_name='Top 100', index=False)
+                
+                # All stocks summary
+                summary_cols = ['rank', 'ticker', 'company_name', 'master_score', 'category', 'sector']
+                summary_cols = [col for col in summary_cols if col in df.columns]
+                df[summary_cols].to_excel(writer, sheet_name='All Stocks', index=False)
+                
+                # Sector analysis
+                sector_stats = valid_df.groupby('sector').agg({
+                    'master_score': ['mean', 'std', 'count'],
+                    'position_score': 'mean',
+                    'volume_score': 'mean',
+                    'momentum_score': 'mean'
+                }).round(2)
+                sector_stats.to_excel(writer, sheet_name='Sector Analysis')
+                
+                # Category analysis
+                category_stats = valid_df.groupby('category').agg({
+                    'master_score': ['mean', 'std', 'count'],
+                    'position_score': 'mean',
+                    'volume_score': 'mean',
+                    'momentum_score': 'mean'
+                }).round(2)
+                category_stats.to_excel(writer, sheet_name='Category Analysis')
         
+        except Exception as e:
+            logger.error(f"Error creating Excel report: {e}")
+            
         output.seek(0)
         return output
 
@@ -747,7 +811,8 @@ def main():
         st.metric("Total Stocks", f"{len(filtered_df):,}")
     
     with col2:
-        avg_score = filtered_df['master_score'].mean() if len(filtered_df) > 0 else 0
+        valid_scores = filtered_df['master_score'].dropna()
+        avg_score = valid_scores.mean() if len(valid_scores) > 0 else 0
         st.metric("Avg Score", f"{avg_score:.1f}")
     
     with col3:
@@ -807,11 +872,17 @@ def main():
             for col, fmt in format_dict.items():
                 if col in display_df.columns:
                     if '%' in fmt:
-                        display_df[col] = display_df[col].apply(lambda x: fmt.format(x) if pd.notna(x) else '')
+                        display_df[col] = display_df[col].apply(
+                            lambda x: fmt.format(x) if pd.notna(x) else ''
+                        )
                     elif '₹' in fmt:
-                        display_df[col] = display_df[col].apply(lambda x: fmt.format(x) if pd.notna(x) else '')
+                        display_df[col] = display_df[col].apply(
+                            lambda x: fmt.format(x) if pd.notna(x) else ''
+                        )
                     else:
-                        display_df[col] = display_df[col].round(1)
+                        display_df[col] = display_df[col].apply(
+                            lambda x: fmt.format(x) if pd.notna(x) else ''
+                        )
             
             st.dataframe(
                 display_df[display_cols],
@@ -835,21 +906,29 @@ def main():
             with col2:
                 # Sector summary
                 st.markdown("#### Sector Performance")
-                sector_summary = filtered_df.groupby('sector').agg({
-                    'master_score': ['mean', 'count']
-                }).round(2)
-                sector_summary.columns = ['Avg Score', 'Count']
-                sector_summary = sector_summary.sort_values('Avg Score', ascending=False)
-                st.dataframe(sector_summary, use_container_width=True)
+                valid_df = filtered_df[filtered_df['master_score'].notna()]
+                
+                if len(valid_df) > 0:
+                    sector_summary = valid_df.groupby('sector').agg({
+                        'master_score': ['mean', 'count']
+                    }).round(2)
+                    sector_summary.columns = ['Avg Score', 'Count']
+                    sector_summary = sector_summary.sort_values('Avg Score', ascending=False)
+                    st.dataframe(sector_summary, use_container_width=True)
+                else:
+                    st.info("No valid scores for sector analysis")
             
             # Category summary
             st.markdown("#### Category Performance")
-            category_summary = filtered_df.groupby('category').agg({
-                'master_score': ['mean', 'count']
-            }).round(2)
-            category_summary.columns = ['Avg Score', 'Count']
-            category_summary = category_summary.sort_values('Avg Score', ascending=False)
-            st.dataframe(category_summary, use_container_width=True)
+            if len(valid_df) > 0:
+                category_summary = valid_df.groupby('category').agg({
+                    'master_score': ['mean', 'count']
+                }).round(2)
+                category_summary.columns = ['Avg Score', 'Count']
+                category_summary = category_summary.sort_values('Avg Score', ascending=False)
+                st.dataframe(category_summary, use_container_width=True)
+            else:
+                st.info("No valid scores for category analysis")
         else:
             st.info("No data available for analysis.")
     
@@ -864,7 +943,8 @@ def main():
             st.plotly_chart(fig_top, use_container_width=True)
             
             # Sector performance
-            if len(filtered_df.groupby('sector')) >= 3:
+            valid_df = filtered_df[filtered_df['master_score'].notna()]
+            if len(valid_df.groupby('sector')) >= 3:
                 st.markdown("#### Sector Performance")
                 fig_sector = Visualizer.create_sector_performance(filtered_df)
                 st.plotly_chart(fig_sector, use_container_width=True)
