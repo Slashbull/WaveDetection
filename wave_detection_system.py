@@ -726,46 +726,95 @@ class RankingEngine:
     @staticmethod
     def _detect_patterns(df: pd.DataFrame) -> pd.DataFrame:
         """Detect patterns using vectorized operations for performance"""
-        patterns = []
+        # Initialize patterns column
+        df['patterns'] = ''
         
-        # Pre-calculate all conditions for vectorized operations
-        conditions = {
-            '🔥 CAT LEADER': df['category_percentile'] >= CONFIG.PATTERN_THRESHOLDS['category_leader'],
-            '💎 HIDDEN GEM': (
+        # Check for required columns and create conditions
+        pattern_conditions = []
+        
+        # 1. Category Leader
+        if 'category_percentile' in df.columns:
+            mask = df['category_percentile'] >= CONFIG.PATTERN_THRESHOLDS['category_leader']
+            pattern_conditions.append(('🔥 CAT LEADER', mask))
+        
+        # 2. Hidden Gem
+        if 'category_percentile' in df.columns and 'percentile' in df.columns:
+            mask = (
                 (df['category_percentile'] >= CONFIG.PATTERN_THRESHOLDS['hidden_gem']) & 
                 (df['percentile'] < 70)
-            ),
-            '🚀 ACCELERATING': df['acceleration_score'] >= CONFIG.PATTERN_THRESHOLDS['acceleration'],
-            '🏦 INSTITUTIONAL': (
+            )
+            pattern_conditions.append(('💎 HIDDEN GEM', mask))
+        
+        # 3. Accelerating
+        if 'acceleration_score' in df.columns:
+            mask = df['acceleration_score'] >= CONFIG.PATTERN_THRESHOLDS['acceleration']
+            pattern_conditions.append(('🚀 ACCELERATING', mask))
+        
+        # 4. Institutional
+        if 'volume_score' in df.columns and 'vol_ratio_90d_180d' in df.columns:
+            mask = (
                 (df['volume_score'] >= CONFIG.PATTERN_THRESHOLDS['institutional']) &
-                (df.get('vol_ratio_90d_180d', 1) > 1.1)
-            ),
-            '⚡ VOL EXPLOSION': df['rvol'] > 3,
-            '🎯 BREAKOUT': df['breakout_score'] >= CONFIG.PATTERN_THRESHOLDS['breakout_ready'],
-            '👑 MARKET LEADER': df['percentile'] >= CONFIG.PATTERN_THRESHOLDS['market_leader'],
-            '🌊 MOMENTUM WAVE': (
+                (df['vol_ratio_90d_180d'] > 1.1)
+            )
+            pattern_conditions.append(('🏦 INSTITUTIONAL', mask))
+        
+        # 5. Volume Explosion
+        if 'rvol' in df.columns:
+            mask = df['rvol'] > 3
+            pattern_conditions.append(('⚡ VOL EXPLOSION', mask))
+        
+        # 6. Breakout Ready
+        if 'breakout_score' in df.columns:
+            mask = df['breakout_score'] >= CONFIG.PATTERN_THRESHOLDS['breakout_ready']
+            pattern_conditions.append(('🎯 BREAKOUT', mask))
+        
+        # 7. Market Leader
+        if 'percentile' in df.columns:
+            mask = df['percentile'] >= CONFIG.PATTERN_THRESHOLDS['market_leader']
+            pattern_conditions.append(('👑 MARKET LEADER', mask))
+        
+        # 8. Momentum Wave
+        if 'momentum_score' in df.columns and 'acceleration_score' in df.columns:
+            mask = (
                 (df['momentum_score'] >= CONFIG.PATTERN_THRESHOLDS['momentum_wave']) &
                 (df['acceleration_score'] >= 70)
-            ),
-            '💰 LIQUID LEADER': (
+            )
+            pattern_conditions.append(('🌊 MOMENTUM WAVE', mask))
+        
+        # 9. Liquid Leader
+        if 'liquidity_score' in df.columns and 'percentile' in df.columns:
+            mask = (
                 (df['liquidity_score'] >= CONFIG.PATTERN_THRESHOLDS['liquid_leader']) &
                 (df['percentile'] >= CONFIG.PATTERN_THRESHOLDS['liquid_leader'])
-            ),
-            '💪 LONG STRENGTH': df['long_term_strength'] >= CONFIG.PATTERN_THRESHOLDS['long_strength'],
-            '📈 QUALITY TREND': df['trend_quality'] >= 80
-        }
+            )
+            pattern_conditions.append(('💰 LIQUID LEADER', mask))
         
-        # Build patterns for each row
+        # 10. Long-term Strength
+        if 'long_term_strength' in df.columns:
+            mask = df['long_term_strength'] >= CONFIG.PATTERN_THRESHOLDS['long_strength']
+            pattern_conditions.append(('💪 LONG STRENGTH', mask))
+        
+        # 11. Quality Trend
+        if 'trend_quality' in df.columns:
+            mask = df['trend_quality'] >= 80
+            pattern_conditions.append(('📈 QUALITY TREND', mask))
+        
+        # Build pattern strings for each row
+        patterns_list = []
         for idx in df.index:
             row_patterns = []
-            for pattern_name, condition in conditions.items():
-                if isinstance(condition.iloc[idx] if hasattr(condition, 'iloc') else condition[idx], bool):
-                    if condition.iloc[idx] if hasattr(condition, 'iloc') else condition[idx]:
+            for pattern_name, mask in pattern_conditions:
+                try:
+                    # Get the boolean value for this specific row
+                    if mask.loc[idx]:
                         row_patterns.append(pattern_name)
+                except:
+                    # Skip if there's any issue accessing the value
+                    continue
             
-            patterns.append(' | '.join(row_patterns) if row_patterns else '')
+            patterns_list.append(' | '.join(row_patterns) if row_patterns else '')
         
-        df['patterns'] = patterns
+        df['patterns'] = patterns_list
         return df
 
 # ============================================
