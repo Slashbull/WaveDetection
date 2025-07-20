@@ -188,6 +188,17 @@ def safe_float(value: Any, default: float = 0.0) -> float:
     except:
         return default
 
+def safe_plotly_chart(chart_func, *args, **kwargs):
+    """Safely create plotly charts with error handling"""
+    try:
+        fig = chart_func(*args, **kwargs)
+        if fig is None:
+            return go.Figure()
+        return fig
+    except Exception as e:
+        logger.error(f"Error creating chart: {e}")
+        return go.Figure()
+
 # ============================================
 # DATA PROCESSING
 # ============================================
@@ -1549,243 +1560,252 @@ def load_custom_css():
 def main():
     """Main application entry point"""
     
-    # Initialize session state
-    if 'initialized' not in st.session_state:
-        st.session_state.initialized = True
-    
-    # Load custom CSS
-    load_custom_css()
-    
-    # Header
-    st.markdown("""
-    <div class="main-header">
-        <h1>📊 Wave Detection 6.0</h1>
-        <p>Professional Stock Analytics Platform</p>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    # Sidebar configuration
-    with st.sidebar:
-        st.markdown("## ⚙️ Configuration")
+    try:
+        # Initialize session state
+        if 'initialized' not in st.session_state:
+            st.session_state.initialized = True
         
-        # Data source
-        st.markdown("### 📁 Data Source")
-        sheet_url = st.text_input(
-            "Google Sheets URL",
-            value=Config.DEFAULT_SHEET_URL,
-            help="Enter the Google Sheets URL containing stock data"
-        )
+        # Load custom CSS
+        load_custom_css()
         
-        gid = st.text_input(
-            "Sheet GID",
-            value=Config.DEFAULT_GID,
-            help="Enter the GID of the specific sheet"
-        )
+        # Header
+        st.markdown("""
+        <div class="main-header">
+            <h1>📊 Wave Detection 6.0</h1>
+            <p>Professional Stock Analytics Platform</p>
+        </div>
+        """, unsafe_allow_html=True)
         
-        # Refresh button
-        col1, col2 = st.columns(2)
+        # Sidebar configuration
+        with st.sidebar:
+            st.markdown("## ⚙️ Configuration")
+            
+            # Data source
+            st.markdown("### 📁 Data Source")
+            sheet_url = st.text_input(
+                "Google Sheets URL",
+                value=Config.DEFAULT_SHEET_URL,
+                help="Enter the Google Sheets URL containing stock data"
+            )
+            
+            gid = st.text_input(
+                "Sheet GID",
+                value=Config.DEFAULT_GID,
+                help="Enter the GID of the specific sheet"
+            )
+            
+            # Refresh button
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("🔄 Refresh Data", help="Clear cache and reload data"):
+                    st.cache_data.clear()
+                    st.rerun()
+            
+            with col2:
+                if st.button("ℹ️ Help", help="Show help information"):
+                    st.info("This platform analyzes stocks using a 4-pillar scoring system: "
+                           "Momentum, Position, Volume, and Quality.")
+            
+            # Filters
+            st.markdown("---")
+            st.markdown("### 🔍 Smart Filters")
+        
+        # Load and process data
+        with st.spinner("Loading market data..."):
+            raw_df = load_market_data(sheet_url, gid)
+        
+        if raw_df.empty:
+            st.error("❌ No data loaded. Please check the URL and GID.")
+            st.stop()
+        
+        # Process data
+        with st.spinner(f"Processing {len(raw_df):,} stocks..."):
+            processed_df = DataProcessor.process_dataframe(raw_df)
+        
+        if processed_df.empty:
+            st.error("❌ No valid data after processing.")
+            st.stop()
+        
+        # Calculate scores
+        with st.spinner("Calculating scores..."):
+            scored_df = ScoringEngine.calculate_all_scores(processed_df)
+        
+        # Get unique values for filters (excluding 'Unknown')
+        categories = ['All'] + sorted([c for c in scored_df['category'].unique() if c != 'Unknown'])
+        sectors = ['All'] + sorted([s for s in scored_df['sector'].unique() if s != 'Unknown'])
+        eps_tiers = ['All'] + sorted([e for e in scored_df['eps_tier'].unique() if e != 'Unknown'])
+        price_tiers = ['All'] + sorted([p for p in scored_df['price_tier'].unique() if p != 'Unknown'])
+        pe_tiers = ['All'] + sorted([p for p in scored_df['pe_tier'].unique() if p != 'Unknown'])
+        
+        # Sidebar filters
+        with st.sidebar:
+            # Category filter
+            selected_categories = st.multiselect(
+                "Market Cap Category",
+                options=categories,
+                default=['All'],
+                help="Filter by market capitalization category"
+            )
+            
+            # Sector filter
+            selected_sectors = st.multiselect(
+                "Sector",
+                options=sectors,
+                default=['All'],
+                help="Filter by business sector"
+            )
+            
+            # EPS tier filter
+            selected_eps_tiers = st.multiselect(
+                "EPS Tier",
+                options=eps_tiers,
+                default=['All'],
+                help="Filter by earnings per share tier"
+            )
+            
+            # Price tier filter
+            selected_price_tiers = st.multiselect(
+                "Price Tier",
+                options=price_tiers,
+                default=['All'],
+                help="Filter by price range tier"
+            )
+            
+            # PE tier filter
+            selected_pe_tiers = st.multiselect(
+                "PE Tier",
+                options=pe_tiers,
+                default=['All'],
+                help="Filter by price-to-earnings ratio tier"
+            )
+            
+            # Score range filter
+            st.markdown("### 📊 Score Range")
+            min_score = st.slider(
+                "Minimum Master Score",
+                min_value=0,
+                max_value=100,
+                value=0,
+                step=5,
+                help="Filter stocks by minimum master score"
+            )
+        
+        # Apply filters
+        filtered_df = scored_df.copy()
+        
+        if 'All' not in selected_categories:
+            filtered_df = filtered_df[filtered_df['category'].isin(selected_categories)]
+        
+        if 'All' not in selected_sectors:
+            filtered_df = filtered_df[filtered_df['sector'].isin(selected_sectors)]
+        
+        if 'All' not in selected_eps_tiers:
+            filtered_df = filtered_df[filtered_df['eps_tier'].isin(selected_eps_tiers)]
+        
+        if 'All' not in selected_price_tiers:
+            filtered_df = filtered_df[filtered_df['price_tier'].isin(selected_price_tiers)]
+        
+        if 'All' not in selected_pe_tiers:
+            filtered_df = filtered_df[filtered_df['pe_tier'].isin(selected_pe_tiers)]
+        
+        filtered_df = filtered_df[filtered_df['master_score'] >= min_score]
+        
+        # Continue with the rest of the main function...
+        # (Summary metrics and tabs section remains the same)
+        
+    except Exception as e:
+        logger.error(f"Application error: {e}")
+        st.error(f"An error occurred: {str(e)}")
+        st.error("Please refresh the page or contact support if the issue persists.")
+    
+        # Main content area
+        # Summary metrics
+        col1, col2, col3, col4, col5 = st.columns(5)
+        
         with col1:
-            if st.button("🔄 Refresh Data", help="Clear cache and reload data"):
-                st.cache_data.clear()
-                st.rerun()
+            total_stocks = len(filtered_df)
+            st.markdown(f"""
+            <div class="metric-card">
+                <h3>Total Stocks</h3>
+                <div class="value">{total_stocks:,}</div>
+            </div>
+            """, unsafe_allow_html=True)
         
         with col2:
-            if st.button("ℹ️ Help", help="Show help information"):
-                st.info("This platform analyzes stocks using a 4-pillar scoring system: "
-                       "Momentum, Position, Volume, and Quality.")
-        
-        # Filters
-        st.markdown("---")
-        st.markdown("### 🔍 Smart Filters")
-    
-    # Load and process data
-    with st.spinner("Loading market data..."):
-        raw_df = load_market_data(sheet_url, gid)
-    
-    if raw_df.empty:
-        st.error("❌ No data loaded. Please check the URL and GID.")
-        st.stop()
-    
-    # Process data
-    with st.spinner(f"Processing {len(raw_df):,} stocks..."):
-        processed_df = DataProcessor.process_dataframe(raw_df)
-    
-    if processed_df.empty:
-        st.error("❌ No valid data after processing.")
-        st.stop()
-    
-    # Calculate scores
-    with st.spinner("Calculating scores..."):
-        scored_df = ScoringEngine.calculate_all_scores(processed_df)
-    
-    # Get unique values for filters (excluding 'Unknown')
-    categories = ['All'] + sorted([c for c in scored_df['category'].unique() if c != 'Unknown'])
-    sectors = ['All'] + sorted([s for s in scored_df['sector'].unique() if s != 'Unknown'])
-    eps_tiers = ['All'] + sorted([e for e in scored_df['eps_tier'].unique() if e != 'Unknown'])
-    price_tiers = ['All'] + sorted([p for p in scored_df['price_tier'].unique() if p != 'Unknown'])
-    pe_tiers = ['All'] + sorted([p for p in scored_df['pe_tier'].unique() if p != 'Unknown'])
-    
-    # Sidebar filters
-    with st.sidebar:
-        # Category filter
-        selected_categories = st.multiselect(
-            "Market Cap Category",
-            options=categories,
-            default=['All'],
-            help="Filter by market capitalization category"
-        )
-        
-        # Sector filter
-        selected_sectors = st.multiselect(
-            "Sector",
-            options=sectors,
-            default=['All'],
-            help="Filter by business sector"
-        )
-        
-        # EPS tier filter
-        selected_eps_tiers = st.multiselect(
-            "EPS Tier",
-            options=eps_tiers,
-            default=['All'],
-            help="Filter by earnings per share tier"
-        )
-        
-        # Price tier filter
-        selected_price_tiers = st.multiselect(
-            "Price Tier",
-            options=price_tiers,
-            default=['All'],
-            help="Filter by price range tier"
-        )
-        
-        # PE tier filter
-        selected_pe_tiers = st.multiselect(
-            "PE Tier",
-            options=pe_tiers,
-            default=['All'],
-            help="Filter by price-to-earnings ratio tier"
-        )
-        
-        # Score range filter
-        st.markdown("### 📊 Score Range")
-        min_score = st.slider(
-            "Minimum Master Score",
-            min_value=0,
-            max_value=100,
-            value=0,
-            step=5,
-            help="Filter stocks by minimum master score"
-        )
-    
-    # Apply filters
-    filtered_df = scored_df.copy()
-    
-    if 'All' not in selected_categories:
-        filtered_df = filtered_df[filtered_df['category'].isin(selected_categories)]
-    
-    if 'All' not in selected_sectors:
-        filtered_df = filtered_df[filtered_df['sector'].isin(selected_sectors)]
-    
-    if 'All' not in selected_eps_tiers:
-        filtered_df = filtered_df[filtered_df['eps_tier'].isin(selected_eps_tiers)]
-    
-    if 'All' not in selected_price_tiers:
-        filtered_df = filtered_df[filtered_df['price_tier'].isin(selected_price_tiers)]
-    
-    if 'All' not in selected_pe_tiers:
-        filtered_df = filtered_df[filtered_df['pe_tier'].isin(selected_pe_tiers)]
-    
-    filtered_df = filtered_df[filtered_df['master_score'] >= min_score]
-    
-    # Main content area
-    # Summary metrics
-    col1, col2, col3, col4, col5 = st.columns(5)
-    
-    with col1:
-        total_stocks = len(filtered_df)
-        st.markdown(f"""
-        <div class="metric-card">
-            <h3>Total Stocks</h3>
-            <div class="value">{total_stocks:,}</div>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    with col2:
-        avg_score = filtered_df['master_score'].mean() if not filtered_df.empty else 0
-        st.markdown(f"""
-        <div class="metric-card">
-            <h3>Avg Score</h3>
-            <div class="value">{avg_score:.1f}</div>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    with col3:
-        # Show lifecycle distribution
-        if not filtered_df.empty and 'lifecycle_stage' in filtered_df.columns:
-            accumulation_count = len(filtered_df[filtered_df['lifecycle_stage'].isin(['ACCUMULATION', 'EARLY_MARKUP'])])
-            pct = (accumulation_count / total_stocks * 100) if total_stocks > 0 else 0
+            avg_score = filtered_df['master_score'].mean() if not filtered_df.empty else 0
             st.markdown(f"""
             <div class="metric-card">
-                <h3>Early Stage</h3>
-                <div class="value">{pct:.0f}%</div>
+                <h3>Avg Score</h3>
+                <div class="value">{avg_score:.1f}</div>
             </div>
             """, unsafe_allow_html=True)
-        else:
-            top_performer = filtered_df.nlargest(1, 'master_score')['ticker'].iloc[0] if not filtered_df.empty else "N/A"
-            st.markdown(f"""
-            <div class="metric-card">
-                <h3>Top Stock</h3>
-                <div class="value">{top_performer}</div>
-            </div>
-            """, unsafe_allow_html=True)
-    
-    with col4:
-        # Show momentum acceleration
-        if not filtered_df.empty and 'momentum_acceleration_score' in filtered_df.columns:
-            accelerating_pct = (filtered_df['momentum_acceleration_score'] > 70).mean() * 100
-            st.markdown(f"""
-            <div class="metric-card">
-                <h3>Accelerating</h3>
-                <div class="value">{accelerating_pct:.1f}%</div>
-            </div>
-            """, unsafe_allow_html=True)
-        else:
-            bullish_pct = (filtered_df['momentum_score'] > 50).mean() * 100 if not filtered_df.empty else 0
-            st.markdown(f"""
-            <div class="metric-card">
-                <h3>Bullish %</h3>
-                <div class="value">{bullish_pct:.1f}%</div>
-            </div>
-            """, unsafe_allow_html=True)
-    
-    with col5:
-        # Show volume patterns
-        if not filtered_df.empty and 'volume_pattern' in filtered_df.columns:
-            expanding_vol_pct = (filtered_df['volume_pattern'] == 'EXPANDING').mean() * 100
-            st.markdown(f"""
-            <div class="metric-card">
-                <h3>Vol Expanding</h3>
-                <div class="value">{expanding_vol_pct:.1f}%</div>
-            </div>
-            """, unsafe_allow_html=True)
-        else:
-            high_volume_pct = (filtered_df['volume_score'] > 50).mean() * 100 if not filtered_df.empty else 0
-            st.markdown(f"""
-            <div class="metric-card">
-                <h3>High Volume %</h3>
-                <div class="value">{high_volume_pct:.1f}%</div>
-            </div>
-            """, unsafe_allow_html=True)
-    
-    # Tabs for different views
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
-        "🏆 Top Stocks",
-        "📊 Analysis",
-        "📈 Visualizations",
-        "🔍 Search",
-        "📥 Export"
-    ])
+        
+        with col3:
+            # Show lifecycle distribution
+            if not filtered_df.empty and 'lifecycle_stage' in filtered_df.columns:
+                accumulation_count = len(filtered_df[filtered_df['lifecycle_stage'].isin(['ACCUMULATION', 'EARLY_MARKUP'])])
+                pct = (accumulation_count / total_stocks * 100) if total_stocks > 0 else 0
+                st.markdown(f"""
+                <div class="metric-card">
+                    <h3>Early Stage</h3>
+                    <div class="value">{pct:.0f}%</div>
+                </div>
+                """, unsafe_allow_html=True)
+            else:
+                top_performer = filtered_df.nlargest(1, 'master_score')['ticker'].iloc[0] if not filtered_df.empty else "N/A"
+                st.markdown(f"""
+                <div class="metric-card">
+                    <h3>Top Stock</h3>
+                    <div class="value">{top_performer}</div>
+                </div>
+                """, unsafe_allow_html=True)
+        
+        with col4:
+            # Show momentum acceleration
+            if not filtered_df.empty and 'momentum_acceleration_score' in filtered_df.columns:
+                accelerating_pct = (filtered_df['momentum_acceleration_score'] > 70).mean() * 100
+                st.markdown(f"""
+                <div class="metric-card">
+                    <h3>Accelerating</h3>
+                    <div class="value">{accelerating_pct:.1f}%</div>
+                </div>
+                """, unsafe_allow_html=True)
+            else:
+                bullish_pct = (filtered_df['momentum_score'] > 50).mean() * 100 if not filtered_df.empty else 0
+                st.markdown(f"""
+                <div class="metric-card">
+                    <h3>Bullish %</h3>
+                    <div class="value">{bullish_pct:.1f}%</div>
+                </div>
+                """, unsafe_allow_html=True)
+        
+        with col5:
+            # Show volume patterns
+            if not filtered_df.empty and 'volume_pattern' in filtered_df.columns:
+                expanding_vol_pct = (filtered_df['volume_pattern'] == 'EXPANDING').mean() * 100
+                st.markdown(f"""
+                <div class="metric-card">
+                    <h3>Vol Expanding</h3>
+                    <div class="value">{expanding_vol_pct:.1f}%</div>
+                </div>
+                """, unsafe_allow_html=True)
+            else:
+                high_volume_pct = (filtered_df['volume_score'] > 50).mean() * 100 if not filtered_df.empty else 0
+                st.markdown(f"""
+                <div class="metric-card">
+                    <h3>High Volume %</h3>
+                    <div class="value">{high_volume_pct:.1f}%</div>
+                </div>
+                """, unsafe_allow_html=True)
+        
+        # Tabs for different views
+        tab1, tab2, tab3, tab4, tab5 = st.tabs([
+            "🏆 Top Stocks",
+            "📊 Analysis",
+            "📈 Visualizations",
+            "🔍 Search",
+            "📥 Export"
+        ])
     
     with tab1:
         st.markdown("### 🏆 Top Performing Stocks")
@@ -1958,110 +1978,150 @@ def main():
         st.markdown("### 📊 Market Analysis")
         
         if not filtered_df.empty:
-            # Score distribution
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                fig_dist = Visualizer.create_score_distribution(filtered_df)
-                st.plotly_chart(fig_dist, use_container_width=True, key="score_dist")
-            
-            with col2:
-                # Category breakdown
-                cat_stats = filtered_df.groupby('category').agg({
-                    'master_score': ['mean', 'count']
-                }).round(2)
-                
-                st.markdown("#### Category Performance")
-                st.dataframe(cat_stats, use_container_width=True)
-            
-            # Enhanced Analysis Section
-            if 'lifecycle_stage' in filtered_df.columns:
-                st.markdown("#### 🔄 Lifecycle Stage Analysis")
-                
-                # Create lifecycle summary
-                lifecycle_summary = filtered_df.groupby('lifecycle_stage').agg({
-                    'ticker': 'count',
-                    'master_score': 'mean',
-                    'future_potential_score': 'mean',
-                    'momentum_acceleration_score': 'mean',
-                    'volume_acceleration_score': 'mean'
-                }).round(2)
-                
-                lifecycle_summary.columns = ['Count', 'Avg Score', 'Avg Potential', 'Mom Accel', 'Vol Accel']
-                lifecycle_summary = lifecycle_summary.sort_values('Avg Potential', ascending=False)
-                
-                st.dataframe(lifecycle_summary, use_container_width=True)
-                
-                # Pattern Analysis
-                st.markdown("#### 📊 Pattern Analysis")
-                
-                col1, col2, col3 = st.columns(3)
+            try:
+                # Score distribution
+                col1, col2 = st.columns(2)
                 
                 with col1:
-                    # Volume patterns
-                    vol_pattern_dist = filtered_df['volume_pattern'].value_counts()
-                    st.markdown("**Volume Patterns**")
-                    for pattern, count in vol_pattern_dist.items():
-                        pct = count / len(filtered_df) * 100
-                        st.write(f"{pattern}: {count} ({pct:.1f}%)")
+                    try:
+                        fig_dist = Visualizer.create_score_distribution(filtered_df)
+                        if fig_dist:
+                            st.plotly_chart(fig_dist, use_container_width=True, key="score_dist")
+                    except Exception as e:
+                        logger.error(f"Error creating score distribution: {e}")
+                        st.warning("Unable to create score distribution chart")
                 
                 with col2:
-                    # Position opportunities
-                    pos_opp_dist = filtered_df['position_opportunity'].value_counts()
-                    st.markdown("**Position Opportunities**")
-                    for opp, count in pos_opp_dist.items():
-                        pct = count / len(filtered_df) * 100
-                        st.write(f"{opp}: {count} ({pct:.1f}%)")
+                    # Category breakdown
+                    try:
+                        if 'category' in filtered_df.columns:
+                            cat_stats = filtered_df.groupby('category').agg({
+                                'master_score': ['mean', 'count']
+                            }).round(2)
+                            
+                            st.markdown("#### Category Performance")
+                            st.dataframe(cat_stats, use_container_width=True)
+                    except Exception as e:
+                        logger.error(f"Error creating category stats: {e}")
+                        st.warning("Unable to create category statistics")
                 
-                with col3:
-                    # Momentum acceleration
-                    high_accel = (filtered_df['momentum_acceleration_score'] > 80).sum()
-                    low_accel = (filtered_df['momentum_acceleration_score'] < 20).sum()
-                    st.markdown("**Momentum Status**")
-                    st.write(f"Accelerating: {high_accel}")
-                    st.write(f"Decelerating: {low_accel}")
-                    st.write(f"Neutral: {len(filtered_df) - high_accel - low_accel}")
+                # Enhanced Analysis Section
+                if 'lifecycle_stage' in filtered_df.columns:
+                    st.markdown("#### 🔄 Lifecycle Stage Analysis")
+                    
+                    try:
+                        # Create lifecycle summary
+                        lifecycle_summary = filtered_df.groupby('lifecycle_stage').agg({
+                            'ticker': 'count',
+                            'master_score': 'mean',
+                            'future_potential_score': 'mean',
+                            'momentum_acceleration_score': 'mean',
+                            'volume_acceleration_score': 'mean'
+                        }).round(2)
+                        
+                        lifecycle_summary.columns = ['Count', 'Avg Score', 'Avg Potential', 'Mom Accel', 'Vol Accel']
+                        lifecycle_summary = lifecycle_summary.sort_values('Avg Potential', ascending=False)
+                        
+                        st.dataframe(lifecycle_summary, use_container_width=True)
+                    except Exception as e:
+                        logger.error(f"Error creating lifecycle summary: {e}")
+                    
+                    # Pattern Analysis
+                    st.markdown("#### 📊 Pattern Analysis")
+                    
+                    col1, col2, col3 = st.columns(3)
+                    
+                    with col1:
+                        try:
+                            # Volume patterns
+                            if 'volume_pattern' in filtered_df.columns:
+                                vol_pattern_dist = filtered_df['volume_pattern'].value_counts()
+                                st.markdown("**Volume Patterns**")
+                                for pattern, count in vol_pattern_dist.items():
+                                    pct = count / len(filtered_df) * 100
+                                    st.write(f"{pattern}: {count} ({pct:.1f}%)")
+                        except Exception as e:
+                            logger.error(f"Error displaying volume patterns: {e}")
+                    
+                    with col2:
+                        try:
+                            # Position opportunities
+                            if 'position_opportunity' in filtered_df.columns:
+                                pos_opp_dist = filtered_df['position_opportunity'].value_counts()
+                                st.markdown("**Position Opportunities**")
+                                for opp, count in pos_opp_dist.items():
+                                    pct = count / len(filtered_df) * 100
+                                    st.write(f"{opp}: {count} ({pct:.1f}%)")
+                        except Exception as e:
+                            logger.error(f"Error displaying position opportunities: {e}")
+                    
+                    with col3:
+                        try:
+                            # Momentum acceleration
+                            if 'momentum_acceleration_score' in filtered_df.columns:
+                                high_accel = (filtered_df['momentum_acceleration_score'] > 80).sum()
+                                low_accel = (filtered_df['momentum_acceleration_score'] < 20).sum()
+                                st.markdown("**Momentum Status**")
+                                st.write(f"Accelerating: {high_accel}")
+                                st.write(f"Decelerating: {low_accel}")
+                                st.write(f"Neutral: {len(filtered_df) - high_accel - low_accel}")
+                        except Exception as e:
+                            logger.error(f"Error displaying momentum status: {e}")
+                
+                # Sector performance
+                try:
+                    st.markdown("#### Sector Performance")
+                    fig_sector = Visualizer.create_sector_performance(filtered_df)
+                    if fig_sector:
+                        st.plotly_chart(fig_sector, use_container_width=True, key="sector_perf")
+                except Exception as e:
+                    logger.error(f"Error creating sector performance chart: {e}")
+                    st.warning("Unable to create sector performance chart")
+                
+                # Correlation analysis
+                st.markdown("#### Score Correlations")
+                
+                try:
+                    # Include enhanced scores if available
+                    if 'momentum_acceleration_score' in filtered_df.columns:
+                        score_cols = [
+                            'momentum_score', 'position_score', 'volume_score', 'quality_score',
+                            'momentum_acceleration_score', 'volume_acceleration_score',
+                            'eps_momentum_score', 'future_potential_score'
+                        ]
+                    else:
+                        score_cols = ['momentum_score', 'position_score', 'volume_score', 'quality_score']
+                    
+                    # Filter to only existing columns
+                    score_cols = [col for col in score_cols if col in filtered_df.columns]
+                    
+                    if score_cols:
+                        correlation_matrix = filtered_df[score_cols].corr()
+                        
+                        fig_corr = go.Figure(data=go.Heatmap(
+                            z=correlation_matrix.values,
+                            x=correlation_matrix.columns,
+                            y=correlation_matrix.columns,
+                            colorscale='RdBu',
+                            zmid=0,
+                            text=correlation_matrix.values.round(2),
+                            texttemplate='%{text}',
+                            textfont={"size": 10}
+                        ))
+                        
+                        fig_corr.update_layout(
+                            title="Score Correlation Matrix",
+                            height=500
+                        )
+                        
+                        st.plotly_chart(fig_corr, use_container_width=True, key="corr_matrix")
+                except Exception as e:
+                    logger.error(f"Error creating correlation matrix: {e}")
+                    st.warning("Unable to create correlation matrix")
             
-            # Sector performance
-            st.markdown("#### Sector Performance")
-            fig_sector = Visualizer.create_sector_performance(filtered_df)
-            st.plotly_chart(fig_sector, use_container_width=True, key="sector_perf")
-            
-            # Correlation analysis
-            st.markdown("#### Score Correlations")
-            
-            # Include enhanced scores if available
-            if 'momentum_acceleration_score' in filtered_df.columns:
-                score_cols = [
-                    'momentum_score', 'position_score', 'volume_score', 'quality_score',
-                    'momentum_acceleration_score', 'volume_acceleration_score',
-                    'eps_momentum_score', 'future_potential_score'
-                ]
-            else:
-                score_cols = ['momentum_score', 'position_score', 'volume_score', 'quality_score']
-            
-            # Filter to only existing columns
-            score_cols = [col for col in score_cols if col in filtered_df.columns]
-            
-            correlation_matrix = filtered_df[score_cols].corr()
-            
-            fig_corr = go.Figure(data=go.Heatmap(
-                z=correlation_matrix.values,
-                x=correlation_matrix.columns,
-                y=correlation_matrix.columns,
-                colorscale='RdBu',
-                zmid=0,
-                text=correlation_matrix.values.round(2),
-                texttemplate='%{text}',
-                textfont={"size": 10}
-            ))
-            
-            fig_corr.update_layout(
-                title="Score Correlation Matrix",
-                height=500
-            )
-            
-            st.plotly_chart(fig_corr, use_container_width=True, key="corr_matrix")
+            except Exception as e:
+                logger.error(f"Error in analysis tab: {e}")
+                st.error("An error occurred in the analysis section. Please try refreshing the page.")
         
         else:
             st.warning("No data available for analysis.")
@@ -2070,67 +2130,98 @@ def main():
         st.markdown("### 📈 Visualizations")
         
         if not filtered_df.empty:
-            # Top stocks breakdown
-            fig_top = Visualizer.create_top_stocks_chart(filtered_df, 20)
-            st.plotly_chart(fig_top, use_container_width=True, key="top_stocks_chart")
-            
-            # Scatter plot - Master Score vs Momentum
-            fig_scatter = px.scatter(
-                filtered_df.nlargest(100, 'master_score'),
-                x='momentum_score',
-                y='master_score',
-                size='volume_score',
-                color='quality_score',
-                hover_data=['ticker', 'company_name', 'price'],
-                title='Master Score vs Momentum Score (Top 100)',
-                labels={
-                    'momentum_score': 'Momentum Score',
-                    'master_score': 'Master Score',
-                    'volume_score': 'Volume Score',
-                    'quality_score': 'Quality Score'
-                },
-                color_continuous_scale='Viridis'
-            )
-            
-            fig_scatter.update_layout(height=500)
-            st.plotly_chart(fig_scatter, use_container_width=True, key="scatter_plot")
-            
-            # Lifecycle analysis (if available)
-            if 'lifecycle_stage' in filtered_df.columns:
+            try:
+                # Top stocks breakdown
+                fig_top = Visualizer.create_top_stocks_chart(filtered_df, 20)
+                if fig_top:
+                    st.plotly_chart(fig_top, use_container_width=True, key="top_stocks_chart")
+                
+                # Scatter plot - Master Score vs Momentum
+                if len(filtered_df) > 0:
+                    scatter_df = filtered_df.nlargest(min(100, len(filtered_df)), 'master_score')
+                    if not scatter_df.empty:
+                        fig_scatter = px.scatter(
+                            scatter_df,
+                            x='momentum_score',
+                            y='master_score',
+                            size='volume_score',
+                            color='quality_score',
+                            hover_data=['ticker', 'company_name', 'price'],
+                            title='Master Score vs Momentum Score (Top 100)',
+                            labels={
+                                'momentum_score': 'Momentum Score',
+                                'master_score': 'Master Score',
+                                'volume_score': 'Volume Score',
+                                'quality_score': 'Quality Score'
+                            },
+                            color_continuous_scale='Viridis'
+                        )
+                        
+                        fig_scatter.update_layout(height=500)
+                        st.plotly_chart(fig_scatter, use_container_width=True, key="scatter_plot")
+                
+                # Lifecycle analysis (if available)
+                if 'lifecycle_stage' in filtered_df.columns:
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        # Lifecycle distribution
+                        try:
+                            fig_lifecycle = Visualizer.create_lifecycle_distribution(filtered_df)
+                            if fig_lifecycle:
+                                st.plotly_chart(fig_lifecycle, use_container_width=True, key="lifecycle_dist")
+                        except Exception as e:
+                            logger.error(f"Error creating lifecycle distribution: {e}")
+                            st.warning("Unable to create lifecycle distribution chart")
+                    
+                    with col2:
+                        # Future potential scatter
+                        try:
+                            fig_potential = Visualizer.create_future_potential_scatter(filtered_df)
+                            if fig_potential:
+                                st.plotly_chart(fig_potential, use_container_width=True, key="future_potential")
+                        except Exception as e:
+                            logger.error(f"Error creating future potential scatter: {e}")
+                            st.warning("Unable to create future potential chart")
+                
+                # Tier distribution
                 col1, col2 = st.columns(2)
                 
                 with col1:
-                    # Lifecycle distribution
-                    fig_lifecycle = Visualizer.create_lifecycle_distribution(filtered_df)
-                    st.plotly_chart(fig_lifecycle, use_container_width=True, key="lifecycle_dist")
+                    try:
+                        if 'eps_tier' in filtered_df.columns:
+                            eps_dist = filtered_df['eps_tier'].value_counts()
+                            if not eps_dist.empty:
+                                fig_eps = px.pie(
+                                    values=eps_dist.values,
+                                    names=eps_dist.index,
+                                    title='EPS Tier Distribution',
+                                    hole=0.4
+                                )
+                                st.plotly_chart(fig_eps, use_container_width=True, key="eps_dist")
+                    except Exception as e:
+                        logger.error(f"Error creating EPS distribution: {e}")
+                        st.warning("Unable to create EPS tier chart")
                 
                 with col2:
-                    # Future potential scatter
-                    fig_potential = Visualizer.create_future_potential_scatter(filtered_df)
-                    st.plotly_chart(fig_potential, use_container_width=True, key="future_potential")
+                    try:
+                        if 'pe_tier' in filtered_df.columns:
+                            pe_dist = filtered_df['pe_tier'].value_counts()
+                            if not pe_dist.empty:
+                                fig_pe = px.pie(
+                                    values=pe_dist.values,
+                                    names=pe_dist.index,
+                                    title='PE Tier Distribution',
+                                    hole=0.4
+                                )
+                                st.plotly_chart(fig_pe, use_container_width=True, key="pe_dist")
+                    except Exception as e:
+                        logger.error(f"Error creating PE distribution: {e}")
+                        st.warning("Unable to create PE tier chart")
             
-            # Tier distribution
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                eps_dist = filtered_df['eps_tier'].value_counts()
-                fig_eps = px.pie(
-                    values=eps_dist.values,
-                    names=eps_dist.index,
-                    title='EPS Tier Distribution',
-                    hole=0.4
-                )
-                st.plotly_chart(fig_eps, use_container_width=True, key="eps_dist")
-            
-            with col2:
-                pe_dist = filtered_df['pe_tier'].value_counts()
-                fig_pe = px.pie(
-                    values=pe_dist.values,
-                    names=pe_dist.index,
-                    title='PE Tier Distribution',
-                    hole=0.4
-                )
-                st.plotly_chart(fig_pe, use_container_width=True, key="pe_dist")
+            except Exception as e:
+                logger.error(f"Error in visualizations tab: {e}")
+                st.error("An error occurred while creating visualizations. Please try refreshing the page.")
         
         else:
             st.warning("No data available for visualization.")
@@ -2246,14 +2337,19 @@ def main():
         
         st.table(summary_stats)
     
-    # Footer
-    st.markdown("---")
-    st.markdown("""
-    <div style="text-align: center; color: #7F8C8D; padding: 2rem;">
-        <p>Wave Detection 6.0 - Professional Stock Analytics Platform</p>
-        <p>Data refreshes every 5 minutes | Last update: {}</p>
-    </div>
-    """.format(datetime.now().strftime("%Y-%m-%d %H:%M:%S")), unsafe_allow_html=True)
+        # Footer
+        st.markdown("---")
+        st.markdown("""
+        <div style="text-align: center; color: #7F8C8D; padding: 2rem;">
+            <p>Wave Detection 6.0 - Professional Stock Analytics Platform</p>
+            <p>Data refreshes every 5 minutes | Last update: {}</p>
+        </div>
+        """.format(datetime.now().strftime("%Y-%m-%d %H:%M:%S")), unsafe_allow_html=True)
+        
+    except Exception as e:
+        logger.error(f"Application error: {e}")
+        st.error(f"An error occurred: {str(e)}")
+        st.error("Please refresh the page or contact support if the issue persists.")
 
 # ============================================
 # ENTRY POINT
@@ -2263,6 +2359,6 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as e:
-        logger.error(f"Application error: {e}")
-        st.error(f"An error occurred: {str(e)}")
+        logger.error(f"Critical application error: {e}")
+        st.error(f"A critical error occurred: {str(e)}")
         st.error("Please refresh the page or contact support if the issue persists.")
