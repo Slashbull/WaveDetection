@@ -511,7 +511,8 @@ class ScoringEngine:
                 'long_term_momentum': 0,
                 'momentum_divergence': 0
             }
-            @staticmethod
+
+        @staticmethod
     def calculate_position_score(row: pd.Series) -> float:
         """Calculate position score based on price levels"""
         try:
@@ -1325,52 +1326,63 @@ def generate_excel_report(df: pd.DataFrame) -> BytesIO:
             
             # Sheet 2: Top 100 Enhanced (if available)
             if 'enhanced_master_score' in df.columns:
-                top_100_enhanced = df.nlargest(100, 'enhanced_master_score')[[
+                available_cols = [col for col in [
                     'enhanced_rank', 'ticker', 'company_name', 'lifecycle_stage',
                     'enhanced_master_score', 'future_potential_score',
                     'momentum_acceleration_score', 'volume_acceleration_score',
                     'volume_pattern', 'position_opportunity',
                     'eps_momentum_score', 'trend_quality_score',
                     'price', 'ret_1d', 'ret_7d', 'rvol'
-                ]].copy()
+                ] if col in df.columns]
                 
+                top_100_enhanced = df.nlargest(100, 'enhanced_master_score')[available_cols].copy()
                 top_100_enhanced.to_excel(writer, sheet_name='Top 100 Enhanced', index=False)
             
             # Sheet 3: Lifecycle Analysis (if available)
             if 'lifecycle_stage' in df.columns:
-                lifecycle_summary = df.groupby('lifecycle_stage').agg({
+                agg_dict = {
                     'ticker': 'count',
-                    'master_score': 'mean',
-                    'enhanced_master_score': 'mean',
-                    'future_potential_score': 'mean',
-                    'momentum_acceleration_score': 'mean',
-                    'volume_acceleration_score': 'mean',
-                    'ret_1d': 'mean',
-                    'ret_7d': 'mean',
-                    'ret_30d': 'mean'
-                }).round(2)
+                    'master_score': 'mean'
+                }
                 
+                # Add optional columns if they exist
+                optional_cols = ['enhanced_master_score', 'future_potential_score', 
+                               'momentum_acceleration_score', 'volume_acceleration_score']
+                for col in optional_cols:
+                    if col in df.columns:
+                        agg_dict[col] = 'mean'
+                
+                # Add return columns if they exist
+                return_cols = ['ret_1d', 'ret_7d', 'ret_30d']
+                for col in return_cols:
+                    if col in df.columns:
+                        agg_dict[col] = 'mean'
+                
+                lifecycle_summary = df.groupby('lifecycle_stage').agg(agg_dict).round(2)
                 lifecycle_summary.to_excel(writer, sheet_name='Lifecycle Analysis')
             
             # Sheet 4: All Stocks Ranked
-            all_ranked = df.sort_values('rank')[[
-                'rank', 'ticker', 'company_name', 'master_score',
-                'category', 'sector', 'price'
-            ]].copy()
+            basic_cols = ['rank', 'ticker', 'company_name', 'master_score', 
+                         'category', 'sector', 'price']
+            all_ranked = df.sort_values('rank')[basic_cols].copy()
             
             if 'lifecycle_stage' in df.columns:
                 all_ranked['lifecycle_stage'] = df.sort_values('rank')['lifecycle_stage']
+            
+            if 'future_potential_score' in df.columns:
                 all_ranked['future_potential_score'] = df.sort_values('rank')['future_potential_score']
             
             all_ranked.to_excel(writer, sheet_name='All Stocks Ranked', index=False)
             
             # Sheet 5: Sector Analysis
-            sector_analysis = df.groupby('sector').agg({
+            sector_agg = {
                 'master_score': ['mean', 'std', 'count'],
                 'momentum_score': 'mean',
                 'volume_score': 'mean',
                 'quality_score': 'mean'
-            }).round(2)
+            }
+            
+            sector_analysis = df.groupby('sector').agg(sector_agg).round(2)
             
             if 'future_potential_score' in df.columns:
                 sector_future = df.groupby('sector')['future_potential_score'].mean().round(2)
@@ -1379,12 +1391,14 @@ def generate_excel_report(df: pd.DataFrame) -> BytesIO:
             sector_analysis.to_excel(writer, sheet_name='Sector Analysis')
             
             # Sheet 6: Category Analysis
-            category_analysis = df.groupby('category').agg({
+            category_agg = {
                 'master_score': ['mean', 'std', 'count'],
                 'momentum_score': 'mean',
                 'volume_score': 'mean',
                 'quality_score': 'mean'
-            }).round(2)
+            }
+            
+            category_analysis = df.groupby('category').agg(category_agg).round(2)
             
             if 'future_potential_score' in df.columns:
                 category_future = df.groupby('category')['future_potential_score'].mean().round(2)
@@ -1961,9 +1975,13 @@ def main():
                 if scoring_mode != "Classic" and all(col in top_stocks.columns for col in ['rank', 'enhanced_rank']):
                     st.markdown("### 📊 Classic vs Enhanced Comparison")
                     
-                    comparison_df = top_stocks[['ticker', 'company_name', 'master_score', 
-                                              'enhanced_master_score', 'future_weighted_score',
-                                              'rank', 'enhanced_rank', 'future_rank']].head(20)
+                    available_comparison_cols = [col for col in [
+                        'ticker', 'company_name', 'master_score', 
+                        'enhanced_master_score', 'future_weighted_score',
+                        'rank', 'enhanced_rank', 'future_rank'
+                    ] if col in top_stocks.columns]
+                    
+                    comparison_df = top_stocks[available_comparison_cols].head(20)
                     
                     comparison_df['Classic Rank'] = comparison_df['rank']
                     comparison_df['Enhanced Rank'] = comparison_df['enhanced_rank']
@@ -2015,16 +2033,31 @@ def main():
                         
                         try:
                             # Create lifecycle summary
-                            lifecycle_summary = filtered_df.groupby('lifecycle_stage').agg({
+                            lifecycle_agg = {
                                 'ticker': 'count',
-                                'master_score': 'mean',
-                                'future_potential_score': 'mean',
-                                'momentum_acceleration_score': 'mean',
-                                'volume_acceleration_score': 'mean'
-                            }).round(2)
+                                'master_score': 'mean'
+                            }
                             
-                            lifecycle_summary.columns = ['Count', 'Avg Score', 'Avg Potential', 'Mom Accel', 'Vol Accel']
-                            lifecycle_summary = lifecycle_summary.sort_values('Avg Potential', ascending=False)
+                            # Add optional columns if they exist
+                            optional_cols = ['future_potential_score', 'momentum_acceleration_score', 
+                                           'volume_acceleration_score']
+                            for col in optional_cols:
+                                if col in filtered_df.columns:
+                                    lifecycle_agg[col] = 'mean'
+                            
+                            lifecycle_summary = filtered_df.groupby('lifecycle_stage').agg(lifecycle_agg).round(2)
+                            
+                            # Rename columns for display
+                            display_names = {
+                                'ticker': 'Count',
+                                'master_score': 'Avg Score',
+                                'future_potential_score': 'Avg Potential',
+                                'momentum_acceleration_score': 'Mom Accel',
+                                'volume_acceleration_score': 'Vol Accel'
+                            }
+                            
+                            lifecycle_summary.columns = [display_names.get(col, col) for col in lifecycle_summary.columns]
+                            lifecycle_summary = lifecycle_summary.sort_values('Avg Score', ascending=False)
                             
                             st.dataframe(lifecycle_summary, use_container_width=True)
                         except Exception as e:
