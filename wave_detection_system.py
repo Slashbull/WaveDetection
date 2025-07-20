@@ -52,10 +52,12 @@ class Config:
     # Cache settings
     CACHE_TTL: int = 300  # 5 minutes
     
-    # Ranking weights
-    POSITION_WEIGHT: float = 0.45
-    VOLUME_WEIGHT: float = 0.35
-    MOMENTUM_WEIGHT: float = 0.20
+    # ENHANCED Ranking weights - Master Score 2.0
+    POSITION_WEIGHT: float = 0.35  # Reduced from 0.45
+    VOLUME_WEIGHT: float = 0.30    # Reduced from 0.35  
+    MOMENTUM_WEIGHT: float = 0.15  # Reduced from 0.20
+    ACCELERATION_WEIGHT: float = 0.10  # NEW!
+    BREAKOUT_WEIGHT: float = 0.10      # NEW!
     
     # Display settings
     DEFAULT_TOP_N: int = 50
@@ -294,109 +296,258 @@ class RankingEngine:
             return series.rank(ascending=ascending, method='min', na_option='bottom')
     
     @staticmethod
+    def calculate_advanced_volume_score(df: pd.DataFrame) -> pd.Series:
+        """Calculate advanced volume score using ALL 7 volume ratios"""
+        # Fill NaN values with 1.0 (no change) for all volume ratios
+        volume_cols = ['vol_ratio_1d_90d', 'vol_ratio_7d_90d', 'vol_ratio_30d_90d',
+                      'vol_ratio_1d_180d', 'vol_ratio_7d_180d', 'vol_ratio_30d_180d',
+                      'vol_ratio_90d_180d']
+        
+        for col in volume_cols:
+            if col in df.columns:
+                df[col] = df[col].fillna(1.0)
+        
+        # Rank all volume ratios
+        df['rank_vol_1d_90d'] = RankingEngine.safe_rank(df['vol_ratio_1d_90d'], pct=True) * 100
+        df['rank_vol_7d_90d'] = RankingEngine.safe_rank(df['vol_ratio_7d_90d'], pct=True) * 100
+        df['rank_vol_30d_90d'] = RankingEngine.safe_rank(df['vol_ratio_30d_90d'], pct=True) * 100
+        df['rank_vol_30d_180d'] = RankingEngine.safe_rank(df['vol_ratio_30d_180d'], pct=True) * 100
+        df['rank_vol_90d_180d'] = RankingEngine.safe_rank(df['vol_ratio_90d_180d'], pct=True) * 100
+        
+        # Short-term explosion (20%)
+        short_term = df['rank_vol_1d_90d'] * 0.2
+        
+        # Medium-term accumulation (40%)
+        medium_term = (
+            df['rank_vol_7d_90d'] * 0.2 +
+            df['rank_vol_30d_90d'] * 0.2
+        )
+        
+        # Long-term institutional (40%) - USING THE MISSING RATIOS!
+        long_term = (
+            df['rank_vol_30d_180d'] * 0.15 +
+            df['rank_vol_90d_180d'] * 0.25  # Most important for institutional!
+        )
+        
+        return short_term + medium_term + long_term
+    
+    @staticmethod
+    def calculate_momentum_acceleration(df: pd.DataFrame) -> pd.Series:
+        """Calculate if momentum is accelerating or decelerating"""
+        # Ensure we have the data
+        df['ret_1d'] = df['ret_1d'].fillna(0.0)
+        df['ret_7d'] = df['ret_7d'].fillna(0.0)
+        df['ret_30d'] = df['ret_30d'].fillna(0.0)
+        
+        # Calculate daily averages
+        daily_avg_7d = df['ret_7d'] / 7
+        daily_avg_30d = df['ret_30d'] / 30
+        
+        # Acceleration metrics
+        daily_vs_weekly = df['ret_1d'] - daily_avg_7d
+        weekly_vs_monthly = daily_avg_7d - daily_avg_30d
+        
+        # Create acceleration score
+        acceleration_score = pd.Series(index=df.index, dtype=float)
+        
+        # Perfect acceleration: today > week > month
+        perfect_accel = (df['ret_1d'] > daily_avg_7d) & (daily_avg_7d > daily_avg_30d)
+        acceleration_score[perfect_accel] = 100
+        
+        # Good acceleration: today > week
+        good_accel = (~perfect_accel) & (df['ret_1d'] > daily_avg_7d)
+        acceleration_score[good_accel] = 70
+        
+        # Neutral
+        neutral = (~perfect_accel) & (~good_accel) & (df['ret_1d'] > 0)
+        acceleration_score[neutral] = 50
+        
+        # Deceleration
+        acceleration_score[acceleration_score.isna()] = 30
+        
+        return acceleration_score
+    
+    @staticmethod
+    def calculate_breakout_probability(df: pd.DataFrame) -> pd.Series:
+        """Calculate probability of breakout based on multiple factors"""
+        # Distance from high (closer = higher probability)
+        distance_score = (100 + df['from_high_pct']) # -20% becomes 80
+        distance_score = distance_score.clip(0, 100)
+        
+        # Volume pressure (average of 7d and 30d ratios)
+        volume_pressure = (df['vol_ratio_7d_90d'] + df['vol_ratio_30d_90d']) / 2
+        volume_pressure = (volume_pressure - 1) * 100  # Convert to percentage above normal
+        volume_pressure = volume_pressure.clip(0, 100)
+        
+        # Trend support (how many SMAs is price above)
+        trend_support = pd.Series(0, index=df.index)
+        if 'sma_20d' in df.columns:
+            trend_support += (df['price'] > df['sma_20d']).astype(int) * 33.33
+        if 'sma_50d' in df.columns:
+            trend_support += (df['price'] > df['sma_50d']).astype(int) * 33.33
+        if 'sma_200d' in df.columns:
+            trend_support += (df['price'] > df['sma_200d']).astype(int) * 33.34
+        
+        # Combined breakout probability
+        breakout_prob = (
+            distance_score * 0.4 +
+            volume_pressure * 0.4 +
+            trend_support * 0.2
+        )
+        
+        return breakout_prob.clip(0, 100)
+    
+    @staticmethod
+    def calculate_trend_quality(df: pd.DataFrame) -> pd.Series:
+        """Calculate trend quality based on SMA alignment"""
+        trend_score = pd.Series(0, index=df.index)
+        
+        # Check if we have SMA columns
+        if all(col in df.columns for col in ['sma_20d', 'sma_50d', 'sma_200d']):
+            # Price above each SMA
+            trend_score += (df['price'] > df['sma_20d']).astype(int) * 25
+            trend_score += (df['price'] > df['sma_50d']).astype(int) * 25
+            trend_score += (df['price'] > df['sma_200d']).astype(int) * 25
+            
+            # Perfect alignment bonus
+            perfect_alignment = (
+                (df['price'] > df['sma_20d']) & 
+                (df['sma_20d'] > df['sma_50d']) & 
+                (df['sma_50d'] > df['sma_200d'])
+            )
+            trend_score[perfect_alignment] = 100
+        else:
+            # If no SMA data, use a neutral score
+            trend_score = pd.Series(50, index=df.index)
+        
+        return trend_score
+    
+    @staticmethod
     @timer
     def calculate_rankings(df: pd.DataFrame) -> pd.DataFrame:
-        """Calculate all rankings with proper error handling"""
+        """Calculate rankings using ENHANCED scoring system"""
         if df.empty:
             return df
         
         # Create a copy to avoid modifying original
         df = df.copy()
         
-        # Calculate percentile ranks for all key metrics with NaN handling
+        # Calculate basic percentile ranks for position metrics
         df['rank_from_low'] = RankingEngine.safe_rank(df['from_low_pct'], pct=True) * 100
         df['rank_from_high'] = RankingEngine.safe_rank(100 + df['from_high_pct'], pct=True) * 100
         
-        # Volume ranks with default value for NaN
-        df['vol_ratio_1d_90d'] = df['vol_ratio_1d_90d'].fillna(1.0)  # Default to 1x (no change)
-        df['vol_ratio_7d_90d'] = df['vol_ratio_7d_90d'].fillna(1.0)
-        df['vol_ratio_30d_90d'] = df['vol_ratio_30d_90d'].fillna(1.0)
-        
-        df['rank_vol_1d'] = RankingEngine.safe_rank(df['vol_ratio_1d_90d'], pct=True) * 100
-        df['rank_vol_7d'] = RankingEngine.safe_rank(df['vol_ratio_7d_90d'], pct=True) * 100
-        df['rank_vol_30d'] = RankingEngine.safe_rank(df['vol_ratio_30d_90d'], pct=True) * 100
-        
-        # Momentum ranks with default value for NaN
+        # Fill NaN values for returns
         df['ret_1d'] = df['ret_1d'].fillna(0.0)
         df['ret_7d'] = df['ret_7d'].fillna(0.0)
         df['ret_30d'] = df['ret_30d'].fillna(0.0)
         
-        df['rank_ret_1d'] = RankingEngine.safe_rank(df['ret_1d'], pct=True) * 100
-        df['rank_ret_7d'] = RankingEngine.safe_rank(df['ret_7d'], pct=True) * 100
+        # Basic momentum ranks
         df['rank_ret_30d'] = RankingEngine.safe_rank(df['ret_30d'], pct=True) * 100
         
-        # Component scores (handle NaN by using fillna)
+        # ENHANCED SCORING COMPONENTS
+        
+        # 1. Position Score (35%) - slightly reduced from 45%
         df['position_score'] = (
             df['rank_from_low'].fillna(50) * 0.6 +
             df['rank_from_high'].fillna(50) * 0.4
         )
         
-        df['volume_score'] = (
-            df['rank_vol_30d'].fillna(50) * 0.5 +
-            df['rank_vol_7d'].fillna(50) * 0.3 +
-            df['rank_vol_1d'].fillna(50) * 0.2
-        )
+        # 2. Advanced Volume Score (30%) - using ALL ratios
+        df['volume_score'] = RankingEngine.calculate_advanced_volume_score(df)
         
+        # 3. Momentum Score (15%) - reduced from 20%
         df['momentum_score'] = df['rank_ret_30d'].fillna(50)
         
-        # Master score
+        # 4. Momentum Acceleration (10%) - NEW!
+        df['acceleration_score'] = RankingEngine.calculate_momentum_acceleration(df)
+        
+        # 5. Breakout Probability (10%) - NEW!
+        df['breakout_score'] = RankingEngine.calculate_breakout_probability(df)
+        
+        # MASTER SCORE 2.0 - Enhanced formula
         df['master_score'] = (
-            df['position_score'] * CONFIG.POSITION_WEIGHT +
-            df['volume_score'] * CONFIG.VOLUME_WEIGHT +
-            df['momentum_score'] * CONFIG.MOMENTUM_WEIGHT
+            df['position_score'] * 0.35 +
+            df['volume_score'] * 0.30 +
+            df['momentum_score'] * 0.15 +
+            df['acceleration_score'] * 0.10 +
+            df['breakout_score'] * 0.10
         )
         
-        # Final ranking - handle NaN values properly
+        # Add trend quality as a bonus (not part of main score)
+        df['trend_quality'] = RankingEngine.calculate_trend_quality(df)
+        
+        # Final ranking
         df['rank'] = RankingEngine.safe_rank(df['master_score'], ascending=False)
-        df['rank'] = df['rank'].fillna(9999).astype(int)  # Put NaN ranks at the end
+        df['rank'] = df['rank'].fillna(9999).astype(int)
         
         df['percentile'] = RankingEngine.safe_rank(df['master_score'], pct=True) * 100
         df['percentile'] = df['percentile'].fillna(0)
         
-        # Pattern detection
-        df = RankingEngine.detect_patterns(df)
+        # Enhanced pattern detection
+        df = RankingEngine.detect_smart_patterns(df)
         
         return df
     
     @staticmethod
-    def detect_patterns(df: pd.DataFrame) -> pd.DataFrame:
-        """Detect trading patterns with NaN handling"""
+    def detect_smart_patterns(df: pd.DataFrame) -> pd.DataFrame:
+        """Detect advanced trading patterns using all available data"""
         patterns = []
         
         for idx, row in df.iterrows():
             stock_patterns = []
             
-            # Handle NaN values in pattern detection
-            rank_from_high = row.get('rank_from_high', 0)
-            rank_vol_7d = row.get('rank_vol_7d', 0)
-            rank_vol_30d = row.get('rank_vol_30d', 0)
-            rank_from_low = row.get('rank_from_low', 50)
+            # Get values with safe defaults
+            from_high_pct = row.get('from_high_pct', -100)
+            from_low_pct = row.get('from_low_pct', 0)
+            vol_ratio_1d_90d = row.get('vol_ratio_1d_90d', 1.0)
+            vol_ratio_7d_90d = row.get('vol_ratio_7d_90d', 1.0)
+            vol_ratio_30d_90d = row.get('vol_ratio_30d_90d', 1.0)
+            vol_ratio_90d_180d = row.get('vol_ratio_90d_180d', 1.0)
+            ret_1d = row.get('ret_1d', 0)
+            ret_7d = row.get('ret_7d', 0)
+            ret_30d = row.get('ret_30d', 0)
+            price = row.get('price', 0)
+            sma_50d = row.get('sma_50d', price)
             percentile = row.get('percentile', 0)
-            rank_vol_1d = row.get('rank_vol_1d', 0)
-            rank_ret_7d = row.get('rank_ret_7d', 0)
-            rank_ret_30d = row.get('rank_ret_30d', 0)
+            acceleration_score = row.get('acceleration_score', 50)
+            breakout_score = row.get('breakout_score', 50)
             
-            # Breakout pattern
-            if rank_from_high > 90 and rank_vol_7d > 70:
-                stock_patterns.append("🚀 BREAKOUT")
+            # INSTITUTIONAL ACCUMULATION
+            if (vol_ratio_90d_180d > 1.1 and 
+                from_low_pct < 60 and
+                ret_30d > -5):
+                stock_patterns.append("🏦 INSTITUTIONAL")
             
-            # Accumulation pattern
-            if rank_vol_30d > 80 and rank_from_low < 50:
-                stock_patterns.append("🏦 ACCUMULATION")
+            # MOMENTUM EXPLOSION
+            if acceleration_score > 90:
+                stock_patterns.append("🚀 EXPLOSION")
             
-            # Leader pattern
+            # VOLUME CLIMAX
+            if (vol_ratio_1d_90d > 3 and
+                abs(ret_1d) > 5):
+                stock_patterns.append("⚡ CLIMAX")
+            
+            # BREAKOUT SETUP
+            if breakout_score > 80:
+                stock_patterns.append("🎯 BREAKOUT")
+            
+            # ACCUMULATION PATTERN
+            if (vol_ratio_30d_90d > 1.2 and
+                vol_ratio_90d_180d > 1.05 and
+                from_low_pct < 50):
+                stock_patterns.append("📈 ACCUMULATING")
+            
+            # LEADER
             if percentile > 95:
                 stock_patterns.append("👑 LEADER")
             
-            # Volume surge
-            if rank_vol_1d > 95:
-                stock_patterns.append("🔥 VOLUME")
+            # STEALTH STRENGTH
+            if (vol_ratio_90d_180d > 1.15 and
+                ret_30d > 10 and
+                vol_ratio_1d_90d < 1.5):
+                stock_patterns.append("💎 STEALTH")
             
-            # Momentum surge
-            if rank_ret_7d > 90 and rank_ret_30d > 80:
-                stock_patterns.append("⚡ MOMENTUM")
-            
-            patterns.append(", ".join(stock_patterns) if stock_patterns else "")
+            patterns.append(" | ".join(stock_patterns) if stock_patterns else "")
         
         df['patterns'] = patterns
         return df
@@ -495,7 +646,7 @@ class Visualizer:
     
     @staticmethod
     def create_top_stocks_chart(df: pd.DataFrame, n: int = 20) -> go.Figure:
-        """Top stocks breakdown"""
+        """Top stocks breakdown with enhanced scores"""
         # Get top stocks with valid scores
         valid_df = df[df['master_score'].notna()]
         top_df = valid_df.nlargest(min(n, len(valid_df)), 'master_score')
@@ -505,36 +656,68 @@ class Visualizer:
         
         fig = go.Figure()
         
+        # Calculate weighted contributions for display
         fig.add_trace(go.Bar(
             name='Position',
             y=top_df['ticker'],
-            x=top_df['position_score'] * CONFIG.POSITION_WEIGHT,
+            x=top_df['position_score'] * 0.35,  # 35% weight
             orientation='h',
-            marker_color='#3498db'
+            marker_color='#3498db',
+            text=[f"{x:.1f}" for x in top_df['position_score']],
+            textposition='inside'
         ))
         
         fig.add_trace(go.Bar(
             name='Volume',
             y=top_df['ticker'],
-            x=top_df['volume_score'] * CONFIG.VOLUME_WEIGHT,
+            x=top_df['volume_score'] * 0.30,  # 30% weight
             orientation='h',
-            marker_color='#e74c3c'
+            marker_color='#e74c3c',
+            text=[f"{x:.1f}" for x in top_df['volume_score']],
+            textposition='inside'
         ))
         
         fig.add_trace(go.Bar(
             name='Momentum',
             y=top_df['ticker'],
-            x=top_df['momentum_score'] * CONFIG.MOMENTUM_WEIGHT,
+            x=top_df['momentum_score'] * 0.15,  # 15% weight
             orientation='h',
-            marker_color='#2ecc71'
+            marker_color='#2ecc71',
+            text=[f"{x:.1f}" for x in top_df['momentum_score']],
+            textposition='inside'
         ))
         
+        # Add new components if they exist
+        if 'acceleration_score' in top_df.columns:
+            fig.add_trace(go.Bar(
+                name='Acceleration',
+                y=top_df['ticker'],
+                x=top_df['acceleration_score'] * 0.10,  # 10% weight
+                orientation='h',
+                marker_color='#f39c12',
+                text=[f"{x:.1f}" for x in top_df['acceleration_score']],
+                textposition='inside'
+            ))
+        
+        if 'breakout_score' in top_df.columns:
+            fig.add_trace(go.Bar(
+                name='Breakout',
+                y=top_df['ticker'],
+                x=top_df['breakout_score'] * 0.10,  # 10% weight
+                orientation='h',
+                marker_color='#9b59b6',
+                text=[f"{x:.1f}" for x in top_df['breakout_score']],
+                textposition='inside'
+            ))
+        
         fig.update_layout(
-            title=f"Top {len(top_df)} Stocks - Score Breakdown",
-            xaxis_title="Weighted Score",
+            title=f"Top {len(top_df)} Stocks - Enhanced Score Breakdown",
+            xaxis_title="Weighted Score Contribution",
             barmode='stack',
             template='plotly_white',
-            height=max(400, len(top_df) * 25)
+            height=max(400, len(top_df) * 30),
+            showlegend=True,
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
         )
         
         return fig
@@ -601,9 +784,10 @@ class ExportEngine:
                 export_cols = [
                     'rank', 'ticker', 'company_name', 'master_score',
                     'position_score', 'volume_score', 'momentum_score',
+                    'acceleration_score', 'breakout_score', 'trend_quality',
                     'price', 'from_low_pct', 'from_high_pct',
-                    'ret_30d', 'vol_ratio_30d_90d', 'patterns',
-                    'category', 'sector', 'eps_tier', 'pe_tier', 'price_tier'
+                    'ret_30d', 'vol_ratio_30d_90d', 'vol_ratio_90d_180d',
+                    'patterns', 'category', 'sector', 'eps_tier', 'pe_tier', 'price_tier'
                 ]
                 export_cols = [col for col in export_cols if col in top_100.columns]
                 top_100[export_cols].to_excel(writer, sheet_name='Top 100', index=False)
@@ -700,7 +884,14 @@ def main():
         
         with col2:
             if st.button("ℹ️ Help"):
-                st.info("System ranks stocks using position (45%), volume (35%), and momentum (20%) scores.")
+                st.info("""
+                **Enhanced Master Score 2.0:**
+                - Position (35%): Distance from 52w low/high
+                - Volume (30%): ALL 7 volume ratios analyzed
+                - Momentum (15%): 30-day returns
+                - Acceleration (10%): Momentum building/fading
+                - Breakout (10%): Probability of breakout
+                """)
         
         st.markdown("---")
         st.markdown("### 🔍 Filters")
@@ -816,12 +1007,12 @@ def main():
         st.metric("Avg Score", f"{avg_score:.1f}")
     
     with col3:
-        top_percentile = (filtered_df['master_score'] > 80).sum() if len(filtered_df) > 0 else 0
-        st.metric("Score > 80", f"{top_percentile}")
+        accelerating = ((filtered_df['acceleration_score'] > 80).sum() if 'acceleration_score' in filtered_df.columns and len(filtered_df) > 0 else 0)
+        st.metric("Accelerating", f"{accelerating}")
     
     with col4:
-        near_highs = (filtered_df['from_high_pct'] > -20).sum() if len(filtered_df) > 0 else 0
-        st.metric("Near Highs", f"{near_highs}")
+        ready_breakout = ((filtered_df['breakout_score'] > 80).sum() if 'breakout_score' in filtered_df.columns and len(filtered_df) > 0 else 0)
+        st.metric("Breakout Ready", f"{ready_breakout}")
     
     with col5:
         high_volume = (filtered_df['vol_ratio_30d_90d'] > 1.5).sum() if len(filtered_df) > 0 else 0
@@ -852,6 +1043,7 @@ def main():
             display_cols = [
                 'rank', 'ticker', 'company_name', 'master_score',
                 'position_score', 'volume_score', 'momentum_score',
+                'acceleration_score', 'breakout_score', 'trend_quality',
                 'patterns', 'price', 'from_low_pct', 'ret_30d',
                 'category', 'sector', 'eps_tier', 'pe_tier'
             ]
@@ -864,6 +1056,9 @@ def main():
                 'position_score': '{:.1f}',
                 'volume_score': '{:.1f}',
                 'momentum_score': '{:.1f}',
+                'acceleration_score': '{:.1f}',
+                'breakout_score': '{:.1f}',
+                'trend_quality': '{:.1f}',
                 'price': '₹{:,.2f}',
                 'from_low_pct': '{:.1f}%',
                 'ret_30d': '{:.1f}%'
