@@ -1,4 +1,4 @@
-"""
+return volume_score.clip(0, 100)"""
 Wave Detection Ultimate 3.0 - Professional Edition
 =================================================
 Complete rewrite with all features properly implemented.
@@ -35,12 +35,18 @@ import warnings
 # Suppress warnings
 warnings.filterwarnings('ignore')
 
+# Set random seed for reproducibility
+np.random.seed(42)
+
 # ============================================
 # LOGGING CONFIGURATION
 # ============================================
 
+# Set logging level based on environment
+log_level = logging.INFO  # Change to DEBUG for more details
+
 logging.basicConfig(
-    level=logging.INFO,
+    level=log_level,
     format='%(asctime)s | %(name)s | %(levelname)s | %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
 )
@@ -158,8 +164,11 @@ class DataValidator:
         
         missing_cols = [col for col in required_cols if col not in df.columns]
         if missing_cols:
-            logger.error(f"{context}: Missing columns: {missing_cols}")
-            return False
+            logger.warning(f"{context}: Missing required columns: {missing_cols}")
+            # Don't fail, just warn - we'll handle missing columns later
+        
+        # Log available columns
+        logger.info(f"{context}: Found {len(df.columns)} columns, {len(df)} rows")
         
         return True
     
@@ -241,7 +250,7 @@ class DataProcessor:
     
     CATEGORICAL_COLUMNS = ['ticker', 'company_name', 'category', 'sector']
     
-    REQUIRED_COLUMNS = ['ticker', 'price', 'from_low_pct', 'from_high_pct']
+    REQUIRED_COLUMNS = ['ticker', 'price']  # Minimal required columns
     
     @staticmethod
     def clean_numeric_value(value: Any) -> Optional[float]:
@@ -274,6 +283,9 @@ class DataProcessor:
         
         # Create copy to avoid modifying original
         df = df.copy()
+        
+        # Log available columns
+        logger.info(f"Available columns: {', '.join(sorted(df.columns))}")
         
         # Process numeric columns
         for col in DataProcessor.NUMERIC_COLUMNS:
@@ -374,38 +386,82 @@ class RankingEngine:
         if series is None or series.empty:
             return pd.Series(dtype=float)
         
+        # Create a copy to avoid modifying original
+        series = series.copy()
+        
         # Replace inf values with NaN
         series = series.replace([np.inf, -np.inf], np.nan)
         
+        # Count valid values
+        valid_count = series.notna().sum()
+        if valid_count == 0:
+            return pd.Series(50, index=series.index)  # All NaN, return middle value
+        
         # For percentage ranks, ensure 0-100 scale
         if pct:
-            ranks = series.rank(pct=True, ascending=ascending, na_option='bottom') * 100
+            ranks = series.rank(pct=True, ascending=ascending, na_option='bottom')
+            ranks = ranks * 100
         else:
             ranks = series.rank(ascending=ascending, method='min', na_option='bottom')
         
-        return ranks.fillna(0 if ascending else 100)
+        # For NaN values, assign worst rank
+        if pct:
+            ranks = ranks.fillna(0 if ascending else 100)
+        else:
+            ranks = ranks.fillna(valid_count + 1)
+        
+        return ranks
     
     @staticmethod
     def calculate_position_score(df: pd.DataFrame) -> pd.Series:
         """Calculate position score from 52-week range"""
-        # Rank distance from low (higher is better)
-        rank_from_low = RankingEngine.safe_rank(df['from_low_pct'], pct=True, ascending=True)
+        # Initialize with neutral score
+        position_score = pd.Series(50, index=df.index, dtype=float)
         
-        # Rank distance from high (closer to high is better, so we add 100 to from_high_pct)
-        # from_high_pct is negative, so closer to 0 is better
-        rank_from_high = RankingEngine.safe_rank(100 + df['from_high_pct'], pct=True, ascending=True)
+        # Check if we have the required columns
+        has_from_low = 'from_low_pct' in df.columns and df['from_low_pct'].notna().any()
+        has_from_high = 'from_high_pct' in df.columns and df['from_high_pct'].notna().any()
         
-        # Combined position score (60% from low, 40% from high)
-        position_score = (rank_from_low * 0.6 + rank_from_high * 0.4)
+        if not has_from_low and not has_from_high:
+            logger.warning("No position data available, using neutral position scores")
+            # Add small variation to avoid identical scores
+            return position_score + np.random.uniform(-5, 5, size=len(df))
         
-        return position_score.fillna(50)
+        # Get data with reasonable defaults
+        from_low = df['from_low_pct'].fillna(50) if has_from_low else pd.Series(50, index=df.index)
+        from_high = df['from_high_pct'].fillna(-50) if has_from_high else pd.Series(-50, index=df.index)
+        
+        # Rank distance from low (higher % from low is better)
+        if has_from_low:
+            rank_from_low = RankingEngine.safe_rank(from_low, pct=True, ascending=True)
+        else:
+            rank_from_low = pd.Series(50, index=df.index)
+        
+        # Rank distance from high
+        if has_from_high:
+            # Convert negative values: -20% becomes 80, -50% becomes 50, etc.
+            distance_from_high = 100 + from_high  # -20 becomes 80
+            rank_from_high = RankingEngine.safe_rank(distance_from_high, pct=True, ascending=True)
+        else:
+            rank_from_high = pd.Series(50, index=df.index)
+        
+        # Combined position score
+        if has_from_low and has_from_high:
+            position_score = (rank_from_low * 0.6 + rank_from_high * 0.4)
+        elif has_from_low:
+            position_score = rank_from_low
+        else:
+            position_score = rank_from_high
+        
+        return position_score.clip(0, 100)
     
     @staticmethod
     def calculate_volume_score(df: pd.DataFrame) -> pd.Series:
         """Calculate comprehensive volume score using all available ratios"""
+        # Initialize with neutral score
         volume_score = pd.Series(50, index=df.index, dtype=float)
         
-        # Get available volume ratio columns
+        # Get available volume ratio columns and their weights
         vol_cols = [
             ('vol_ratio_1d_90d', 0.20),    # Short-term explosion
             ('vol_ratio_7d_90d', 0.20),    # Week momentum
@@ -417,75 +473,139 @@ class RankingEngine:
         # Calculate weighted volume score
         total_weight = 0
         weighted_score = pd.Series(0, index=df.index, dtype=float)
+        has_any_vol_data = False
         
         for col, weight in vol_cols:
-            if col in df.columns:
-                # Ensure values are multipliers (not percentages)
-                col_data = df[col].fillna(1.0)
+            if col in df.columns and df[col].notna().any():
+                has_any_vol_data = True
+                # Get column data
+                col_data = df[col].copy()
                 
-                # Rank the ratios
+                # Fill NaN with 1.0 (neutral ratio)
+                col_data = col_data.fillna(1.0)
+                
+                # Ensure positive values
+                col_data = col_data.clip(lower=0.1)
+                
+                # Rank the ratios (higher ratio = better rank)
                 col_rank = RankingEngine.safe_rank(col_data, pct=True, ascending=True)
+                
+                # Add to weighted score
                 weighted_score += col_rank * weight
                 total_weight += weight
         
-        # Normalize by actual weights used
-        if total_weight > 0:
-            volume_score = weighted_score / total_weight * 100
+        # Calculate final score
+        if total_weight > 0 and has_any_vol_data:
+            volume_score = weighted_score / total_weight
+        else:
+            # No volume data available, use neutral score with some randomness
+            # to avoid all stocks having the same score
+            logger.warning("No volume ratio data available, using neutral scores")
+            volume_score = pd.Series(50, index=df.index, dtype=float)
+            # Add small random variation to break ties
+            volume_score += np.random.uniform(-5, 5, size=len(df))
         
-        return volume_score.fillna(50)
+        return volume_score.clip(0, 100)
     
     @staticmethod
     def calculate_momentum_score(df: pd.DataFrame) -> pd.Series:
         """Calculate momentum score based on returns"""
-        # Primary momentum from 30-day returns
-        momentum_score = RankingEngine.safe_rank(df['ret_30d'].fillna(0), pct=True, ascending=True)
+        # Initialize with neutral score
+        momentum_score = pd.Series(50, index=df.index, dtype=float)
+        
+        if 'ret_30d' not in df.columns or df['ret_30d'].notna().sum() == 0:
+            logger.warning("No 30-day return data available, using neutral momentum scores")
+            # Try to use alternative return data
+            if 'ret_7d' in df.columns and df['ret_7d'].notna().any():
+                # Use 7-day returns as proxy
+                ret_7d = df['ret_7d'].fillna(0)
+                momentum_score = RankingEngine.safe_rank(ret_7d, pct=True, ascending=True)
+                logger.info("Using 7-day returns for momentum score")
+            else:
+                # Add small variation to avoid identical scores
+                momentum_score += np.random.uniform(-5, 5, size=len(df))
+            
+            return momentum_score.clip(0, 100)
+        
+        # Get 30-day returns
+        ret_30d = df['ret_30d'].fillna(0)
+        
+        # Primary momentum from 30-day returns ranking
+        momentum_score = RankingEngine.safe_rank(ret_30d, pct=True, ascending=True)
         
         # Bonus for consistent positive momentum across timeframes
         if all(col in df.columns for col in ['ret_7d', 'ret_30d']):
-            consistency_bonus = pd.Series(0, index=df.index)
+            # Initialize bonus
+            consistency_bonus = pd.Series(0, index=df.index, dtype=float)
             
-            # All positive returns get bonus
+            # All positive returns get 5% bonus
             all_positive = (df['ret_7d'] > 0) & (df['ret_30d'] > 0)
-            consistency_bonus[all_positive] = 10
+            consistency_bonus[all_positive] = 5
             
-            # Accelerating momentum gets extra bonus
-            accelerating = all_positive & (df['ret_7d'] > df['ret_30d'] / 30 * 7)
-            consistency_bonus[accelerating] = 15
+            # Accelerating momentum gets 10% bonus
+            # (7-day return rate exceeds 30-day average rate)
+            daily_ret_7d = df['ret_7d'] / 7
+            daily_ret_30d = df['ret_30d'] / 30
+            accelerating = all_positive & (daily_ret_7d > daily_ret_30d)
+            consistency_bonus[accelerating] = 10
             
+            # Add bonus to momentum score
             momentum_score = (momentum_score + consistency_bonus).clip(0, 100)
         
-        return momentum_score.fillna(50)
+        return momentum_score
     
     @staticmethod
     def calculate_acceleration_score(df: pd.DataFrame) -> pd.Series:
         """Calculate if momentum is accelerating using vectorized operations"""
-        # Required columns
-        req_cols = ['ret_1d', 'ret_7d', 'ret_30d']
-        if not all(col in df.columns for col in req_cols):
-            return pd.Series(50, index=df.index)
-        
-        # Calculate daily averages
-        daily_avg_7d = df['ret_7d'] / 7
-        daily_avg_30d = df['ret_30d'] / 30
-        
-        # Initialize score
+        # Initialize with neutral score
         acceleration_score = pd.Series(50, index=df.index, dtype=float)
         
+        # Check if we have required columns
+        req_cols = ['ret_1d', 'ret_7d', 'ret_30d']
+        available_cols = [col for col in req_cols if col in df.columns]
+        
+        if len(available_cols) < 2:
+            # Not enough data, return neutral scores with small variation
+            logger.warning("Insufficient return data for acceleration calculation")
+            return acceleration_score + np.random.uniform(-5, 5, size=len(df))
+        
+        # Get returns data with proper defaults
+        ret_1d = df['ret_1d'].fillna(0) if 'ret_1d' in df.columns else pd.Series(0, index=df.index)
+        ret_7d = df['ret_7d'].fillna(0) if 'ret_7d' in df.columns else pd.Series(0, index=df.index)
+        ret_30d = df['ret_30d'].fillna(0) if 'ret_30d' in df.columns else pd.Series(0, index=df.index)
+        
+        # Calculate daily averages
+        daily_avg_7d = ret_7d / 7
+        daily_avg_30d = ret_30d / 30
+        
         # Perfect acceleration: returns increasing from 30d -> 7d -> 1d
-        perfect = (df['ret_1d'] > daily_avg_7d) & (daily_avg_7d > daily_avg_30d)
-        acceleration_score[perfect] = 100
-        
-        # Good acceleration: today better than 7d average
-        good = (~perfect) & (df['ret_1d'] > daily_avg_7d) & (df['ret_1d'] > 0)
-        acceleration_score[good] = 80
-        
-        # Moderate: positive but not accelerating
-        moderate = (~perfect) & (~good) & (df['ret_1d'] > 0)
-        acceleration_score[moderate] = 60
-        
-        # Decelerating: negative returns
-        decel = df['ret_1d'] < 0
-        acceleration_score[decel] = 30
+        if all(col in df.columns for col in req_cols):
+            perfect = (ret_1d > daily_avg_7d) & (daily_avg_7d > daily_avg_30d) & (ret_1d > 0)
+            acceleration_score.loc[perfect] = 100
+            
+            # Good acceleration: today better than 7d average and positive
+            good = (~perfect) & (ret_1d > daily_avg_7d) & (ret_1d > 0)
+            acceleration_score.loc[good] = 80
+            
+            # Moderate: positive returns but not accelerating
+            moderate = (~perfect) & (~good) & (ret_1d > 0)
+            acceleration_score.loc[moderate] = 60
+            
+            # Slight deceleration: negative today but positive week
+            slight_decel = (ret_1d <= 0) & (ret_7d > 0)
+            acceleration_score.loc[slight_decel] = 40
+            
+            # Strong deceleration: negative returns across timeframes
+            strong_decel = (ret_1d <= 0) & (ret_7d <= 0)
+            acceleration_score.loc[strong_decel] = 20
+        else:
+            # Simplified calculation with available data
+            if 'ret_1d' in df.columns and 'ret_7d' in df.columns:
+                # Accelerating if 1d > 7d average
+                accelerating = ret_1d > daily_avg_7d
+                acceleration_score.loc[accelerating & (ret_1d > 0)] = 75
+                acceleration_score.loc[~accelerating & (ret_1d > 0)] = 55
+                acceleration_score.loc[ret_1d <= 0] = 35
         
         return acceleration_score
     
@@ -495,24 +615,44 @@ class RankingEngine:
         breakout_score = pd.Series(50, index=df.index, dtype=float)
         
         # Factor 1: Distance from high (40% weight)
-        # Closer to high = higher probability
-        distance_factor = (100 + df['from_high_pct']).clip(0, 100)
+        if 'from_high_pct' in df.columns:
+            # from_high_pct is negative, so -20% means 20% below high
+            # Convert to positive scale: closer to high = higher score
+            distance_from_high = 100 + df['from_high_pct'].fillna(-50)  # -20 becomes 80
+            distance_factor = distance_from_high.clip(0, 100)
+        else:
+            distance_factor = pd.Series(50, index=df.index)
         
         # Factor 2: Volume surge (40% weight)
         volume_factor = pd.Series(50, index=df.index)
         if 'vol_ratio_7d_90d' in df.columns:
-            # Convert ratio to score (1.5x = 50 score, 2x = 100 score)
-            volume_factor = ((df['vol_ratio_7d_90d'] - 1) * 100).clip(0, 100)
+            # Convert ratio to score
+            # 1.0 = 50 score, 1.5 = 75 score, 2.0 = 100 score
+            vol_ratio = df['vol_ratio_7d_90d'].fillna(1.0)
+            volume_factor = ((vol_ratio - 1) * 100).clip(0, 100)
         
         # Factor 3: Trend support (20% weight)
         trend_factor = pd.Series(0, index=df.index, dtype=float)
+        trend_count = 0
         
         if 'sma_20d' in df.columns:
-            trend_factor += (df['price'] > df['sma_20d']).astype(float) * 33.33
+            above_20 = (df['price'] > df['sma_20d']).fillna(False)
+            trend_factor += above_20.astype(float) * 33.33
+            trend_count += 1
+        
         if 'sma_50d' in df.columns:
-            trend_factor += (df['price'] > df['sma_50d']).astype(float) * 33.33
+            above_50 = (df['price'] > df['sma_50d']).fillna(False)
+            trend_factor += above_50.astype(float) * 33.33
+            trend_count += 1
+        
         if 'sma_200d' in df.columns:
-            trend_factor += (df['price'] > df['sma_200d']).astype(float) * 33.34
+            above_200 = (df['price'] > df['sma_200d']).fillna(False)
+            trend_factor += above_200.astype(float) * 33.34
+            trend_count += 1
+        
+        # Adjust trend factor if not all SMAs are available
+        if trend_count > 0 and trend_count < 3:
+            trend_factor = trend_factor * (3 / trend_count)
         
         # Ensure trend_factor is between 0 and 100
         trend_factor = trend_factor.clip(0, 100)
@@ -532,18 +672,31 @@ class RankingEngine:
         if 'rvol' not in df.columns:
             return pd.Series(50, index=df.index)
         
-        # Create score based on RVOL levels
+        # Get RVOL values
+        rvol = df['rvol'].fillna(1.0)
+        
+        # Initialize score
         rvol_score = pd.Series(50, index=df.index, dtype=float)
         
-        # Use conditions for vectorized assignment
-        rvol_score[df['rvol'] > 5] = 100           # Extreme volume
-        rvol_score[(df['rvol'] > 3) & (df['rvol'] <= 5)] = 90
-        rvol_score[(df['rvol'] > 2) & (df['rvol'] <= 3)] = 80
-        rvol_score[(df['rvol'] > 1.5) & (df['rvol'] <= 2)] = 70
-        rvol_score[(df['rvol'] > 1.2) & (df['rvol'] <= 1.5)] = 60
-        rvol_score[(df['rvol'] > 0.8) & (df['rvol'] <= 1.2)] = 50
-        rvol_score[(df['rvol'] > 0.5) & (df['rvol'] <= 0.8)] = 40
-        rvol_score[df['rvol'] <= 0.5] = 20
+        # Score based on RVOL levels using conditions
+        # Extreme volume (>5x)
+        rvol_score.loc[rvol > 5] = 100
+        # Very high volume (3-5x)
+        rvol_score.loc[(rvol > 3) & (rvol <= 5)] = 90
+        # High volume (2-3x)
+        rvol_score.loc[(rvol > 2) & (rvol <= 3)] = 80
+        # Above average (1.5-2x)
+        rvol_score.loc[(rvol > 1.5) & (rvol <= 2)] = 70
+        # Slightly above (1.2-1.5x)
+        rvol_score.loc[(rvol > 1.2) & (rvol <= 1.5)] = 60
+        # Normal (0.8-1.2x)
+        rvol_score.loc[(rvol > 0.8) & (rvol <= 1.2)] = 50
+        # Below average (0.5-0.8x)
+        rvol_score.loc[(rvol > 0.5) & (rvol <= 0.8)] = 40
+        # Low volume (0.3-0.5x)
+        rvol_score.loc[(rvol > 0.3) & (rvol <= 0.5)] = 30
+        # Very low (<0.3x)
+        rvol_score.loc[rvol <= 0.3] = 20
         
         return rvol_score
     
@@ -552,35 +705,63 @@ class RankingEngine:
         """Calculate trend quality score based on SMA alignment"""
         trend_score = pd.Series(50, index=df.index, dtype=float)
         
-        # Check SMA alignment
+        # Check available SMA columns
         sma_cols = ['sma_20d', 'sma_50d', 'sma_200d']
-        available_smas = [col for col in sma_cols if col in df.columns]
+        available_smas = [col for col in sma_cols if col in df.columns and df[col].notna().any()]
         
-        if len(available_smas) >= 2:
+        if len(available_smas) == 0:
+            return trend_score
+        
+        # Calculate different trend conditions
+        if len(available_smas) >= 3:
             # Perfect trend: Price > SMA20 > SMA50 > SMA200
-            if all(col in df.columns for col in sma_cols):
-                perfect_trend = (
-                    (df['price'] > df['sma_20d']) & 
-                    (df['sma_20d'] > df['sma_50d']) & 
-                    (df['sma_50d'] > df['sma_200d'])
-                )
-                trend_score[perfect_trend] = 100
-                
-                # Good trend: Price above all SMAs
-                good_trend = (
-                    (~perfect_trend) &
-                    (df['price'] > df['sma_20d']) & 
-                    (df['price'] > df['sma_50d']) & 
-                    (df['price'] > df['sma_200d'])
-                )
-                trend_score[good_trend] = 80
+            perfect_trend = (
+                (df['price'] > df['sma_20d']) & 
+                (df['sma_20d'] > df['sma_50d']) & 
+                (df['sma_50d'] > df['sma_200d'])
+            )
+            trend_score.loc[perfect_trend] = 100
             
-            # Basic trend: Price above available SMAs
-            above_all = pd.Series(True, index=df.index)
+            # Strong trend: Price above all SMAs
+            strong_trend = (
+                (~perfect_trend) &
+                (df['price'] > df['sma_20d']) & 
+                (df['price'] > df['sma_50d']) & 
+                (df['price'] > df['sma_200d'])
+            )
+            trend_score.loc[strong_trend] = 85
+            
+            # Good trend: Price above 2 SMAs
+            above_count = (
+                (df['price'] > df['sma_20d']).astype(int) +
+                (df['price'] > df['sma_50d']).astype(int) +
+                (df['price'] > df['sma_200d']).astype(int)
+            )
+            good_trend = (above_count == 2) & (~perfect_trend) & (~strong_trend)
+            trend_score.loc[good_trend] = 70
+            
+            # Weak trend: Price above 1 SMA
+            weak_trend = (above_count == 1)
+            trend_score.loc[weak_trend] = 40
+            
+            # Poor trend: Price below all SMAs
+            poor_trend = (above_count == 0)
+            trend_score.loc[poor_trend] = 20
+        
+        elif len(available_smas) == 2:
+            # Check alignment with 2 SMAs
+            above_all = True
             for sma in available_smas:
                 above_all &= (df['price'] > df[sma])
             
-            trend_score[above_all & (trend_score == 50)] = 70
+            trend_score.loc[above_all] = 80
+            trend_score.loc[~above_all] = 30
+        
+        elif len(available_smas) == 1:
+            # Single SMA check
+            sma = available_smas[0]
+            trend_score.loc[df['price'] > df[sma]] = 65
+            trend_score.loc[df['price'] <= df[sma]] = 35
         
         return trend_score
     
@@ -591,7 +772,7 @@ class RankingEngine:
         
         # Check available long-term return columns
         lt_cols = ['ret_3m', 'ret_6m', 'ret_1y']
-        available_cols = [col for col in lt_cols if col in df.columns]
+        available_cols = [col for col in lt_cols if col in df.columns and df[col].notna().any()]
         
         if not available_cols:
             return strength_score
@@ -600,16 +781,59 @@ class RankingEngine:
         lt_returns = df[available_cols].fillna(0)
         avg_return = lt_returns.mean(axis=1)
         
-        # Assign scores based on performance tiers
-        strength_score[avg_return > 100] = 100    # Exceptional (>100% avg)
-        strength_score[(avg_return > 50) & (avg_return <= 100)] = 90
-        strength_score[(avg_return > 30) & (avg_return <= 50)] = 80
-        strength_score[(avg_return > 15) & (avg_return <= 30)] = 70
-        strength_score[(avg_return > 0) & (avg_return <= 15)] = 60
-        strength_score[(avg_return > -10) & (avg_return <= 0)] = 40
-        strength_score[avg_return <= -10] = 20
+        # Also consider the trend (improving or declining)
+        if len(available_cols) >= 2:
+            # Check if returns are improving over time
+            if 'ret_3m' in available_cols and 'ret_1y' in available_cols:
+                # Annualized 3-month return vs 1-year return
+                annualized_3m = df['ret_3m'] * 4
+                improving = annualized_3m > df['ret_1y']
+            else:
+                improving = pd.Series(False, index=df.index)
+        else:
+            improving = pd.Series(False, index=df.index)
         
-        return strength_score
+        # Assign scores based on performance tiers
+        # Exceptional performance (>100% avg)
+        exceptional = avg_return > 100
+        strength_score.loc[exceptional] = 100
+        
+        # Very strong (50-100%)
+        very_strong = (avg_return > 50) & (avg_return <= 100)
+        strength_score.loc[very_strong] = 90
+        
+        # Strong (30-50%)
+        strong = (avg_return > 30) & (avg_return <= 50)
+        strength_score.loc[strong] = 80
+        
+        # Good (15-30%)
+        good = (avg_return > 15) & (avg_return <= 30)
+        strength_score.loc[good] = 70
+        
+        # Moderate (5-15%)
+        moderate = (avg_return > 5) & (avg_return <= 15)
+        strength_score.loc[moderate] = 60
+        
+        # Weak (0-5%)
+        weak = (avg_return > 0) & (avg_return <= 5)
+        strength_score.loc[weak] = 50
+        
+        # Negative but recovering (-10-0%)
+        recovering = (avg_return > -10) & (avg_return <= 0)
+        strength_score.loc[recovering] = 40
+        
+        # Poor (-25 to -10%)
+        poor = (avg_return > -25) & (avg_return <= -10)
+        strength_score.loc[poor] = 30
+        
+        # Very poor (< -25%)
+        very_poor = avg_return <= -25
+        strength_score.loc[very_poor] = 20
+        
+        # Bonus for improving trend
+        strength_score.loc[improving] += 5
+        
+        return strength_score.clip(0, 100)
     
     @staticmethod
     def calculate_liquidity_score(df: pd.DataFrame) -> pd.Series:
@@ -637,7 +861,9 @@ class RankingEngine:
                 # Only calculate CV where mean > 0
                 valid_mask = vol_mean > 0
                 vol_cv = pd.Series(1.0, index=df.index)  # Default high CV
-                vol_cv[valid_mask] = vol_std[valid_mask] / vol_mean[valid_mask]
+                
+                if valid_mask.any():
+                    vol_cv[valid_mask] = vol_std[valid_mask] / vol_mean[valid_mask]
                 
                 # Convert CV to consistency score (lower CV = higher score)
                 consistency_score = RankingEngine.safe_rank(
@@ -658,7 +884,23 @@ class RankingEngine:
         
         logger.info("Starting ranking calculations...")
         
-        # Calculate all component scores
+        # Log input data stats
+        if 'from_low_pct' in df.columns and 'from_high_pct' in df.columns:
+            non_default_from_low = (df['from_low_pct'] != 50).sum()
+            non_default_from_high = (df['from_high_pct'] != -50).sum()
+            
+            logger.info(f"Input data stats: {len(df)} stocks")
+            logger.info(f"  - Non-default from_low values: {non_default_from_low}")
+            logger.info(f"  - Non-default from_high values: {non_default_from_high}")
+            
+            if non_default_from_low > 0:
+                logger.info(f"  - from_low range: {df['from_low_pct'].min():.1f} to {df['from_low_pct'].max():.1f}")
+            if non_default_from_high > 0:
+                logger.info(f"  - from_high range: {df['from_high_pct'].min():.1f} to {df['from_high_pct'].max():.1f}")
+        else:
+            logger.warning("Position data columns not found in input")
+        
+        # Calculate all component scores</        # Calculate all component scores
         df['position_score'] = RankingEngine.calculate_position_score(df)
         df['volume_score'] = RankingEngine.calculate_volume_score(df)
         df['momentum_score'] = RankingEngine.calculate_momentum_score(df)
@@ -672,23 +914,82 @@ class RankingEngine:
         df['liquidity_score'] = RankingEngine.calculate_liquidity_score(df)
         
         # MASTER SCORE 3.0 - Properly weighted with RVOL
-        df['master_score'] = (
-            df['position_score'] * CONFIG.POSITION_WEIGHT +
-            df['volume_score'] * CONFIG.VOLUME_WEIGHT +
-            df['momentum_score'] * CONFIG.MOMENTUM_WEIGHT +
-            df['acceleration_score'] * CONFIG.ACCELERATION_WEIGHT +
-            df['breakout_score'] * CONFIG.BREAKOUT_WEIGHT +
-            df['rvol_score'] * CONFIG.RVOL_WEIGHT
-        )
+        # Verify all component scores exist
+        components = {
+            'position_score': CONFIG.POSITION_WEIGHT,
+            'volume_score': CONFIG.VOLUME_WEIGHT,
+            'momentum_score': CONFIG.MOMENTUM_WEIGHT,
+            'acceleration_score': CONFIG.ACCELERATION_WEIGHT,
+            'breakout_score': CONFIG.BREAKOUT_WEIGHT,
+            'rvol_score': CONFIG.RVOL_WEIGHT
+        }
+        
+        # Calculate master score
+        df['master_score'] = 0
+        total_weight = 0
+        
+        for component, weight in components.items():
+            if component in df.columns:
+                df['master_score'] += df[component].fillna(50) * weight
+                total_weight += weight
+            else:
+                logger.warning(f"Missing component: {component}")
+        
+        # Normalize if weights don't sum to 1.0
+        if total_weight > 0 and abs(total_weight - 1.0) > 0.01:
+            logger.warning(f"Total weight is {total_weight}, normalizing...")
+            df['master_score'] = df['master_score'] / total_weight
         
         # Ensure master score is within bounds
         df['master_score'] = df['master_score'].clip(0, 100)
         
-        # Calculate ranks
-        df['rank'] = RankingEngine.safe_rank(df['master_score'], pct=False, ascending=False)
-        df['rank'] = df['rank'].fillna(9999).astype(int)
+        # Log score statistics for debugging
+        logger.info(f"Master Score Stats - Mean: {df['master_score'].mean():.2f}, "
+                   f"Std: {df['master_score'].std():.2f}, "
+                   f"Min: {df['master_score'].min():.2f}, "
+                   f"Max: {df['master_score'].max():.2f}")
         
-        df['percentile'] = RankingEngine.safe_rank(df['master_score'], pct=True, ascending=True)
+        # Log component score means
+        logger.info(f"Component Scores - Position: {df['position_score'].mean():.2f}, "
+                   f"Volume: {df['volume_score'].mean():.2f}, "
+                   f"Momentum: {df['momentum_score'].mean():.2f}, "
+                   f"Acceleration: {df['acceleration_score'].mean():.2f}, "
+                   f"Breakout: {df['breakout_score'].mean():.2f}, "
+                   f"RVOL: {df['rvol_score'].mean():.2f}")
+        
+        # Check for score diversity
+        score_diversity = {
+            'position': df['position_score'].nunique(),
+            'volume': df['volume_score'].nunique(),
+            'momentum': df['momentum_score'].nunique(),
+            'master': df['master_score'].nunique()
+        }
+        logger.info(f"Score diversity: {score_diversity}")
+        
+        # Calculate ranks
+        # Ensure we have valid scores before ranking
+        valid_scores = df['master_score'].notna()
+        logger.info(f"Stocks with valid master scores: {valid_scores.sum()}")
+        
+        if valid_scores.sum() == 0:
+            logger.error("No valid master scores calculated!")
+            df['rank'] = 9999
+            df['percentile'] = 0
+        else:
+            # For rank, use ascending=False so highest score gets rank 1
+            df['rank'] = df['master_score'].rank(method='min', ascending=False, na_option='bottom')
+            df['rank'] = df['rank'].fillna(len(df) + 1).astype(int)
+            
+            # Check if ranking worked properly
+            if df['rank'].min() == df['rank'].max():
+                logger.error("All stocks have the same rank! Using row order as tiebreaker.")
+                # Add row order as tiebreaker
+                df['rank'] = df['master_score'].rank(method='first', ascending=False, na_option='bottom')
+                df['rank'] = df['rank'].fillna(len(df) + 1).astype(int)
+            
+            # For percentile, higher score = higher percentile
+            df['percentile'] = df['master_score'].rank(pct=True, ascending=True, na_option='bottom') * 100
+            df['percentile'] = df['percentile'].fillna(0)
         
         # Calculate category-specific ranks
         df = RankingEngine._calculate_category_ranks(df)
@@ -696,7 +997,35 @@ class RankingEngine:
         # Detect patterns
         df = RankingEngine._detect_patterns(df)
         
-        logger.info(f"Ranking complete for {len(df)} stocks")
+        # Final verification
+        unique_ranks = df['rank'].nunique()
+        unique_scores = df['master_score'].nunique()
+        
+        # Basic sanity check
+        if unique_scores < 10 and len(df) > 100:
+            logger.error(f"Very low score diversity: only {unique_scores} unique scores for {len(df)} stocks!")
+            logger.error("This suggests a calculation error. Component score stats:")
+            for component in ['position_score', 'volume_score', 'momentum_score', 
+                            'acceleration_score', 'breakout_score', 'rvol_score']:
+                if component in df.columns:
+                    logger.error(f"  - {component}: mean={df[component].mean():.1f}, "
+                               f"std={df[component].std():.1f}, "
+                               f"unique={df[component].nunique()}")
+        
+        logger.info(f"Ranking complete:")
+        logger.info(f"  - Total stocks: {len(df)}")
+        logger.info(f"  - Unique ranks: {unique_ranks}")
+        logger.info(f"  - Unique scores: {unique_scores}")
+        logger.info(f"  - Top score: {df['master_score'].max():.1f}")
+        logger.info(f"  - Bottom score: {df['master_score'].min():.1f}")
+        
+        if unique_ranks < len(df) * 0.5:
+            logger.warning(f"Low rank diversity: only {unique_ranks} unique ranks for {len(df)} stocks")
+            
+            # Log sample of top stocks for debugging
+            top_5 = df.nsmallest(5, 'rank')[['ticker', 'master_score', 'rank']]
+            logger.info(f"Top 5 stocks:\n{top_5}")
+        
         return df
     
     @staticmethod
@@ -1397,10 +1726,18 @@ def main():
         
         with st.spinner(f"⚙️ Processing {len(raw_df):,} stocks..."):
             processed_df = DataProcessor.process_dataframe(raw_df)
-        
-        if processed_df.empty:
-            st.error("❌ No valid data after processing. Please check your data source.")
-            st.stop()
+            
+            # Show data quality info
+            if processed_df.empty:
+                st.error("❌ No valid data after processing. Please check your data source.")
+                st.stop()
+            else:
+                logger.info(f"Data quality summary:")
+                logger.info(f"  - Valid stocks: {len(processed_df)}")
+                logger.info(f"  - Unique tickers: {processed_df['ticker'].nunique()}")
+                logger.info(f"  - Price range: ₹{processed_df['price'].min():.0f} - ₹{processed_df['price'].max():.0f}")
+                if 'from_low_pct' in processed_df.columns:
+                    logger.info(f"  - From low range: {processed_df['from_low_pct'].min():.0f}% - {processed_df['from_low_pct'].max():.0f}%")
         
         with st.spinner("📊 Calculating rankings..."):
             ranked_df = RankingEngine.calculate_rankings(processed_df)
@@ -1527,12 +1864,13 @@ def main():
         st.metric(
             "Avg Score",
             f"{avg_score:.1f}",
-            f"{avg_score - ranked_df['master_score'].mean():.1f}"
+            f"σ={filtered_df['master_score'].std():.1f}"
         )
     
     with col3:
-        high_momentum = (filtered_df['momentum_score'] >= 80).sum()
-        st.metric("High Momentum", f"{high_momentum}")
+        # Show score range
+        score_range = f"{filtered_df['master_score'].min():.1f}-{filtered_df['master_score'].max():.1f}"
+        st.metric("Score Range", score_range)
     
     with col4:
         accelerating = (filtered_df['acceleration_score'] >= 80).sum()
