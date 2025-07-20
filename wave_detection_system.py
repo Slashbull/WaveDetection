@@ -187,7 +187,21 @@ def safe_float(value: Any, default: float = 0.0) -> float:
         return float(value)
     except:
         return default
-
+def safe_format_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    """Safely format a dataframe for Streamlit display by converting all columns to appropriate types"""
+    df_copy = df.copy()
+    
+    # Convert object columns that might have mixed types
+    for col in df_copy.columns:
+        if df_copy[col].dtype == 'object':
+            # Try to convert to numeric first
+            try:
+                df_copy[col] = pd.to_numeric(df_copy[col], errors='coerce')
+            except:
+                # If that fails, ensure it's string
+                df_copy[col] = df_copy[col].astype(str)
+    
+    return df_copy
 def safe_plotly_chart(chart_func, *args, **kwargs):
     """Safely create plotly charts with error handling"""
     try:
@@ -2193,25 +2207,31 @@ def display_export_tab(filtered_df: pd.DataFrame):
                 mime="text/csv"
             )
     
-    # Summary statistics
+    # Summary statistics - Using metrics instead of table to avoid serialization issues
     st.markdown("---")
     st.markdown("#### 📊 Summary Statistics")
     
-    summary_stats = pd.DataFrame({
-        'Metric': ['Total Stocks', 'Average Master Score', 'Stocks Above 70', 
-                  'Stocks Above 50', 'Highest Score', 'Lowest Score'],
-        'Value': [
-            len(filtered_df),
-            f"{filtered_df['master_score'].mean():.2f}" if not filtered_df.empty else "0",
-            f"{(filtered_df['master_score'] > 70).sum()} ({(filtered_df['master_score'] > 70).mean() * 100:.1f}%)" if not filtered_df.empty else "0 (0%)",
-            f"{(filtered_df['master_score'] > 50).sum()} ({(filtered_df['master_score'] > 50).mean() * 100:.1f}%)" if not filtered_df.empty else "0 (0%)",
-            f"{filtered_df['master_score'].max():.2f}" if not filtered_df.empty else "0",
-            f"{filtered_df['master_score'].min():.2f}" if not filtered_df.empty else "0"
-        ]
-    })
-    
-    st.table(summary_stats)
-
+    if not filtered_df.empty:
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.metric("Total Stocks", f"{len(filtered_df):,}")
+            st.metric("Average Master Score", f"{filtered_df['master_score'].mean():.2f}")
+        
+        with col2:
+            above_70 = (filtered_df['master_score'] > 70).sum()
+            above_70_pct = (filtered_df['master_score'] > 70).mean() * 100
+            st.metric("Stocks Above 70", f"{above_70}", f"{above_70_pct:.1f}%")
+            
+            above_50 = (filtered_df['master_score'] > 50).sum()
+            above_50_pct = (filtered_df['master_score'] > 50).mean() * 100
+            st.metric("Stocks Above 50", f"{above_50}", f"{above_50_pct:.1f}%")
+        
+        with col3:
+            st.metric("Highest Score", f"{filtered_df['master_score'].max():.2f}")
+            st.metric("Lowest Score", f"{filtered_df['master_score'].min():.2f}")
+    else:
+        st.info("No data available for statistics")
 def main():
     """Main application entry point"""
     try:
