@@ -52,12 +52,13 @@ class Config:
     # Cache settings
     CACHE_TTL: int = 300  # 5 minutes
     
-    # ENHANCED Ranking weights - Master Score 2.0
-    POSITION_WEIGHT: float = 0.35  # Reduced from 0.45
-    VOLUME_WEIGHT: float = 0.30    # Reduced from 0.35  
-    MOMENTUM_WEIGHT: float = 0.15  # Reduced from 0.20
-    ACCELERATION_WEIGHT: float = 0.10  # NEW!
-    BREAKOUT_WEIGHT: float = 0.10      # NEW!
+    # ENHANCED Ranking weights - Master Score 3.0
+    POSITION_WEIGHT: float = 0.30      # Reduced from 0.35
+    VOLUME_WEIGHT: float = 0.25        # Reduced from 0.30  
+    MOMENTUM_WEIGHT: float = 0.15      # Same
+    ACCELERATION_WEIGHT: float = 0.10  # Same
+    BREAKOUT_WEIGHT: float = 0.10      # Same
+    RVOL_WEIGHT: float = 0.10          # NEW!
     
     # Display settings
     DEFAULT_TOP_N: int = 50
@@ -423,6 +424,80 @@ class RankingEngine:
         return trend_score
     
     @staticmethod
+    def calculate_rvol_dynamics(df: pd.DataFrame) -> pd.Series:
+        """Calculate relative volume dynamics using RVOL column"""
+        rvol_score = pd.Series(50, index=df.index)  # Default neutral score
+        
+        if 'rvol' not in df.columns:
+            return rvol_score
+        
+        # Fill NaN values
+        df['rvol'] = df['rvol'].fillna(1.0)
+        
+        # Score based on RVOL levels
+        # Extreme volume (>5x) - Climax
+        rvol_score[df['rvol'] > 5] = 100
+        
+        # Very high volume (3-5x) - Strong interest
+        rvol_score[(df['rvol'] > 3) & (df['rvol'] <= 5)] = 85
+        
+        # High volume (2-3x) - Increased activity
+        rvol_score[(df['rvol'] > 2) & (df['rvol'] <= 3)] = 70
+        
+        # Above average (1.2-2x) - Healthy interest
+        rvol_score[(df['rvol'] > 1.2) & (df['rvol'] <= 2)] = 60
+        
+        # Normal (0.8-1.2x) - Neutral
+        rvol_score[(df['rvol'] > 0.8) & (df['rvol'] <= 1.2)] = 50
+        
+        # Below average (0.5-0.8x) - Quiet accumulation
+        rvol_score[(df['rvol'] > 0.5) & (df['rvol'] <= 0.8)] = 40
+        
+        # Very low (<0.5x) - Dormant
+        rvol_score[df['rvol'] <= 0.5] = 20
+        
+        return rvol_score
+    
+    @staticmethod
+    def calculate_long_term_strength(df: pd.DataFrame) -> pd.Series:
+        """Calculate long-term strength using all return periods"""
+        strength_score = pd.Series(50, index=df.index)
+        
+        # List of return columns to check
+        return_cols = ['ret_3m', 'ret_6m', 'ret_1y']
+        available_cols = [col for col in return_cols if col in df.columns]
+        
+        if not available_cols:
+            return strength_score
+        
+        # Calculate average long-term return
+        long_returns = df[available_cols].fillna(0)
+        avg_long_return = long_returns.mean(axis=1)
+        
+        # Score based on long-term performance
+        strength_score = pd.Series(50, index=df.index)
+        
+        # Strong long-term (>50% average)
+        strength_score[avg_long_return > 50] = 100
+        
+        # Good long-term (30-50%)
+        strength_score[(avg_long_return > 30) & (avg_long_return <= 50)] = 85
+        
+        # Decent long-term (15-30%)
+        strength_score[(avg_long_return > 15) & (avg_long_return <= 30)] = 70
+        
+        # Neutral (0-15%)
+        strength_score[(avg_long_return > 0) & (avg_long_return <= 15)] = 55
+        
+        # Negative but recovering (> -15%)
+        strength_score[(avg_long_return > -15) & (avg_long_return <= 0)] = 40
+        
+        # Poor long-term (< -15%)
+        strength_score[avg_long_return <= -15] = 20
+        
+        return strength_score
+    
+    @staticmethod
     @timer
     def calculate_rankings(df: pd.DataFrame) -> pd.DataFrame:
         """Calculate rankings using ENHANCED scoring system"""
@@ -490,7 +565,7 @@ class RankingEngine:
     
     @staticmethod
     def detect_smart_patterns(df: pd.DataFrame) -> pd.DataFrame:
-        """Detect advanced trading patterns using all available data"""
+        """Detect advanced trading patterns using all available data including RVOL"""
         patterns = []
         
         for idx, row in df.iterrows():
@@ -511,6 +586,21 @@ class RankingEngine:
             percentile = row.get('percentile', 0)
             acceleration_score = row.get('acceleration_score', 50)
             breakout_score = row.get('breakout_score', 50)
+            rvol = row.get('rvol', 1.0)
+            rvol_score = row.get('rvol_score', 50)
+            
+            # RVOL-BASED PATTERNS (NEW!)
+            
+            # Volume Explosion Pattern
+            if rvol > 5 and ret_1d > 2:
+                stock_patterns.append("💥 EXPLOSION")
+            elif rvol > 3 and ret_1d > 1:
+                stock_patterns.append("🔥 SURGE")
+            
+            # Quiet Accumulation Pattern
+            if (rvol < 0.8 and vol_ratio_90d_180d > 1.1 and 
+                from_low_pct < 50 and ret_30d > -5):
+                stock_patterns.append("🤫 QUIET BUY")
             
             # INSTITUTIONAL ACCUMULATION
             if (vol_ratio_90d_180d > 1.1 and 
@@ -520,11 +610,10 @@ class RankingEngine:
             
             # MOMENTUM EXPLOSION
             if acceleration_score > 90:
-                stock_patterns.append("🚀 EXPLOSION")
+                stock_patterns.append("🚀 ACCELERATING")
             
-            # VOLUME CLIMAX
-            if (vol_ratio_1d_90d > 3 and
-                abs(ret_1d) > 5):
+            # VOLUME CLIMAX (using RVOL)
+            if rvol > 5:
                 stock_patterns.append("⚡ CLIMAX")
             
             # BREAKOUT SETUP
@@ -541,11 +630,14 @@ class RankingEngine:
             if percentile > 95:
                 stock_patterns.append("👑 LEADER")
             
-            # STEALTH STRENGTH
-            if (vol_ratio_90d_180d > 1.15 and
-                ret_30d > 10 and
-                vol_ratio_1d_90d < 1.5):
+            # STEALTH STRENGTH (low RVOL but good returns)
+            if (rvol < 1.5 and ret_30d > 20 and vol_ratio_90d_180d > 1.05):
                 stock_patterns.append("💎 STEALTH")
+            
+            # COMPRESSION PATTERN (NEW!)
+            if (rvol < 0.7 and abs(ret_7d) < 5 and 
+                from_high_pct > -30 and from_low_pct > 30):
+                stock_patterns.append("🎯 COMPRESSED")
             
             patterns.append(" | ".join(stock_patterns) if stock_patterns else "")
         
@@ -710,6 +802,17 @@ class Visualizer:
                 textposition='inside'
             ))
         
+        if 'rvol_score' in top_df.columns:
+            fig.add_trace(go.Bar(
+                name='RVOL',
+                y=top_df['ticker'],
+                x=top_df['rvol_score'] * 0.10,  # 10% weight
+                orientation='h',
+                marker_color='#e67e22',
+                text=[f"{x:.1f}" for x in top_df['rvol_score']],
+                textposition='inside'
+            ))
+        
         fig.update_layout(
             title=f"Top {len(top_df)} Stocks - Enhanced Score Breakdown",
             xaxis_title="Weighted Score Contribution",
@@ -784,9 +887,9 @@ class ExportEngine:
                 export_cols = [
                     'rank', 'ticker', 'company_name', 'master_score',
                     'position_score', 'volume_score', 'momentum_score',
-                    'acceleration_score', 'breakout_score', 'trend_quality',
+                    'acceleration_score', 'breakout_score', 'rvol_score',
                     'price', 'from_low_pct', 'from_high_pct',
-                    'ret_30d', 'vol_ratio_30d_90d', 'vol_ratio_90d_180d',
+                    'ret_30d', 'rvol', 'vol_ratio_30d_90d', 'vol_ratio_90d_180d',
                     'patterns', 'category', 'sector', 'eps_tier', 'pe_tier', 'price_tier'
                 ]
                 export_cols = [col for col in export_cols if col in top_100.columns]
@@ -885,12 +988,18 @@ def main():
         with col2:
             if st.button("ℹ️ Help"):
                 st.info("""
-                **Enhanced Master Score 2.0:**
-                - Position (35%): Distance from 52w low/high
-                - Volume (30%): ALL 7 volume ratios analyzed
+                **Enhanced Master Score 3.0:**
+                - Position (30%): Distance from 52w low/high
+                - Volume (25%): ALL 7 volume ratios analyzed
                 - Momentum (15%): 30-day returns
                 - Acceleration (10%): Momentum building/fading
                 - Breakout (10%): Probability of breakout
+                - RVOL (10%): Today's relative volume
+                
+                **New Features:**
+                - RVOL integration for real-time volume
+                - Long-term strength analysis
+                - Smart search with autocomplete
                 """)
         
         st.markdown("---")
@@ -1015,12 +1124,13 @@ def main():
         st.metric("Breakout Ready", f"{ready_breakout}")
     
     with col5:
-        high_volume = (filtered_df['vol_ratio_30d_90d'] > 1.5).sum() if len(filtered_df) > 0 else 0
-        st.metric("High Volume", f"{high_volume}")
+        # High RVOL count
+        high_rvol = ((filtered_df['rvol'] > 2).sum() if 'rvol' in filtered_df.columns and len(filtered_df) > 0 else 0)
+        st.metric("High RVOL (>2x)", f"{high_rvol}")
     
     # Tabs
-    tab1, tab2, tab3, tab4 = st.tabs([
-        "🏆 Rankings", "📊 Analysis", "📈 Visualizations", "📥 Export"
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+        "🏆 Rankings", "📊 Analysis", "📈 Visualizations", "🔍 Search", "📥 Export"
     ])
     
     with tab1:
@@ -1043,8 +1153,8 @@ def main():
             display_cols = [
                 'rank', 'ticker', 'company_name', 'master_score',
                 'position_score', 'volume_score', 'momentum_score',
-                'acceleration_score', 'breakout_score', 'trend_quality',
-                'patterns', 'price', 'from_low_pct', 'ret_30d',
+                'acceleration_score', 'breakout_score', 'rvol_score',
+                'patterns', 'price', 'from_low_pct', 'ret_30d', 'rvol',
                 'category', 'sector', 'eps_tier', 'pe_tier'
             ]
             
@@ -1058,10 +1168,11 @@ def main():
                 'momentum_score': '{:.1f}',
                 'acceleration_score': '{:.1f}',
                 'breakout_score': '{:.1f}',
-                'trend_quality': '{:.1f}',
+                'rvol_score': '{:.1f}',
                 'price': '₹{:,.2f}',
                 'from_low_pct': '{:.1f}%',
-                'ret_30d': '{:.1f}%'
+                'ret_30d': '{:.1f}%',
+                'rvol': '{:.2f}x'
             }
             
             for col, fmt in format_dict.items():
@@ -1147,6 +1258,230 @@ def main():
             st.info("No data available for visualization.")
     
     with tab4:
+        st.markdown("### 🔍 Stock Search")
+        
+        # Create search interface
+        col1, col2 = st.columns([3, 1])
+        
+        with col1:
+            # Get list of all companies for autocomplete
+            all_companies = filtered_df['company_name'].unique().tolist()
+            all_tickers = filtered_df['ticker'].unique().tolist()
+            
+            # Combine tickers and company names for search
+            search_options = []
+            for _, row in filtered_df.iterrows():
+                search_options.append(f"{row['ticker']} - {row['company_name']}")
+            
+            # Search input with selectbox for autocomplete
+            search_query = st.selectbox(
+                "Search by ticker or company name",
+                options=[''] + sorted(search_options),
+                format_func=lambda x: x if x else "Type to search...",
+                help="Start typing to see suggestions"
+            )
+        
+        with col2:
+            st.markdown("<br>", unsafe_allow_html=True)
+            search_button = st.button("🔎 Search", type="primary", use_container_width=True)
+        
+        # Alternative text input for partial search
+        with st.expander("Advanced Search"):
+            text_search = st.text_input(
+                "Partial search",
+                placeholder="Enter partial ticker or company name...",
+                help="Search for stocks containing this text"
+            )
+        
+        # Perform search
+        search_results = pd.DataFrame()
+        
+        if search_query and search_query != '':
+            # Extract ticker from selection
+            ticker = search_query.split(' - ')[0]
+            search_results = filtered_df[filtered_df['ticker'] == ticker]
+        
+        elif text_search:
+            # Partial text search
+            mask = (
+                filtered_df['ticker'].str.contains(text_search, case=False, na=False) |
+                filtered_df['company_name'].str.contains(text_search, case=False, na=False)
+            )
+            search_results = filtered_df[mask]
+        
+        # Display search results
+        if len(search_results) > 0:
+            st.success(f"Found {len(search_results)} matching stock(s)")
+            
+            for idx, stock in search_results.iterrows():
+                # Create expandable card for each stock
+                with st.expander(f"📊 {stock['ticker']} - {stock['company_name']}", expanded=True):
+                    # Header metrics
+                    col1, col2, col3, col4 = st.columns(4)
+                    
+                    with col1:
+                        st.metric(
+                            "Master Score",
+                            f"{stock['master_score']:.1f}",
+                            f"Rank #{int(stock['rank'])}"
+                        )
+                    
+                    with col2:
+                        st.metric(
+                            "Price",
+                            f"₹{stock['price']:,.2f}",
+                            f"{stock['ret_1d']:.1f}% today"
+                        )
+                    
+                    with col3:
+                        st.metric(
+                            "Position",
+                            f"{stock['from_low_pct']:.1f}% ↑",
+                            f"{stock['from_high_pct']:.1f}% from high"
+                        )
+                    
+                    with col4:
+                        rvol_display = stock.get('rvol', 1.0)
+                        st.metric(
+                            "Volume (RVOL)",
+                            f"{rvol_display:.2f}x",
+                            "High" if rvol_display > 2 else "Normal" if rvol_display > 0.8 else "Low"
+                        )
+                    
+                    # Detailed scores
+                    st.markdown("#### 📈 Score Breakdown")
+                    score_cols = st.columns(6)
+                    
+                    scores = [
+                        ("Position", stock['position_score']),
+                        ("Volume", stock['volume_score']),
+                        ("Momentum", stock['momentum_score']),
+                        ("Acceleration", stock.get('acceleration_score', 50)),
+                        ("Breakout", stock.get('breakout_score', 50)),
+                        ("RVOL", stock.get('rvol_score', 50))
+                    ]
+                    
+                    for i, (name, score) in enumerate(scores):
+                        with score_cols[i]:
+                            # Color code based on score
+                            if score >= 80:
+                                color = "🟢"
+                            elif score >= 60:
+                                color = "🟡"
+                            else:
+                                color = "🔴"
+                            st.metric(name, f"{color} {score:.0f}")
+                    
+                    # Pattern and signals
+                    if stock.get('patterns', ''):
+                        st.markdown(f"**Patterns:** {stock['patterns']}")
+                    
+                    # Additional metrics in columns
+                    st.markdown("#### 📊 Key Metrics")
+                    metric_col1, metric_col2, metric_col3 = st.columns(3)
+                    
+                    with metric_col1:
+                        st.markdown("**Returns**")
+                        st.text(f"1 Day: {stock.get('ret_1d', 0):.1f}%")
+                        st.text(f"7 Days: {stock.get('ret_7d', 0):.1f}%")
+                        st.text(f"30 Days: {stock.get('ret_30d', 0):.1f}%")
+                        if 'ret_3m' in stock:
+                            st.text(f"3 Months: {stock.get('ret_3m', 0):.1f}%")
+                    
+                    with metric_col2:
+                        st.markdown("**Classification**")
+                        st.text(f"Category: {stock['category']}")
+                        st.text(f"Sector: {stock['sector']}")
+                        st.text(f"EPS Tier: {stock.get('eps_tier', 'N/A')}")
+                        st.text(f"PE Tier: {stock.get('pe_tier', 'N/A')}")
+                    
+                    with metric_col3:
+                        st.markdown("**Technicals**")
+                        st.text(f"52W Low: ₹{stock.get('low_52w', 0):,.2f}")
+                        st.text(f"52W High: ₹{stock.get('high_52w', 0):,.2f}")
+                        if 'sma_200d' in stock:
+                            sma_200 = stock.get('sma_200d', stock['price'])
+                            above_below = "above" if stock['price'] > sma_200 else "below"
+                            pct_diff = abs((stock['price'] - sma_200) / sma_200 * 100)
+                            st.text(f"vs 200 SMA: {pct_diff:.1f}% {above_below}")
+                    
+                    # Long-term performance if available
+                    if any(col in stock.index for col in ['ret_6m', 'ret_1y', 'ret_3y', 'ret_5y']):
+                        st.markdown("#### 📅 Long-term Performance")
+                        lt_cols = st.columns(4)
+                        
+                        long_term_metrics = [
+                            ("6 Months", 'ret_6m'),
+                            ("1 Year", 'ret_1y'),
+                            ("3 Years", 'ret_3y'),
+                            ("5 Years", 'ret_5y')
+                        ]
+                        
+                        for i, (label, col) in enumerate(long_term_metrics):
+                            if col in stock.index:
+                                with lt_cols[i]:
+                                    value = stock[col]
+                                    if pd.notna(value):
+                                        color = "green" if value > 0 else "red"
+                                        st.markdown(f"**{label}**")
+                                        st.markdown(f"<span style='color: {color}'>{value:.1f}%</span>", 
+                                                  unsafe_allow_html=True)
+                    
+                    # Volume analysis
+                    st.markdown("#### 📊 Volume Analysis")
+                    vol_col1, vol_col2 = st.columns(2)
+                    
+                    with vol_col1:
+                        st.markdown("**Volume Ratios**")
+                        vol_ratios = [
+                            ("1D vs 90D", 'vol_ratio_1d_90d'),
+                            ("7D vs 90D", 'vol_ratio_7d_90d'),
+                            ("30D vs 90D", 'vol_ratio_30d_90d'),
+                            ("90D vs 180D", 'vol_ratio_90d_180d')
+                        ]
+                        
+                        for label, col in vol_ratios:
+                            if col in stock.index:
+                                value = stock[col]
+                                if pd.notna(value):
+                                    # Convert back to percentage for display
+                                    pct = (value - 1) * 100
+                                    color = "green" if pct > 0 else "red"
+                                    st.text(f"{label}: {pct:+.1f}%")
+                    
+                    with vol_col2:
+                        st.markdown("**Volume Trend**")
+                        # Determine volume trend
+                        vol_30d = stock.get('vol_ratio_30d_90d', 1)
+                        vol_90d = stock.get('vol_ratio_90d_180d', 1)
+                        
+                        if vol_30d > 1.2 and vol_90d > 1.1:
+                            st.success("📈 Accumulation Pattern")
+                        elif vol_30d < 0.8 and vol_90d < 0.9:
+                            st.warning("📉 Distribution Pattern")
+                        else:
+                            st.info("➡️ Normal Volume Pattern")
+        
+        elif search_button or text_search:
+            st.warning("No stocks found matching your search criteria")
+        
+        # Top movers in searched results
+        if len(search_results) > 1:
+            st.markdown("---")
+            st.markdown("### 🏆 Best Matches")
+            
+            top_matches = search_results.nlargest(min(5, len(search_results)), 'master_score')[
+                ['rank', 'ticker', 'company_name', 'master_score', 'price', 'ret_30d', 'patterns']
+            ].copy()
+            
+            # Format for display
+            top_matches['price'] = top_matches['price'].apply(lambda x: f'₹{x:,.2f}')
+            top_matches['ret_30d'] = top_matches['ret_30d'].apply(lambda x: f'{x:.1f}%')
+            top_matches['master_score'] = top_matches['master_score'].apply(lambda x: f'{x:.1f}')
+            
+            st.dataframe(top_matches, use_container_width=True, hide_index=True)
+    
+    with tab5:
         st.markdown("### Export Data")
         
         col1, col2 = st.columns(2)
