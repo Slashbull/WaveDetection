@@ -505,18 +505,17 @@ class RankingEngine:
             volume_factor = ((df['vol_ratio_7d_90d'] - 1) * 100).clip(0, 100)
         
         # Factor 3: Trend support (20% weight)
-        trend_factor = pd.Series(50, index=df.index)
-        trend_count = 0
+        trend_factor = pd.Series(0, index=df.index, dtype=float)
         
-        if 'sma_20d' in df.columns and df['sma_20d'].notna().any():
-            trend_count += (df['price'] > df['sma_20d']).astype(int)
-        if 'sma_50d' in df.columns and df['sma_50d'].notna().any():
-            trend_count += (df['price'] > df['sma_50d']).astype(int)
-        if 'sma_200d' in df.columns and df['sma_200d'].notna().any():
-            trend_count += (df['price'] > df['sma_200d']).astype(int)
+        if 'sma_20d' in df.columns:
+            trend_factor += (df['price'] > df['sma_20d']).astype(float) * 33.33
+        if 'sma_50d' in df.columns:
+            trend_factor += (df['price'] > df['sma_50d']).astype(float) * 33.33
+        if 'sma_200d' in df.columns:
+            trend_factor += (df['price'] > df['sma_200d']).astype(float) * 33.34
         
-        if trend_count > 0:
-            trend_factor = (trend_count / 3 * 100)
+        # Ensure trend_factor is between 0 and 100
+        trend_factor = trend_factor.clip(0, 100)
         
         # Combined breakout score
         breakout_score = (
@@ -619,18 +618,26 @@ class RankingEngine:
         
         if 'volume_30d' in df.columns and 'price' in df.columns:
             # Calculate average daily traded value
-            df['avg_traded_value'] = df['volume_30d'] * df['price']
+            avg_traded_value = df['volume_30d'] * df['price']
             
             # Rank by traded value
             liquidity_score = RankingEngine.safe_rank(
-                df['avg_traded_value'], pct=True, ascending=True
+                avg_traded_value, pct=True, ascending=True
             )
             
             # Bonus for consistent volume across timeframes
             if all(col in df.columns for col in ['volume_7d', 'volume_30d', 'volume_90d']):
                 # Calculate coefficient of variation (lower = more consistent)
                 vol_data = df[['volume_7d', 'volume_30d', 'volume_90d']]
-                vol_cv = vol_data.std(axis=1) / (vol_data.mean(axis=1) + 1e-9)
+                
+                # Avoid division by zero
+                vol_mean = vol_data.mean(axis=1)
+                vol_std = vol_data.std(axis=1)
+                
+                # Only calculate CV where mean > 0
+                valid_mask = vol_mean > 0
+                vol_cv = pd.Series(1.0, index=df.index)  # Default high CV
+                vol_cv[valid_mask] = vol_std[valid_mask] / vol_mean[valid_mask]
                 
                 # Convert CV to consistency score (lower CV = higher score)
                 consistency_score = RankingEngine.safe_rank(
