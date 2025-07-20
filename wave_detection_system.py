@@ -1,4 +1,4 @@
-return volume_score.clip(0, 100)"""
+"""
 Wave Detection Ultimate 3.0 - Professional Edition
 =================================================
 Complete rewrite with all features properly implemented.
@@ -310,11 +310,30 @@ class DataProcessor:
         
         for col in volume_ratio_columns:
             if col in df.columns:
-                # If values are > 10, they're likely percentages
-                mask = df[col] > 10
-                df.loc[mask, col] = (df.loc[mask, col] + 100) / 100
+                # First ensure numeric
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+                
+                # Check if values look like percentages (common pattern)
+                non_nan_values = df[col].dropna()
+                if len(non_nan_values) > 0:
+                    median_val = non_nan_values.median()
+                    
+                    # If median > 10, likely percentages
+                    if median_val > 10:
+                        logger.info(f"Converting {col} from percentage to ratio (median: {median_val:.1f})")
+                        df[col] = (df[col] + 100) / 100
+                    
+                    # If median is negative (like -50%), convert properly
+                    elif median_val < -10:
+                        logger.info(f"Converting {col} from negative percentage (median: {median_val:.1f})")
+                        df[col] = (100 + df[col]) / 100
+                
                 # Ensure all values are positive
                 df[col] = df[col].abs()
+                # Fill NaN with 1.0 (no change)
+                df[col] = df[col].fillna(1.0)
+                # Clip extreme values
+                df[col] = df[col].clip(0.1, 10.0)
         
         # Validate data quality
         initial_count = len(df)
@@ -322,10 +341,52 @@ class DataProcessor:
         # Remove rows with critical missing data
         df = df.dropna(subset=['ticker', 'price'], how='any')
         df = df[df['price'] > 0]
-        df = df[df['from_low_pct'].notna() | df['from_high_pct'].notna()]
+        
+        # For position data, fill NaN with reasonable defaults
+        if 'from_low_pct' in df.columns:
+            # Count non-NaN values before filling
+            valid_from_low = df['from_low_pct'].notna().sum()
+            logger.info(f"Valid from_low_pct values: {valid_from_low}")
+            
+            df['from_low_pct'] = df['from_low_pct'].fillna(50)  # Assume middle of range
+        else:
+            df['from_low_pct'] = 50
+            
+        if 'from_high_pct' in df.columns:
+            # Count non-NaN values before filling
+            valid_from_high = df['from_high_pct'].notna().sum()
+            logger.info(f"Valid from_high_pct values: {valid_from_high}")
+            
+            df['from_high_pct'] = df['from_high_pct'].fillna(-50)  # Assume middle of range
+        else:
+            df['from_high_pct'] = -50
+        
+        # Ensure we have at least one position metric
+        has_position_data = (df['from_low_pct'].notna() & (df['from_low_pct'] != 50)) | \
+                           (df['from_high_pct'].notna() & (df['from_high_pct'] != -50))
+        
+        # Keep stocks with any valid position data OR good return data
+        if has_position_data.any():
+            # Keep stocks with position data or significant return data
+            keep_mask = has_position_data
+            if 'ret_30d' in df.columns:
+                # Also keep stocks with significant returns even if position data is default
+                significant_returns = df['ret_30d'].notna() & (df['ret_30d'].abs() > 5)
+                keep_mask = keep_mask | significant_returns
+            
+            # Only apply filter if it doesn't remove too many stocks
+            filtered_count = keep_mask.sum()
+            if filtered_count >= min(100, len(df) * 0.1):  # Keep at least 10% or 100 stocks
+                df = df[keep_mask]
+                logger.info(f"Kept {filtered_count} stocks with valid position/return data")
+            else:
+                logger.warning(f"Filter would keep only {filtered_count} stocks, skipping filter")
         
         # Remove duplicate tickers (keep first)
+        before_dedup = len(df)
         df = df.drop_duplicates(subset=['ticker'], keep='first')
+        if before_dedup > len(df):
+            logger.info(f"Removed {before_dedup - len(df)} duplicate tickers")
         
         removed = initial_count - len(df)
         if removed > 0:
@@ -338,7 +399,15 @@ class DataProcessor:
         if 'rvol' not in df.columns:
             df['rvol'] = 1.0
         else:
+            df['rvol'] = pd.to_numeric(df['rvol'], errors='coerce')
             df['rvol'] = df['rvol'].fillna(1.0).clip(lower=0.01, upper=100)
+        
+        # Verify data quality
+        logger.info(f"Data quality check:")
+        logger.info(f"  - Stocks with valid price: {df['price'].notna().sum()}")
+        logger.info(f"  - Stocks with from_low data: {df['from_low_pct'].notna().sum()}")
+        logger.info(f"  - Stocks with ret_30d data: {df['ret_30d'].notna().sum() if 'ret_30d' in df.columns else 0}")
+        logger.info(f"  - Stocks with RVOL data: {(df['rvol'] != 1.0).sum()}")
         
         logger.info(f"Processed {len(df)} valid stocks")
         return df
@@ -900,7 +969,7 @@ class RankingEngine:
         else:
             logger.warning("Position data columns not found in input")
         
-        # Calculate all component scores</        # Calculate all component scores
+        # Calculate all component scores
         df['position_score'] = RankingEngine.calculate_position_score(df)
         df['volume_score'] = RankingEngine.calculate_volume_score(df)
         df['momentum_score'] = RankingEngine.calculate_momentum_score(df)
