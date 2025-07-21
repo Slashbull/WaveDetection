@@ -3401,7 +3401,56 @@ def main():
                             st.text(f"52W High: ₹{stock.get('high_52w', 0):,.0f}")
                             st.text(f"From High: {stock.get('from_high_pct', 0):.0f}%")
                             
-                            # Trend quality
+                            # Trading Above/Below SMAs
+                            st.markdown("**📊 Trading Position**")
+                            
+                            # Helper function for clean SMA display
+                            def get_sma_position(price, sma_value, sma_name):
+                                """Calculate position relative to SMA with clean formatting"""
+                                if pd.isna(sma_value) or sma_value <= 0:
+                                    return f"{sma_name}: No data"
+                                
+                                if price > sma_value:
+                                    pct_above = ((price - sma_value) / sma_value) * 100
+                                    return f"{sma_name}: ₹{sma_value:,.0f} (↑ {pct_above:.1f}%)"
+                                else:
+                                    pct_below = ((sma_value - price) / sma_value) * 100
+                                    return f"{sma_name}: ₹{sma_value:,.0f} (↓ {pct_below:.1f}%)"
+                            
+                            # Check each SMA
+                            current_price = stock.get('price', 0)
+                            trading_above = []
+                            trading_below = []
+                            
+                            sma_checks = [
+                                ('sma_20d', '20 DMA'),
+                                ('sma_50d', '50 DMA'),
+                                ('sma_200d', '200 DMA')
+                            ]
+                            
+                            for sma_col, sma_label in sma_checks:
+                                if sma_col in stock and pd.notna(stock[sma_col]) and stock[sma_col] > 0:
+                                    if current_price > stock[sma_col]:
+                                        trading_above.append(sma_label)
+                                    else:
+                                        trading_below.append(sma_label)
+                                    
+                                    # Show detailed position
+                                    position_text = get_sma_position(current_price, stock[sma_col], sma_label)
+                                    
+                                    # Color code the output
+                                    if current_price > stock[sma_col]:
+                                        st.text(f"✅ {position_text}")
+                                    else:
+                                        st.text(f"❌ {position_text}")
+                            
+                            # Summary of trading position
+                            if trading_above:
+                                st.success(f"Above: {', '.join(trading_above)}")
+                            if trading_below:
+                                st.warning(f"Below: {', '.join(trading_below)}")
+                            
+                            # Trend quality (existing)
                             if 'trend_quality' in stock:
                                 tq = stock['trend_quality']
                                 if tq >= 80:
