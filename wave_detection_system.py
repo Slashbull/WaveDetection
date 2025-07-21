@@ -1657,6 +1657,21 @@ class ExportEngine:
                         writer, sheet_name='Pattern Analysis', index=False
                     )
                 
+                # 6. Wave Radar Signals (if detected)
+                # Check for momentum shifts
+                momentum_shifts = df[
+                    (df['momentum_score'] >= 50) & 
+                    (df['acceleration_score'] >= 60)
+                ].head(20)
+                
+                if len(momentum_shifts) > 0:
+                    wave_cols = ['ticker', 'company_name', 'master_score', 
+                                'momentum_score', 'acceleration_score', 'rvol', 
+                                'category', 'sector']
+                    momentum_shifts[wave_cols].to_excel(
+                        writer, sheet_name='Wave Radar Signals', index=False
+                    )
+                
                 logger.info("Excel report created successfully")
                 
         except Exception as e:
@@ -1691,7 +1706,7 @@ def main():
     
     # Page configuration
     st.set_page_config(
-        page_title="Wave Detection Ultimate 3.0",
+        page_title="Wave Detection Ultimate 3.0 with Wave Radar™",
         page_icon="🌊",
         layout="wide",
         initial_sidebar_state="expanded"
@@ -1734,7 +1749,7 @@ def main():
     ">
         <h1 style="margin: 0; font-size: 2.5rem;">🌊 Wave Detection Ultimate 3.0</h1>
         <p style="margin: 0.5rem 0 0 0; opacity: 0.9;">
-            Professional Stock Ranking System with RVOL Integration
+            Professional Stock Ranking System with Wave Radar™ Early Detection
         </p>
     </div>
     """, unsafe_allow_html=True)
@@ -1780,7 +1795,14 @@ def main():
                 • **Breakout (10%)**: Breakout probability
                 • **RVOL (10%)**: Today's relative volume
                 
-                **Features:**
+                **🌊 Wave Radar Features:**
+                • **Momentum Shifts**: Catch stocks entering strength
+                • **Category Flow**: Track smart money rotation
+                • **Pattern Emergence**: Early pattern detection
+                • **Acceleration Alerts**: Momentum building signals
+                • **Volume Surges**: Unusual activity detection
+                
+                **Core Features:**
                 • Real-time RVOL integration
                 • 11 advanced pattern detections
                 • Smart Trend filter with visual indicators
@@ -1992,8 +2014,8 @@ def main():
             st.metric("With Patterns", f"{with_patterns}")
     
     # Main tabs
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
-        "🏆 Rankings", "📊 Analysis", "🔍 Search", "📈 Visualizations", "📥 Export"
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+        "🏆 Rankings", "🌊 Wave Radar", "📊 Analysis", "🔍 Search", "📈 Visualizations", "📥 Export"
     ])
     
     # Tab 1: Rankings
@@ -2131,8 +2153,484 @@ def main():
         else:
             st.warning("No stocks match the selected filters.")
     
-    # Tab 2: Analysis
+    # Tab 2: Wave Radar - ALL TIME BEST IMPLEMENTATION
     with tab2:
+        st.markdown("### 🌊 Wave Radar - Early Momentum Detection System")
+        st.markdown("*Catch waves as they form, not after they've peaked!*")
+        
+        # Wave Radar Controls
+        radar_col1, radar_col2, radar_col3, radar_col4 = st.columns([2, 2, 2, 1])
+        
+        with radar_col1:
+            wave_timeframe = st.selectbox(
+                "Wave Detection Timeframe",
+                ["Real-Time (Today)", "3-Day Formation", "Weekly Formation"],
+                help="How far back to detect wave formation"
+            )
+        
+        with radar_col2:
+            sensitivity = st.select_slider(
+                "Detection Sensitivity",
+                options=["Conservative", "Balanced", "Aggressive"],
+                value="Balanced",
+                help="Conservative = Stronger signals, Aggressive = More signals"
+            )
+        
+        with radar_col3:
+            auto_refresh = st.checkbox("Auto-refresh (5 min)", value=False)
+            if auto_refresh:
+                st.markdown("🔄 *Live monitoring active*")
+        
+        with radar_col4:
+            # Calculate overall Wave Strength
+            if not filtered_df.empty:
+                wave_strength = (
+                    len(filtered_df[filtered_df['momentum_score'] >= 60]) * 0.3 +
+                    len(filtered_df[filtered_df['acceleration_score'] >= 70]) * 0.3 +
+                    len(filtered_df[filtered_df['rvol'] >= 2]) * 0.2 +
+                    len(filtered_df[filtered_df['breakout_score'] >= 70]) * 0.2
+                ) / len(filtered_df) * 100
+                
+                if wave_strength > 20:
+                    wave_emoji = "🌊🔥"
+                    wave_color = "🟢"
+                elif wave_strength > 10:
+                    wave_emoji = "🌊"
+                    wave_color = "🟡"
+                else:
+                    wave_emoji = "💤"
+                    wave_color = "🔴"
+                
+                st.metric(
+                    "Wave Strength",
+                    f"{wave_emoji} {wave_strength:.0f}%",
+                    f"{wave_color} Market"
+                )
+        
+        # Calculate Wave Signals
+        if not filtered_df.empty:
+            # 1. MOMENTUM SHIFT DETECTION
+            st.markdown("#### 🚀 Momentum Shifts - Stocks Entering Strength")
+            
+            # Calculate momentum shifts
+            momentum_shifts = filtered_df.copy()
+            
+            # Identify crossing points based on sensitivity
+            if sensitivity == "Conservative":
+                cross_threshold = 60
+                min_acceleration = 70
+            elif sensitivity == "Balanced":
+                cross_threshold = 50
+                min_acceleration = 60
+            else:  # Aggressive
+                cross_threshold = 40
+                min_acceleration = 50
+            
+            # Find stocks crossing into strength
+            # Check if ret_30d exists, otherwise use ret_7d as proxy
+            if 'ret_30d' in momentum_shifts.columns:
+                median_return = momentum_shifts['ret_30d'].median()
+                return_condition = momentum_shifts['ret_30d'] > median_return
+            elif 'ret_7d' in momentum_shifts.columns:
+                median_return = momentum_shifts['ret_7d'].median()
+                return_condition = momentum_shifts['ret_7d'] > median_return
+            else:
+                return_condition = True  # No return filter if no data
+            
+            momentum_shifts['momentum_shift'] = (
+                (momentum_shifts['momentum_score'] >= cross_threshold) & 
+                (momentum_shifts['acceleration_score'] >= min_acceleration) &
+                return_condition
+            )
+            
+            # Calculate shift strength
+            momentum_shifts['shift_strength'] = (
+                momentum_shifts['momentum_score'] * 0.4 +
+                momentum_shifts['acceleration_score'] * 0.4 +
+                momentum_shifts['rvol_score'] * 0.2
+            )
+            
+            # Get top momentum shifts
+            top_shifts = momentum_shifts[momentum_shifts['momentum_shift']].nlargest(20, 'shift_strength')
+            
+            if len(top_shifts) > 0:
+                # Select available columns for display
+                display_columns = ['ticker', 'company_name', 'master_score', 'momentum_score', 
+                                 'acceleration_score', 'rvol']
+                
+                # Add optional columns if they exist
+                if 'ret_7d' in top_shifts.columns:
+                    display_columns.append('ret_7d')
+                
+                display_columns.append('category')
+                
+                shift_display = top_shifts[display_columns].copy()
+                
+                # Add shift indicators
+                shift_display['Signal'] = shift_display.apply(
+                    lambda x: "🔥 HOT" if x['acceleration_score'] > 80 else "📈 RISING", axis=1
+                )
+                
+                # Format for display
+                if 'ret_7d' in shift_display.columns:
+                    shift_display['ret_7d'] = shift_display['ret_7d'].apply(lambda x: f"{x:.1f}%" if pd.notna(x) else "0.0%")
+                else:
+                    shift_display['ret_7d'] = "N/A"
+                
+                shift_display['rvol'] = shift_display['rvol'].apply(lambda x: f"{x:.1f}x")
+                
+                # Rename columns
+                rename_dict = {
+                    'ticker': 'Ticker',
+                    'company_name': 'Company',
+                    'master_score': 'Score',
+                    'momentum_score': 'Momentum',
+                    'acceleration_score': 'Acceleration',
+                    'rvol': 'RVOL',
+                    'category': 'Category'
+                }
+                
+                if 'ret_7d' in shift_display.columns:
+                    rename_dict['ret_7d'] = '7D Return'
+                
+                shift_display = shift_display.rename(columns=rename_dict)
+                
+                st.dataframe(
+                    shift_display,
+                    use_container_width=True,
+                    hide_index=True
+                )
+            else:
+                st.info("No momentum shifts detected with current settings. Try 'Aggressive' sensitivity.")
+            
+            # 2. CATEGORY ROTATION FLOW
+            st.markdown("#### 💰 Category Rotation - Smart Money Flow")
+            
+            col1, col2 = st.columns([3, 2])
+            
+            with col1:
+                # Calculate category performance
+                category_flow = filtered_df.groupby('category').agg({
+                    'master_score': ['mean', 'count'],
+                    'momentum_score': 'mean',
+                    'volume_score': 'mean',
+                    'rvol': 'mean'
+                }).round(2)
+                
+                category_flow.columns = ['Avg Score', 'Count', 'Avg Momentum', 'Avg Volume', 'Avg RVOL']
+                category_flow['Flow Score'] = (
+                    category_flow['Avg Score'] * 0.4 +
+                    category_flow['Avg Momentum'] * 0.3 +
+                    category_flow['Avg Volume'] * 0.3
+                )
+                
+                # Determine flow direction
+                category_flow = category_flow.sort_values('Flow Score', ascending=False)
+                flow_direction = "🔥 Risk-ON" if category_flow.index[0] in ['MICRO', 'SMALL'] else "❄️ Risk-OFF"
+                
+                # Create flow visualization
+                fig_flow = go.Figure()
+                
+                fig_flow.add_trace(go.Bar(
+                    x=category_flow.index,
+                    y=category_flow['Flow Score'],
+                    text=[f"{val:.1f}" for val in category_flow['Flow Score']],
+                    textposition='outside',
+                    marker_color=['#2ecc71' if score > 60 else '#e74c3c' if score < 40 else '#f39c12' 
+                                 for score in category_flow['Flow Score']],
+                    hovertemplate='Category: %{x}<br>Flow Score: %{y:.1f}<extra></extra>'
+                ))
+                
+                fig_flow.update_layout(
+                    title=f"Smart Money Flow Direction: {flow_direction}",
+                    xaxis_title="Market Cap Category",
+                    yaxis_title="Flow Score",
+                    height=300,
+                    template='plotly_white'
+                )
+                
+                st.plotly_chart(fig_flow, use_container_width=True)
+            
+            with col2:
+                st.markdown(f"**🎯 Market Regime: {flow_direction}**")
+                
+                # Top categories
+                st.markdown("**💎 Strongest Categories:**")
+                for i, (cat, row) in enumerate(category_flow.head(3).iterrows()):
+                    emoji = "🥇" if i == 0 else "🥈" if i == 1 else "🥉"
+                    st.write(f"{emoji} **{cat}**: Score {row['Flow Score']:.1f}")
+                
+                # Category shift detection
+                st.markdown("**🔄 Category Shifts:**")
+                if 'SMALL' in category_flow.index and 'LARGE' in category_flow.index:
+                    small_score = category_flow.loc['SMALL', 'Flow Score']
+                    large_score = category_flow.loc['LARGE', 'Flow Score']
+                    
+                    if small_score > large_score * 1.2:
+                        st.success("📈 Small Caps Leading - Early Bull Signal!")
+                    elif large_score > small_score * 1.2:
+                        st.warning("📉 Large Caps Leading - Defensive Mode")
+                    else:
+                        st.info("➡️ Balanced Market - No Clear Leader")
+            
+            # 3. EMERGING PATTERNS
+            st.markdown("#### 🎯 Emerging Patterns - About to Qualify")
+            
+            # Calculate pattern emergence
+            pattern_emergence = filtered_df.copy()
+            
+            # Check how close to pattern thresholds
+            emergence_data = []
+            
+            # Category Leader emergence
+            if 'category_percentile' in pattern_emergence.columns:
+                close_to_leader = pattern_emergence[
+                    (pattern_emergence['category_percentile'] >= 85) & 
+                    (pattern_emergence['category_percentile'] < 90)
+                ]
+                for _, stock in close_to_leader.iterrows():
+                    emergence_data.append({
+                        'Ticker': stock['ticker'],
+                        'Company': stock['company_name'],
+                        'Pattern': '🔥 CAT LEADER',
+                        'Distance': f"{90 - stock['category_percentile']:.1f}% away",
+                        'Current': f"{stock['category_percentile']:.1f}%ile",
+                        'Score': stock['master_score']
+                    })
+            
+            # Breakout Ready emergence
+            if 'breakout_score' in pattern_emergence.columns:
+                close_to_breakout = pattern_emergence[
+                    (pattern_emergence['breakout_score'] >= 75) & 
+                    (pattern_emergence['breakout_score'] < 80)
+                ]
+                for _, stock in close_to_breakout.iterrows():
+                    emergence_data.append({
+                        'Ticker': stock['ticker'],
+                        'Company': stock['company_name'],
+                        'Pattern': '🎯 BREAKOUT',
+                        'Distance': f"{80 - stock['breakout_score']:.1f} pts away",
+                        'Current': f"{stock['breakout_score']:.1f} score",
+                        'Score': stock['master_score']
+                    })
+            
+            # Volume Explosion emergence
+            close_to_explosion = pattern_emergence[
+                (pattern_emergence['rvol'] >= 2.5) & 
+                (pattern_emergence['rvol'] < 3.0)
+            ]
+            for _, stock in close_to_explosion.iterrows():
+                emergence_data.append({
+                    'Ticker': stock['ticker'],
+                    'Company': stock['company_name'],
+                    'Pattern': '⚡ VOL EXPLOSION',
+                    'Distance': f"{3.0 - stock['rvol']:.1f}x away",
+                    'Current': f"{stock['rvol']:.1f}x",
+                    'Score': stock['master_score']
+                })
+            
+            if emergence_data:
+                emergence_df = pd.DataFrame(emergence_data).sort_values('Score', ascending=False).head(15)
+                
+                col1, col2 = st.columns([3, 1])
+                with col1:
+                    st.dataframe(emergence_df, use_container_width=True, hide_index=True)
+                with col2:
+                    st.metric("Emerging Patterns", len(emergence_df))
+                    st.caption("Stocks about to trigger pattern alerts")
+            else:
+                st.info("No patterns emerging with current filters.")
+            
+            # 4. ACCELERATION ALERTS
+            st.markdown("#### ⚡ Acceleration Alerts - Momentum Building")
+            
+            # Find accelerating stocks
+            # Build conditions based on available columns
+            accel_conditions = (
+                (filtered_df['acceleration_score'] >= 70) &
+                (filtered_df['momentum_score'] >= 60)
+            )
+            
+            # Add return pace condition if data available
+            if 'ret_7d' in filtered_df.columns and 'ret_30d' in filtered_df.columns:
+                accel_conditions &= (filtered_df['ret_7d'] > filtered_df['ret_30d'] / 30 * 7)
+            
+            accelerating = filtered_df[accel_conditions].nlargest(10, 'acceleration_score')
+            
+            if len(accelerating) > 0:
+                # Create acceleration visualization
+                fig_accel = go.Figure()
+                
+                for _, stock in accelerating.iterrows():
+                    # Create mini momentum chart
+                    returns = [0]  # Start point
+                    x_points = ['Start']
+                    
+                    if 'ret_30d' in stock.index and pd.notna(stock['ret_30d']):
+                        returns.append(stock['ret_30d'])
+                        x_points.append('30D Actual')
+                    
+                    if 'ret_7d' in stock.index and pd.notna(stock['ret_7d']):
+                        if 'ret_30d' in stock.index:
+                            returns.append(stock['ret_7d'] * 30/7)  # Projected 30d at 7d pace
+                            x_points.append('7D Pace')
+                        else:
+                            returns.append(stock['ret_7d'])
+                            x_points.append('7D Return')
+                    
+                    if 'ret_1d' in stock.index and pd.notna(stock['ret_1d']):
+                        if 'ret_30d' in stock.index:
+                            returns.append(stock['ret_1d'] * 30)  # Projected 30d at 1d pace
+                            x_points.append('1D Pace')
+                        else:
+                            returns.append(stock['ret_1d'])
+                            x_points.append('1D Return')
+                    
+                    if len(returns) > 1:  # Only plot if we have data
+                        fig_accel.add_trace(go.Scatter(
+                            x=x_points,
+                            y=returns,
+                            mode='lines+markers',
+                            name=stock['ticker'],
+                            line=dict(width=2),
+                            hovertemplate='%{y:.1f}%<extra></extra>'
+                        ))
+                
+                fig_accel.update_layout(
+                    title="Acceleration Profiles - Momentum Building",
+                    xaxis_title="Time Frame",
+                    yaxis_title="Return % (Annualized)",
+                    height=350,
+                    template='plotly_white',
+                    showlegend=True,
+                    legend=dict(
+                        orientation="v",
+                        yanchor="top",
+                        y=1,
+                        xanchor="left",
+                        x=1.02
+                    )
+                )
+                
+                st.plotly_chart(fig_accel, use_container_width=True)
+            else:
+                st.info("No strong acceleration signals detected.")
+            
+            # 5. VOLUME SURGE DETECTION
+            st.markdown("#### 🌊 Volume Surges - Unusual Activity NOW")
+            
+            # Find volume surges
+            # Build surge conditions based on available columns
+            surge_conditions = (filtered_df['rvol'] >= 2.0)
+            
+            if 'vol_ratio_1d_90d' in filtered_df.columns:
+                surge_conditions |= (filtered_df['vol_ratio_1d_90d'] >= 2.0)
+            
+            volume_surges = filtered_df[surge_conditions].copy()
+            
+            if len(volume_surges) > 0:
+                # Calculate surge score
+                volume_surges['surge_score'] = (
+                    volume_surges['rvol_score'] * 0.5 +
+                    volume_surges['volume_score'] * 0.3 +
+                    volume_surges['momentum_score'] * 0.2
+                )
+                
+                top_surges = volume_surges.nlargest(15, 'surge_score')
+                
+                # Create surge visualization
+                col1, col2 = st.columns([2, 1])
+                
+                with col1:
+                    # Select available columns for display
+                    display_columns = ['ticker', 'company_name', 'rvol', 'price', 'category']
+                    
+                    # Add optional columns if they exist
+                    if 'ret_1d' in top_surges.columns:
+                        display_columns.insert(3, 'ret_1d')
+                    
+                    surge_display = top_surges[display_columns].copy()
+                    
+                    # Add surge type
+                    surge_display['Type'] = surge_display['rvol'].apply(
+                        lambda x: "🔥🔥🔥" if x > 5 else "🔥🔥" if x > 3 else "🔥"
+                    )
+                    
+                    # Format columns
+                    if 'ret_1d' in surge_display.columns:
+                        surge_display['ret_1d'] = surge_display['ret_1d'].apply(
+                            lambda x: f"{x:+.1f}%" if pd.notna(x) else "0.0%"
+                        )
+                    else:
+                        surge_display['ret_1d'] = "N/A"
+                    
+                    surge_display['price'] = surge_display['price'].apply(lambda x: f"₹{x:,.0f}")
+                    surge_display['rvol'] = surge_display['rvol'].apply(lambda x: f"{x:.1f}x")
+                    
+                    # Rename columns
+                    rename_dict = {
+                        'ticker': 'Ticker',
+                        'company_name': 'Company',
+                        'rvol': 'RVOL',
+                        'price': 'Price',
+                        'category': 'Category'
+                    }
+                    
+                    if 'ret_1d' in surge_display.columns:
+                        rename_dict['ret_1d'] = '1D Ret'
+                    
+                    surge_display = surge_display.rename(columns=rename_dict)
+                    
+                    st.dataframe(surge_display, use_container_width=True, hide_index=True)
+                
+                with col2:
+                    # Volume statistics
+                    st.metric("Active Surges", len(volume_surges))
+                    st.metric("Extreme (>5x)", len(volume_surges[volume_surges['rvol'] > 5]))
+                    st.metric("High (>3x)", len(volume_surges[volume_surges['rvol'] > 3]))
+                    
+                    # Surge distribution
+                    surge_categories = volume_surges['category'].value_counts()
+                    if len(surge_categories) > 0:
+                        st.markdown("**Surge by Category:**")
+                        for cat, count in surge_categories.head(3).items():
+                            st.caption(f"{cat}: {count} stocks")
+            else:
+                st.info("No significant volume surges detected.")
+            
+            # Wave Radar Summary
+            st.markdown("---")
+            st.markdown("#### 🎯 Wave Radar Summary")
+            
+            summary_cols = st.columns(5)
+            
+            with summary_cols[0]:
+                momentum_count = len(top_shifts) if 'top_shifts' in locals() else 0
+                st.metric("Momentum Shifts", momentum_count)
+            
+            with summary_cols[1]:
+                st.metric("Market Regime", flow_direction.split()[1])
+            
+            with summary_cols[2]:
+                st.metric("Emerging Patterns", len(emergence_data))
+            
+            with summary_cols[3]:
+                accel_count = len(filtered_df[filtered_df['acceleration_score'] >= 70])
+                st.metric("Accelerating", accel_count)
+            
+            with summary_cols[4]:
+                surge_count = len(filtered_df[filtered_df['rvol'] >= 2])
+                st.metric("Volume Surges", surge_count)
+            
+            # Auto-refresh note
+            if auto_refresh:
+                st.info("🔄 Auto-refresh enabled - Please manually refresh the page every 5 minutes or use browser auto-refresh extensions")
+        
+        else:
+            st.warning("No data available for Wave Radar analysis.")
+    
+    # Tab 3: Analysis (previously tab2)
+    with tab3:
         st.markdown("### 📊 Market Analysis")
         
         if not filtered_df.empty:
@@ -2225,8 +2723,8 @@ def main():
         else:
             st.info("No data available for analysis.")
     
-    # Tab 3: Search
-    with tab3:
+    # Tab 4: Search (previously tab3)
+    with tab4:
         st.markdown("### 🔍 Advanced Stock Search")
         
         # Search interface
@@ -2383,8 +2881,8 @@ def main():
             else:
                 st.warning("No stocks found matching your search criteria.")
     
-    # Tab 4: Visualizations
-    with tab4:
+    # Tab 5: Visualizations (previously tab4)
+    with tab5:
         st.markdown("### 📈 Interactive Visualizations")
         
         if not filtered_df.empty:
@@ -2445,8 +2943,8 @@ def main():
         else:
             st.info("No data available for visualization.")
     
-    # Tab 5: Export
-    with tab5:
+    # Tab 6: Export (previously tab5)
+    with tab6:
         st.markdown("### 📥 Export Data")
         
         col1, col2 = st.columns(2)
@@ -2459,7 +2957,9 @@ def main():
                 "- Complete stock list\n"
                 "- Sector analysis\n"
                 "- Category analysis\n"
-                "- Pattern frequency analysis"
+                "- Pattern frequency analysis\n"
+                "- Wave Radar signals (momentum shifts)\n"
+                "- Smart money flow tracking"
             )
             
             if st.button("Generate Excel Report", type="primary", use_container_width=True):
@@ -2482,12 +2982,14 @@ def main():
         with col2:
             st.markdown("#### 📄 CSV Export")
             st.markdown(
-                "Simple CSV format with key columns:\n"
+                "Enhanced CSV format with:\n"
                 "- All ranking scores\n"
                 "- Price and return data\n"
                 "- Pattern detections\n"
                 "- Category classifications\n"
-                "- Perfect for further analysis"
+                "- Trend quality scores\n"
+                "- RVOL and volume metrics\n"
+                "- Perfect for Wave Radar analysis"
             )
             
             if st.button("Generate CSV Export", use_container_width=True):
@@ -2529,8 +3031,8 @@ def main():
     st.markdown(
         """
         <div style="text-align: center; color: #666; padding: 1rem;">
-            Wave Detection Ultimate 3.0 | Professional Edition<br>
-            <small>Real-time stock ranking with RVOL integration</small>
+            Wave Detection Ultimate 3.0 | Professional Edition with Wave Radar™<br>
+            <small>Real-time momentum detection • Early entry signals • Smart money flow tracking</small>
         </div>
         """,
         unsafe_allow_html=True
