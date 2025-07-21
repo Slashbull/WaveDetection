@@ -1285,6 +1285,15 @@ class FilterEngine:
             )
             filtered_df = filtered_df[pattern_mask]
         
+        # Trend filter - Smart implementation
+        if filters.get('trend_range') and filters['trend_filter'] != 'All Trends':
+            min_trend, max_trend = filters['trend_range']
+            if 'trend_quality' in filtered_df.columns:
+                filtered_df = filtered_df[
+                    (filtered_df['trend_quality'] >= min_trend) & 
+                    (filtered_df['trend_quality'] <= max_trend)
+                ]
+        
         filtered_count = len(filtered_df)
         if filtered_count < initial_count:
             logger.info(f"Filters reduced stocks from {initial_count} to {filtered_count}")
@@ -1590,7 +1599,7 @@ class ExportEngine:
                     'rank', 'ticker', 'company_name', 'master_score',
                     'position_score', 'volume_score', 'momentum_score',
                     'acceleration_score', 'breakout_score', 'rvol_score',
-                    'price', 'from_low_pct', 'from_high_pct',
+                    'trend_quality', 'price', 'from_low_pct', 'from_high_pct',
                     'ret_1d', 'ret_7d', 'ret_30d', 'rvol',
                     'patterns', 'category', 'sector'
                 ]
@@ -1608,7 +1617,8 @@ class ExportEngine:
                 # 2. All Stocks Summary
                 summary_cols = [
                     'rank', 'ticker', 'company_name', 'master_score',
-                    'price', 'ret_30d', 'rvol', 'patterns', 'category', 'sector'
+                    'trend_quality', 'price', 'ret_30d', 'rvol', 
+                    'patterns', 'category', 'sector'
                 ]
                 available_summary = [col for col in summary_cols if col in df.columns]
                 df[available_summary].to_excel(
@@ -1663,7 +1673,7 @@ class ExportEngine:
             'rank', 'ticker', 'company_name', 'master_score',
             'position_score', 'volume_score', 'momentum_score',
             'acceleration_score', 'breakout_score', 'rvol_score',
-            'price', 'from_low_pct', 'from_high_pct',
+            'trend_quality', 'price', 'from_low_pct', 'from_high_pct',
             'ret_1d', 'ret_7d', 'ret_30d', 'ret_3m', 'ret_6m', 'ret_1y',
             'rvol', 'vol_ratio_30d_90d', 'vol_ratio_90d_180d',
             'patterns', 'category', 'sector', 'eps_tier', 'pe_tier'
@@ -1773,9 +1783,16 @@ def main():
                 **Features:**
                 • Real-time RVOL integration
                 • 11 advanced pattern detections
+                • Smart Trend filter with visual indicators
                 • Category-relative rankings
                 • Smart search with relevance
                 • Professional Excel exports
+                
+                **Trend Indicators:**
+                • 🔥 Strong Uptrend (80+)
+                • ✅ Good Uptrend (60-79)
+                • ➡️ Neutral Trend (40-59)
+                • ⚠️ Weak/Downtrend (<40)
                 """)
         
         st.markdown("---")
@@ -1870,6 +1887,24 @@ def main():
                 help="Filter by specific patterns"
             )
         
+        # Trend filter - Smart implementation
+        st.markdown("#### 📈 Trend Strength")
+        trend_options = {
+            "All Trends": (0, 100),
+            "🔥 Strong Uptrend (80+)": (80, 100),
+            "✅ Good Uptrend (60-79)": (60, 79),
+            "➡️ Neutral Trend (40-59)": (40, 59),
+            "⚠️ Weak/Downtrend (<40)": (0, 39)
+        }
+        
+        filters['trend_filter'] = st.selectbox(
+            "Trend Quality",
+            options=list(trend_options.keys()),
+            index=0,  # Default to "All Trends"
+            help="Filter stocks by trend strength based on SMA alignment"
+        )
+        filters['trend_range'] = trend_options[filters['trend_filter']]
+        
         # Advanced filters in expander
         with st.expander("🔧 Advanced Filters"):
             # EPS tier filter
@@ -1943,8 +1978,18 @@ def main():
         st.metric("High RVOL", f"{high_rvol}")
     
     with col6:
-        with_patterns = (filtered_df['patterns'] != '').sum()
-        st.metric("With Patterns", f"{with_patterns}")
+        # Show trend distribution
+        if 'trend_quality' in filtered_df.columns:
+            strong_trends = (filtered_df['trend_quality'] >= 80).sum()
+            total = len(filtered_df)
+            st.metric(
+                "Strong Trends", 
+                f"{strong_trends}",
+                f"{strong_trends/total*100:.0f}%" if total > 0 else "0%"
+            )
+        else:
+            with_patterns = (filtered_df['patterns'] != '').sum()
+            st.metric("With Patterns", f"{with_patterns}")
     
     # Main tabs
     tab1, tab2, tab3, tab4, tab5 = st.tabs([
@@ -1965,9 +2010,13 @@ def main():
             )
         
         with col2:
+            sort_options = ['Rank', 'Master Score', 'RVOL', 'Momentum']
+            if 'trend_quality' in filtered_df.columns:
+                sort_options.append('Trend')
+            
             sort_by = st.selectbox(
                 "Sort by",
-                options=['Rank', 'Master Score', 'RVOL', 'Momentum'],
+                options=sort_options,
                 index=0
             )
         
@@ -1981,14 +2030,40 @@ def main():
             display_df = display_df.sort_values('rvol', ascending=False)
         elif sort_by == 'Momentum':
             display_df = display_df.sort_values('momentum_score', ascending=False)
+        elif sort_by == 'Trend' and 'trend_quality' in display_df.columns:
+            display_df = display_df.sort_values('trend_quality', ascending=False)
         
         if not display_df.empty:
+            # Add trend indicator column
+            if 'trend_quality' in display_df.columns:
+                def get_trend_indicator(score):
+                    if pd.isna(score):
+                        return "➖"
+                    elif score >= 80:
+                        return "🔥"  # Strong uptrend
+                    elif score >= 60:
+                        return "✅"  # Good uptrend
+                    elif score >= 40:
+                        return "➡️"  # Neutral
+                    else:
+                        return "⚠️"  # Weak/downtrend
+                
+                display_df['trend_indicator'] = display_df['trend_quality'].apply(get_trend_indicator)
+            
             # Prepare display columns
             display_cols = {
                 'rank': 'Rank',
                 'ticker': 'Ticker',
                 'company_name': 'Company',
-                'master_score': 'Score',
+                'master_score': 'Score'
+            }
+            
+            # Add trend indicator if it exists
+            if 'trend_indicator' in display_df.columns:
+                display_cols['trend_indicator'] = 'Trend'
+            
+            # Add remaining columns
+            display_cols.update({
                 'price': 'Price',
                 'from_low_pct': 'From Low',
                 'ret_30d': '30D Ret',
@@ -1996,7 +2071,7 @@ def main():
                 'patterns': 'Patterns',
                 'category': 'Category',
                 'sector': 'Sector'
-            }
+            })
             
             # Format numeric columns
             format_rules = {
@@ -2108,6 +2183,44 @@ def main():
                     category_df.style.background_gradient(subset=['Avg Score']),
                     use_container_width=True
                 )
+            
+            # Trend Analysis
+            if 'trend_quality' in filtered_df.columns:
+                st.markdown("#### 📈 Trend Distribution")
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    # Trend distribution pie chart
+                    trend_dist = pd.cut(
+                        filtered_df['trend_quality'],
+                        bins=[0, 40, 60, 80, 100],
+                        labels=['⚠️ Weak/Down', '➡️ Neutral', '✅ Good Up', '🔥 Strong Up']
+                    ).value_counts()
+                    
+                    fig_trend = px.pie(
+                        values=trend_dist.values,
+                        names=trend_dist.index,
+                        title="Trend Quality Distribution",
+                        color_discrete_map={
+                            '🔥 Strong Up': '#2ecc71',
+                            '✅ Good Up': '#3498db',
+                            '➡️ Neutral': '#f39c12',
+                            '⚠️ Weak/Down': '#e74c3c'
+                        }
+                    )
+                    st.plotly_chart(fig_trend, use_container_width=True)
+                
+                with col2:
+                    # Trend statistics
+                    st.markdown("**Trend Statistics**")
+                    trend_stats = {
+                        "Average Trend Score": f"{filtered_df['trend_quality'].mean():.1f}",
+                        "Stocks Above All SMAs": f"{(filtered_df['trend_quality'] >= 85).sum()}",
+                        "Stocks in Uptrend (60+)": f"{(filtered_df['trend_quality'] >= 60).sum()}",
+                        "Stocks in Downtrend (<40)": f"{(filtered_df['trend_quality'] < 40).sum()}"
+                    }
+                    for label, value in trend_stats.items():
+                        st.metric(label, value)
         
         else:
             st.info("No data available for analysis.")
