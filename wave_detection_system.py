@@ -1723,10 +1723,6 @@ def main():
         padding: 1rem;
         border-radius: 5px;
     }
-    /* Fix for search tab switching bug */
-    .stTextInput > div > div > input {
-        background-color: white !important;
-    }
     </style>
     """, unsafe_allow_html=True)
     
@@ -2431,9 +2427,12 @@ def main():
             )
         
         with radar_col3:
-            auto_refresh = st.checkbox("Auto-refresh (5 min)", value=False)
-            if auto_refresh:
-                st.markdown("🔄 *Live monitoring active*")
+            # Market Regime Toggle
+            show_market_regime = st.checkbox(
+                "📊 Market Regime Analysis",
+                value=True,
+                help="Show category rotation flow and market regime detection"
+            )
         
         with radar_col4:
             # Calculate overall Wave Strength
@@ -2465,10 +2464,25 @@ def main():
                         wave_emoji = "💤"
                         wave_color = "🔴"
                     
+                    # If market regime is hidden, still calculate and show regime in metric
+                    regime_indicator = ""
+                    if not show_market_regime and not filtered_df.empty and 'category' in filtered_df.columns:
+                        # Quick regime calculation for display
+                        try:
+                            quick_flow = filtered_df.groupby('category')['master_score'].mean()
+                            if len(quick_flow) > 0:
+                                top_category = quick_flow.idxmax()
+                                if 'Small' in top_category or 'Micro' in top_category:
+                                    regime_indicator = " | Risk-ON"
+                                elif 'Large' in top_category or 'Mega' in top_category:
+                                    regime_indicator = " | Risk-OFF"
+                        except:
+                            pass
+                    
                     st.metric(
                         "Wave Strength",
                         f"{wave_emoji} {wave_strength:.0f}%",
-                        f"{wave_color} Market"
+                        f"{wave_color} Market{regime_indicator}"
                     )
                 except Exception as e:
                     logger.error(f"Error calculating wave strength: {str(e)}")
@@ -2569,107 +2583,208 @@ def main():
                 st.info("No momentum shifts detected with current settings. Try 'Aggressive' sensitivity.")
             
             # 2. CATEGORY ROTATION FLOW
-            st.markdown("#### 💰 Category Rotation - Smart Money Flow")
-            
-            col1, col2 = st.columns([3, 2])
-            
-            with col1:
-                # Calculate category performance
-                try:
-                    if not filtered_df.empty and 'category' in filtered_df.columns:
-                        category_flow = filtered_df.groupby('category').agg({
-                            'master_score': ['mean', 'count'],
-                            'momentum_score': 'mean',
-                            'volume_score': 'mean',
-                            'rvol': 'mean'
-                        }).round(2)
-                        
-                        if not category_flow.empty:
-                            category_flow.columns = ['Avg Score', 'Count', 'Avg Momentum', 'Avg Volume', 'Avg RVOL']
-                            category_flow['Flow Score'] = (
-                                category_flow['Avg Score'] * 0.4 +
-                                category_flow['Avg Momentum'] * 0.3 +
-                                category_flow['Avg Volume'] * 0.3
-                            )
+            if show_market_regime:
+                st.markdown("#### 💰 Category Rotation - Smart Money Flow")
+                
+                col1, col2 = st.columns([3, 2])
+                
+                with col1:
+                    # Calculate category performance using TOP 25 by market cap
+                    try:
+                        if not filtered_df.empty and 'category' in filtered_df.columns and 'market_cap' in filtered_df.columns:
+                            # Group by category and get top 25 by market cap
+                            category_leaders = pd.DataFrame()
                             
-                            # Determine flow direction
-                            category_flow = category_flow.sort_values('Flow Score', ascending=False)
-                            if len(category_flow) > 0 and category_flow.index[0] in ['MICRO', 'SMALL']:
-                                flow_direction = "🔥 Risk-ON"
-                            elif len(category_flow) > 0:
-                                flow_direction = "❄️ Risk-OFF"
+                            for category in filtered_df['category'].unique():
+                                if category != 'Unknown':
+                                    # Get stocks in this category
+                                    cat_stocks = filtered_df[filtered_df['category'] == category]
+                                    
+                                    # Sort by market cap and take top 25
+                                    if len(cat_stocks) > 25:
+                                        # Convert market_cap to numeric for proper sorting
+                                        cat_stocks = cat_stocks.copy()
+                                        cat_stocks['market_cap_numeric'] = pd.to_numeric(
+                                            cat_stocks['market_cap'].astype(str).str.replace(',', ''), 
+                                            errors='coerce'
+                                        )
+                                        # Take top 25 by market cap
+                                        top_25 = cat_stocks.nlargest(25, 'market_cap_numeric')
+                                    else:
+                                        # If less than 25 stocks, take all
+                                        top_25 = cat_stocks
+                                    
+                                    category_leaders = pd.concat([category_leaders, top_25])
+                            
+                            # Calculate flow scores using leaders only
+                            if not category_leaders.empty:
+                                category_flow = category_leaders.groupby('category').agg({
+                                    'master_score': ['mean', 'count'],
+                                    'momentum_score': 'mean',
+                                    'volume_score': 'mean',
+                                    'rvol': 'mean'
+                                }).round(2)
+                                
+                                category_flow.columns = ['Avg Score', 'Count', 'Avg Momentum', 'Avg Volume', 'Avg RVOL']
+                                category_flow['Flow Score'] = (
+                                    category_flow['Avg Score'] * 0.4 +
+                                    category_flow['Avg Momentum'] * 0.3 +
+                                    category_flow['Avg Volume'] * 0.3
+                                )
+                                
+                                # Determine flow direction
+                                category_flow = category_flow.sort_values('Flow Score', ascending=False)
+                                if len(category_flow) > 0:
+                                    top_category = category_flow.index[0]
+                                    # Check for Small/Micro or Large/Mega in category name
+                                    if 'Small' in top_category or 'Micro' in top_category:
+                                        flow_direction = "🔥 Risk-ON"
+                                    elif 'Large' in top_category or 'Mega' in top_category:
+                                        flow_direction = "❄️ Risk-OFF"
+                                    else:
+                                        flow_direction = "➡️ Neutral"
+                                else:
+                                    flow_direction = "➡️ Neutral"
+                                
+                                # Create flow visualization
+                                fig_flow = go.Figure()
+                                
+                                fig_flow.add_trace(go.Bar(
+                                    x=category_flow.index,
+                                    y=category_flow['Flow Score'],
+                                    text=[f"{val:.1f}" for val in category_flow['Flow Score']],
+                                    textposition='outside',
+                                    marker_color=['#2ecc71' if score > 60 else '#e74c3c' if score < 40 else '#f39c12' 
+                                                 for score in category_flow['Flow Score']],
+                                    hovertemplate='Category: %{x}<br>Flow Score: %{y:.1f}<br>Stocks Analyzed: Top 25 by Market Cap<extra></extra>'
+                                ))
+                                
+                                fig_flow.update_layout(
+                                    title=f"Smart Money Flow Direction: {flow_direction} (Top 25 Leaders per Category)",
+                                    xaxis_title="Market Cap Category",
+                                    yaxis_title="Flow Score",
+                                    height=300,
+                                    template='plotly_white'
+                                )
+                                
+                                st.plotly_chart(fig_flow, use_container_width=True)
                             else:
+                                st.info("Insufficient data for category flow analysis")
                                 flow_direction = "➡️ Neutral"
-                            
-                            # Create flow visualization
-                            fig_flow = go.Figure()
-                            
-                            fig_flow.add_trace(go.Bar(
-                                x=category_flow.index,
-                                y=category_flow['Flow Score'],
-                                text=[f"{val:.1f}" for val in category_flow['Flow Score']],
-                                textposition='outside',
-                                marker_color=['#2ecc71' if score > 60 else '#e74c3c' if score < 40 else '#f39c12' 
-                                             for score in category_flow['Flow Score']],
-                                hovertemplate='Category: %{x}<br>Flow Score: %{y:.1f}<extra></extra>'
-                            ))
-                            
-                            fig_flow.update_layout(
-                                title=f"Smart Money Flow Direction: {flow_direction}",
-                                xaxis_title="Market Cap Category",
-                                yaxis_title="Flow Score",
-                                height=300,
-                                template='plotly_white'
-                            )
-                            
-                            st.plotly_chart(fig_flow, use_container_width=True)
+                                category_flow = pd.DataFrame()
                         else:
-                            st.info("No category data available for flow analysis")
-                            flow_direction = "➡️ Neutral"
-                    else:
-                        st.info("Category data not available")
+                            # Fallback if market_cap column is missing
+                            if not filtered_df.empty and 'category' in filtered_df.columns:
+                                # Use all stocks (original method)
+                                category_flow = filtered_df.groupby('category').agg({
+                                    'master_score': ['mean', 'count'],
+                                    'momentum_score': 'mean',
+                                    'volume_score': 'mean',
+                                    'rvol': 'mean'
+                                }).round(2)
+                                
+                                if not category_flow.empty:
+                                    category_flow.columns = ['Avg Score', 'Count', 'Avg Momentum', 'Avg Volume', 'Avg RVOL']
+                                    category_flow['Flow Score'] = (
+                                        category_flow['Avg Score'] * 0.4 +
+                                        category_flow['Avg Momentum'] * 0.3 +
+                                        category_flow['Avg Volume'] * 0.3
+                                    )
+                                    
+                                    category_flow = category_flow.sort_values('Flow Score', ascending=False)
+                                    if len(category_flow) > 0:
+                                        top_category = category_flow.index[0]
+                                        if 'Small' in top_category or 'Micro' in top_category:
+                                            flow_direction = "🔥 Risk-ON"
+                                        elif 'Large' in top_category or 'Mega' in top_category:
+                                            flow_direction = "❄️ Risk-OFF"
+                                        else:
+                                            flow_direction = "➡️ Neutral"
+                                    else:
+                                        flow_direction = "➡️ Neutral"
+                                    
+                                    # Create flow visualization
+                                    fig_flow = go.Figure()
+                                    
+                                    fig_flow.add_trace(go.Bar(
+                                        x=category_flow.index,
+                                        y=category_flow['Flow Score'],
+                                        text=[f"{val:.1f}" for val in category_flow['Flow Score']],
+                                        textposition='outside',
+                                        marker_color=['#2ecc71' if score > 60 else '#e74c3c' if score < 40 else '#f39c12' 
+                                                     for score in category_flow['Flow Score']],
+                                        hovertemplate='Category: %{x}<br>Flow Score: %{y:.1f}<br>Stocks Analyzed: All<extra></extra>'
+                                    ))
+                                    
+                                    fig_flow.update_layout(
+                                        title=f"Smart Money Flow Direction: {flow_direction}",
+                                        xaxis_title="Market Cap Category",
+                                        yaxis_title="Flow Score",
+                                        height=300,
+                                        template='plotly_white'
+                                    )
+                                    
+                                    st.plotly_chart(fig_flow, use_container_width=True)
+                                else:
+                                    st.info("No category data available for flow analysis")
+                                    flow_direction = "➡️ Neutral"
+                                    category_flow = pd.DataFrame()
+                            else:
+                                st.info("Category data not available")
+                                flow_direction = "➡️ Neutral"
+                                category_flow = pd.DataFrame()
+                            
+                    except Exception as e:
+                        logger.error(f"Error in category flow analysis: {str(e)}")
+                        st.error("Unable to analyze category flow")
                         flow_direction = "➡️ Neutral"
                         category_flow = pd.DataFrame()
-                        
-                except Exception as e:
-                    logger.error(f"Error in category flow analysis: {str(e)}")
-                    st.error("Unable to analyze category flow")
-                    flow_direction = "➡️ Neutral"
-                    category_flow = pd.DataFrame()
-            
-            with col2:
-                st.markdown(f"**🎯 Market Regime: {flow_direction}**")
                 
-                # Top categories
-                st.markdown("**💎 Strongest Categories:**")
-                if not category_flow.empty:
-                    for i, (cat, row) in enumerate(category_flow.head(3).iterrows()):
-                        emoji = "🥇" if i == 0 else "🥈" if i == 1 else "🥉"
-                        try:
-                            st.write(f"{emoji} **{cat}**: Score {row['Flow Score']:.1f}")
-                        except:
-                            st.write(f"{emoji} **{cat}**: Score N/A")
-                else:
-                    st.info("No category data available")
-                
-                # Category shift detection
-                st.markdown("**🔄 Category Shifts:**")
-                if not category_flow.empty and 'SMALL' in category_flow.index and 'LARGE' in category_flow.index:
-                    try:
-                        small_score = category_flow.loc['SMALL', 'Flow Score']
-                        large_score = category_flow.loc['LARGE', 'Flow Score']
+                with col2:
+                    st.markdown(f"**🎯 Market Regime: {flow_direction}**")
+                    
+                    # Top categories
+                    st.markdown("**💎 Strongest Categories:**")
+                    if not category_flow.empty:
+                        for i, (cat, row) in enumerate(category_flow.head(3).iterrows()):
+                            emoji = "🥇" if i == 0 else "🥈" if i == 1 else "🥉"
+                            try:
+                                st.write(f"{emoji} **{cat}**: Score {row['Flow Score']:.1f}")
+                            except:
+                                st.write(f"{emoji} **{cat}**: Score N/A")
+                    else:
+                        st.info("No category data available")
+                    
+                    # Category shift detection with proper name matching
+                    st.markdown("**🔄 Category Shifts:**")
+                    if not category_flow.empty:
+                        # Look for categories containing 'Small' and 'Large' (flexible matching)
+                        small_cats = [cat for cat in category_flow.index if 'Small' in cat]
+                        large_cats = [cat for cat in category_flow.index if 'Large' in cat]
                         
-                        if small_score > large_score * 1.2:
-                            st.success("📈 Small Caps Leading - Early Bull Signal!")
-                        elif large_score > small_score * 1.2:
-                            st.warning("📉 Large Caps Leading - Defensive Mode")
+                        if small_cats and large_cats:
+                            try:
+                                # Use the first matching category
+                                small_score = category_flow.loc[small_cats[0], 'Flow Score']
+                                large_score = category_flow.loc[large_cats[0], 'Flow Score']
+                                
+                                if small_score > large_score * 1.2:
+                                    st.success("📈 Small Caps Leading - Early Bull Signal!")
+                                elif large_score > small_score * 1.2:
+                                    st.warning("📉 Large Caps Leading - Defensive Mode")
+                                else:
+                                    st.info("➡️ Balanced Market - No Clear Leader")
+                            except Exception as e:
+                                logger.error(f"Error in category shift detection: {str(e)}")
+                                st.info("Unable to determine category shifts")
                         else:
-                            st.info("➡️ Balanced Market - No Clear Leader")
-                    except Exception as e:
-                        logger.error(f"Error in category shift detection: {str(e)}")
-                        st.info("Unable to determine category shifts")
-                else:
-                    st.info("Insufficient data for category shift analysis")
+                            st.info("Need both Small and Large cap categories for shift analysis")
+                    else:
+                        st.info("Insufficient data for category shift analysis")
+            else:
+                # Market regime is hidden
+                flow_direction = "➡️ Neutral"
+                category_flow = pd.DataFrame()
             
             # 3. EMERGING PATTERNS
             st.markdown("#### 🎯 Emerging Patterns - About to Qualify")
@@ -2903,8 +3018,30 @@ def main():
                 st.metric("Momentum Shifts", momentum_count)
             
             with summary_cols[1]:
-                flow_direction = flow_direction if 'flow_direction' in locals() else "N/A"
-                st.metric("Market Regime", flow_direction.split()[1] if flow_direction != "N/A" else "Unknown")
+                # Show flow direction if available, otherwise calculate quick regime
+                if 'flow_direction' in locals() and flow_direction != "➡️ Neutral":
+                    regime_display = flow_direction.split()[1] if flow_direction != "N/A" else "Unknown"
+                else:
+                    # Quick regime calculation if market regime is hidden
+                    try:
+                        if not filtered_df.empty and 'category' in filtered_df.columns:
+                            quick_flow = filtered_df.groupby('category')['master_score'].mean()
+                            if len(quick_flow) > 0:
+                                top_cat = quick_flow.idxmax()
+                                if 'Small' in top_cat or 'Micro' in top_cat:
+                                    regime_display = "Risk-ON"
+                                elif 'Large' in top_cat or 'Mega' in top_cat:
+                                    regime_display = "Risk-OFF"
+                                else:
+                                    regime_display = "Neutral"
+                            else:
+                                regime_display = "Unknown"
+                        else:
+                            regime_display = "Unknown"
+                    except:
+                        regime_display = "Unknown"
+                
+                st.metric("Market Regime", regime_display)
             
             with summary_cols[2]:
                 emergence_count = len(emergence_data) if 'emergence_data' in locals() and emergence_data else 0
@@ -2917,10 +3054,6 @@ def main():
             with summary_cols[4]:
                 surge_count = len(filtered_df[filtered_df['rvol'] >= 2])
                 st.metric("Volume Surges", surge_count)
-            
-            # Auto-refresh note
-            if auto_refresh:
-                st.info("🔄 Auto-refresh enabled - Please manually refresh the page every 5 minutes or use browser auto-refresh extensions")
         
         else:
             st.warning("No data available for Wave Radar analysis.")
