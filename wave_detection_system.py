@@ -3,10 +3,11 @@ Wave Detection Ultimate 3.0 - FINAL PRODUCTION VERSION (FIXED)
 =============================================================
 Professional Stock Ranking System with Advanced Analytics
 All syntax errors fixed, fully optimized, production-ready.
+Enhanced with robust fundamental data handling for extreme values.
 
-Version: 3.0.1-FINAL
+Version: 3.0.2-FINAL
 Last Updated: December 2024
-Status: PERMANENT RELEASE - Syntax fix applied
+Status: PERMANENT RELEASE - Enhanced fundamentals handling
 """
 
 import streamlit as st
@@ -1196,24 +1197,43 @@ class RankingEngine:
             pattern_conditions.append(('📈 QUALITY TREND', mask))
         
         # SMART FUNDAMENTAL PATTERNS - Only evaluate when data exists
-        # 12. Value Momentum
+        # 12. Value Momentum - ENHANCED validation
         if 'pe' in df.columns and 'percentile' in df.columns:
             # Only evaluate for stocks with valid PE data
-            has_pe = df['pe'].notna() & (df['pe'] > 0) & (df['pe'] < 1000)
-            value_momentum = has_pe & (df['pe'] < 15) & (df['master_score'] >= 70)
+            has_valid_pe = (
+                df['pe'].notna() & 
+                (df['pe'] > 0) & 
+                (df['pe'] < 10000) &  # Exclude extreme PEs
+                ~np.isinf(df['pe'])  # Exclude infinity
+            )
+            value_momentum = has_valid_pe & (df['pe'] < 15) & (df['master_score'] >= 70)
             pattern_conditions.append(('💎 VALUE MOMENTUM', value_momentum))
         
-        # 13. Earnings Rocket
+        # 13. Earnings Rocket - ENHANCED for extreme values
         if 'eps_change_pct' in df.columns and 'acceleration_score' in df.columns:
             # Only evaluate for stocks with EPS data
-            has_eps_growth = df['eps_change_pct'].notna()
-            earnings_rocket = has_eps_growth & (df['eps_change_pct'] > 50) & (df['acceleration_score'] >= 70)
+            has_eps_growth = df['eps_change_pct'].notna() & ~np.isinf(df['eps_change_pct'])
+            # For extreme growth (>1000%), require even higher acceleration
+            extreme_growth = has_eps_growth & (df['eps_change_pct'] > 1000)
+            normal_growth = has_eps_growth & (df['eps_change_pct'] > 50) & (df['eps_change_pct'] <= 1000)
+            
+            earnings_rocket = (
+                (extreme_growth & (df['acceleration_score'] >= 80)) |  # Higher bar for extreme
+                (normal_growth & (df['acceleration_score'] >= 70))
+            )
             pattern_conditions.append(('📊 EARNINGS ROCKET', earnings_rocket))
         
-        # 14. Quality Leader
+        # 14. Quality Leader - ENHANCED validation
         if all(col in df.columns for col in ['pe', 'eps_change_pct', 'percentile']):
-            # Comprehensive quality check
-            has_complete_data = df['pe'].notna() & df['eps_change_pct'].notna() & (df['pe'] > 0)
+            # Comprehensive quality check with proper validation
+            has_complete_data = (
+                df['pe'].notna() & 
+                df['eps_change_pct'].notna() & 
+                (df['pe'] > 0) &
+                (df['pe'] < 10000) &  # Reasonable PE range
+                ~np.isinf(df['pe']) &
+                ~np.isinf(df['eps_change_pct'])
+            )
             quality_leader = (
                 has_complete_data &
                 (df['pe'] >= 10) & (df['pe'] <= 25) &
@@ -1222,19 +1242,28 @@ class RankingEngine:
             )
             pattern_conditions.append(('🏆 QUALITY LEADER', quality_leader))
         
-        # 15. Turnaround Play
+        # 15. Turnaround Play - ENHANCED for extreme improvements
         if 'eps_change_pct' in df.columns and 'volume_score' in df.columns:
             # Stocks becoming profitable or showing massive improvement
-            has_eps = df['eps_change_pct'].notna()
-            turnaround = has_eps & (df['eps_change_pct'] > 100) & (df['volume_score'] >= 70)
+            has_eps = df['eps_change_pct'].notna() & ~np.isinf(df['eps_change_pct'])
+            # Different thresholds for different levels of turnaround
+            mega_turnaround = has_eps & (df['eps_change_pct'] > 500) & (df['volume_score'] >= 60)
+            strong_turnaround = has_eps & (df['eps_change_pct'] > 100) & (df['eps_change_pct'] <= 500) & (df['volume_score'] >= 70)
+            
+            turnaround = mega_turnaround | strong_turnaround
             pattern_conditions.append(('⚡ TURNAROUND', turnaround))
         
-        # 16. Overvalued Warning
+        # 16. Overvalued Warning - ENHANCED with multiple levels
         if 'pe' in df.columns:
-            # Flag extremely high PE stocks
-            has_pe = df['pe'].notna() & (df['pe'] > 0)
-            overvalued = has_pe & (df['pe'] > 50)
-            pattern_conditions.append(('⚠️ HIGH PE', overvalued))
+            # Flag extremely high PE stocks with different severity levels
+            has_valid_pe = df['pe'].notna() & (df['pe'] > 0) & ~np.isinf(df['pe'])
+            
+            # Different warning levels
+            extreme_pe = has_valid_pe & (df['pe'] > 100)
+            high_pe = has_valid_pe & (df['pe'] > 50) & (df['pe'] <= 100)
+            
+            # Only flag the extreme ones in patterns
+            pattern_conditions.append(('⚠️ HIGH PE', extreme_pe))
         
         # Build pattern strings for each row
         patterns_list = []
@@ -1355,7 +1384,9 @@ class FilterEngine:
             # Only filter stocks that have PE data
             filtered_df = filtered_df[
                 (filtered_df['pe'].isna()) |  # Keep stocks without PE data
-                ((filtered_df['pe'] > 0) & (filtered_df['pe'] >= min_pe))  # Filter those with PE
+                ((filtered_df['pe'] > 0) & 
+                 (filtered_df['pe'] >= min_pe) & 
+                 ~np.isinf(filtered_df['pe']))  # Exclude infinity values
             ]
         
         # Max PE filter
@@ -1364,7 +1395,9 @@ class FilterEngine:
             # Only filter stocks that have PE data
             filtered_df = filtered_df[
                 (filtered_df['pe'].isna()) |  # Keep stocks without PE data
-                ((filtered_df['pe'] > 0) & (filtered_df['pe'] <= max_pe))  # Filter those with PE
+                ((filtered_df['pe'] > 0) & 
+                 (filtered_df['pe'] <= max_pe) & 
+                 ~np.isinf(filtered_df['pe']))  # Exclude infinity values
             ]
         
         # Data completeness filter
@@ -1373,7 +1406,9 @@ class FilterEngine:
                 filtered_df = filtered_df[
                     filtered_df['pe'].notna() & 
                     (filtered_df['pe'] > 0) &
-                    filtered_df['eps_change_pct'].notna()
+                    ~np.isinf(filtered_df['pe']) &
+                    filtered_df['eps_change_pct'].notna() &
+                    ~np.isinf(filtered_df['eps_change_pct'])
                 ]
         
         filtered_count = len(filtered_df)
@@ -2391,16 +2426,22 @@ def main():
         # Show score range OR PE data based on display mode
         if show_fundamentals and 'pe' in filtered_df.columns:
             # Count stocks with valid PE data
-            valid_pe = filtered_df['pe'].notna() & (filtered_df['pe'] > 0) & (filtered_df['pe'] < 1000)
+            valid_pe = filtered_df['pe'].notna() & (filtered_df['pe'] > 0) & (filtered_df['pe'] < 10000)
             pe_coverage = valid_pe.sum()
             pe_pct = (pe_coverage / len(filtered_df) * 100) if len(filtered_df) > 0 else 0
             
             # Calculate average PE for stocks with valid data
             if pe_coverage > 0:
-                avg_pe = filtered_df.loc[valid_pe, 'pe'].mean()
+                # Use median instead of mean to handle outliers better
+                median_pe = filtered_df.loc[valid_pe, 'pe'].median()
+                # Also calculate mean but cap extreme values
+                capped_pe = filtered_df.loc[valid_pe, 'pe'].clip(upper=100)
+                avg_pe = capped_pe.mean()
+                
+                # Show median as primary metric
                 st.metric(
-                    "Avg PE",
-                    f"{avg_pe:.1f}x",
+                    "Median PE",
+                    f"{median_pe:.1f}x",
                     f"{pe_pct:.0f}% have data"
                 )
             else:
@@ -2419,15 +2460,29 @@ def main():
         # Show acceleration OR EPS growth based on display mode
         if show_fundamentals and 'eps_change_pct' in filtered_df.columns:
             # Count stocks with positive EPS growth
-            valid_eps_change = filtered_df['eps_change_pct'].notna()
+            valid_eps_change = filtered_df['eps_change_pct'].notna() & ~np.isinf(filtered_df['eps_change_pct'])
             positive_eps_growth = valid_eps_change & (filtered_df['eps_change_pct'] > 0)
-            growth_count = positive_eps_growth.sum()
             
-            st.metric(
-                "EPS Growth +ve",
-                f"{growth_count}",
-                f"{valid_eps_change.sum()} have data"
-            )
+            # Count different growth levels
+            strong_growth = valid_eps_change & (filtered_df['eps_change_pct'] > 50)
+            mega_growth = valid_eps_change & (filtered_df['eps_change_pct'] > 100)
+            
+            growth_count = positive_eps_growth.sum()
+            strong_count = strong_growth.sum()
+            
+            # Format display based on counts
+            if mega_growth.sum() > 0:
+                st.metric(
+                    "EPS Growth +ve",
+                    f"{growth_count}",
+                    f"{strong_count} >50% | {mega_growth.sum()} >100%"
+                )
+            else:
+                st.metric(
+                    "EPS Growth +ve",
+                    f"{growth_count}",
+                    f"{valid_eps_change.sum()} have data"
+                )
         else:
             # Default acceleration display
             if 'acceleration_score' in filtered_df.columns:
@@ -2560,39 +2615,95 @@ def main():
                 'rvol': '{:.1f}x'
             }
             
-            # SMART PE FORMATTING FUNCTION
+            # SMART PE FORMATTING FUNCTION - ENHANCED
             def format_pe(value):
-                """Format PE ratio with intelligent handling"""
+                """Format PE ratio with intelligent handling of all edge cases"""
                 try:
-                    if pd.isna(value) or value == 'N/A':
+                    if pd.isna(value) or value == 'N/A' or value == '':
                         return '-'
                     
                     val = float(value)
-                    if val < 0 or val == 0:
+                    
+                    # Handle special cases
+                    if val <= 0 or np.isinf(val):
                         return 'Loss'
+                    elif val > 10000:
+                        # Very high PE - show in K format
+                        return f"{val/1000:.0f}K"
                     elif val > 1000:
-                        return '>1000'
-                    else:
+                        # High PE - no decimals
+                        return f"{val:.0f}"
+                    elif val > 100:
+                        # Moderate high PE - 1 decimal
                         return f"{val:.1f}"
-                except:
+                    else:
+                        # Normal PE - 1 decimal
+                        return f"{val:.1f}"
+                except (ValueError, TypeError, OverflowError) as e:
+                    logger.debug(f"PE formatting error for value {value}: {str(e)}")
                     return '-'
             
-            # SMART EPS CHANGE FORMATTING FUNCTION
+            # SMART EPS CHANGE FORMATTING FUNCTION - COMPLETELY REDESIGNED
             def format_eps_change(value):
-                """Format EPS change % with color indicators"""
+                """Format EPS change % with intelligent handling - NO CAPPING"""
                 try:
-                    if pd.isna(value) or value == 'N/A':
+                    if pd.isna(value) or value == 'N/A' or value == '':
                         return '-'
                     
                     val = float(value)
-                    if val > 999:
-                        return '>999%'
-                    elif val < -99:
-                        return '<-99%'
-                    else:
+                    
+                    # Handle infinity
+                    if np.isinf(val):
+                        return '∞' if val > 0 else '-∞'
+                    
+                    # For extreme values, use smart notation
+                    if abs(val) >= 10000:
+                        # Convert to K notation (e.g., 20,710% → 20.7K%)
+                        return f"{val/1000:+.1f}K%"
+                    elif abs(val) >= 1000:
+                        # Show without decimals for large values
+                        return f"{val:+.0f}%"
+                    elif abs(val) >= 100:
+                        # Show with 1 decimal for moderate values
                         return f"{val:+.1f}%"
-                except:
+                    elif abs(val) >= 10:
+                        # Show with 1 decimal for normal values
+                        return f"{val:+.1f}%"
+                    elif abs(val) >= 0.1:
+                        # Show with 1 decimal for small values
+                        return f"{val:+.1f}%"
+                    else:
+                        # Very small changes
+                        return f"{val:+.2f}%"
+                        
+                except (ValueError, TypeError, OverflowError) as e:
+                    logger.debug(f"EPS change formatting error for value {value}: {str(e)}")
                     return '-'
+            
+            # ENHANCED COLOR CODING FUNCTION FOR EPS CHANGE
+            def get_eps_change_color(value):
+                """Get color indicator for EPS change value"""
+                try:
+                    if pd.isna(value):
+                        return ""
+                    
+                    val = float(value)
+                    if val >= 100:
+                        return "🚀"  # Rocket for exceptional growth
+                    elif val >= 50:
+                        return "🔥"  # Fire for strong growth
+                    elif val >= 20:
+                        return "📈"  # Up chart for good growth
+                    elif val >= 0:
+                        return "➕"  # Plus for positive
+                    elif val >= -20:
+                        return "➖"  # Minus for small decline
+                    elif val >= -50:
+                        return "📉"  # Down chart for decline
+                    else:
+                        return "⚠️"  # Warning for severe decline
+                except:
+                    return ""
             
             # Apply formatting with comprehensive error handling
             for col, fmt in format_rules.items():
@@ -2657,19 +2768,37 @@ def main():
                     if show_fundamentals:
                         st.markdown("**Fundamentals**")
                         if 'pe' in filtered_df.columns:
-                            valid_pe = filtered_df['pe'].notna() & (filtered_df['pe'] > 0) & (filtered_df['pe'] < 1000)
+                            valid_pe = filtered_df['pe'].notna() & (filtered_df['pe'] > 0) & (filtered_df['pe'] < 10000)
                             if valid_pe.any():
-                                st.text(f"Avg PE: {filtered_df.loc[valid_pe, 'pe'].mean():.1f}x")
+                                # Use median for better representation
+                                median_pe = filtered_df.loc[valid_pe, 'pe'].median()
+                                q1_pe = filtered_df.loc[valid_pe, 'pe'].quantile(0.25)
+                                q3_pe = filtered_df.loc[valid_pe, 'pe'].quantile(0.75)
+                                
+                                st.text(f"Median PE: {median_pe:.1f}x")
+                                st.text(f"PE Range: {q1_pe:.1f}-{q3_pe:.1f}")
                             else:
-                                st.text("Avg PE: N/A")
+                                st.text("PE: No valid data")
                         else:
                             st.text("PE: No data")
                         
                         if 'eps_change_pct' in filtered_df.columns:
-                            valid_eps = filtered_df['eps_change_pct'].notna()
+                            valid_eps = filtered_df['eps_change_pct'].notna() & ~np.isinf(filtered_df['eps_change_pct'])
                             if valid_eps.any():
-                                st.text(f"Avg EPS Δ: {filtered_df.loc[valid_eps, 'eps_change_pct'].mean():+.1f}%")
-                                st.text(f"Growing: {(filtered_df['eps_change_pct'] > 0).sum()}")
+                                # Show distribution of EPS changes
+                                eps_data = filtered_df.loc[valid_eps, 'eps_change_pct']
+                                
+                                # Count by ranges
+                                mega_growth = (eps_data > 100).sum()
+                                strong_growth = ((eps_data > 50) & (eps_data <= 100)).sum()
+                                moderate_growth = ((eps_data > 0) & (eps_data <= 50)).sum()
+                                declining = (eps_data < 0).sum()
+                                
+                                # Show concise summary
+                                if mega_growth > 0:
+                                    st.text(f">100%: {mega_growth} stocks")
+                                st.text(f"Positive: {moderate_growth + strong_growth + mega_growth}")
+                                st.text(f"Negative: {declining}")
                             else:
                                 st.text("EPS Growth: N/A")
                         else:
@@ -3459,39 +3588,89 @@ def main():
                                 
                                 # PE Ratio with intelligent display
                                 if 'pe' in stock and pd.notna(stock['pe']):
-                                    pe_val = stock['pe']
-                                    if pe_val <= 0:
-                                        pe_display = "Loss"
-                                        pe_color = "🔴"
-                                    elif pe_val < 15:
-                                        pe_display = f"{pe_val:.1f}x"
-                                        pe_color = "🟢"
-                                    elif pe_val < 25:
-                                        pe_display = f"{pe_val:.1f}x"
-                                        pe_color = "🟡"
-                                    else:
-                                        pe_display = f"{pe_val:.1f}x"
-                                        pe_color = "🔴"
-                                    st.text(f"PE Ratio: {pe_color} {pe_display}")
+                                    try:
+                                        pe_val = float(stock['pe'])
+                                        if pe_val <= 0 or np.isinf(pe_val):
+                                            pe_display = "Loss"
+                                            pe_color = "🔴"
+                                        elif pe_val < 10:
+                                            pe_display = f"{pe_val:.1f}x"
+                                            pe_color = "🟢"  # Great value
+                                        elif pe_val < 15:
+                                            pe_display = f"{pe_val:.1f}x"
+                                            pe_color = "🟢"  # Good value
+                                        elif pe_val < 25:
+                                            pe_display = f"{pe_val:.1f}x"
+                                            pe_color = "🟡"  # Fair value
+                                        elif pe_val < 50:
+                                            pe_display = f"{pe_val:.1f}x"
+                                            pe_color = "🟠"  # Getting expensive
+                                        elif pe_val < 100:
+                                            pe_display = f"{pe_val:.1f}x"
+                                            pe_color = "🔴"  # Expensive
+                                        else:
+                                            # Very high PE
+                                            if pe_val > 10000:
+                                                pe_display = f"{pe_val/1000:.0f}Kx"
+                                            else:
+                                                pe_display = f"{pe_val:.0f}x"
+                                            pe_color = "🔴"
+                                        st.text(f"PE Ratio: {pe_color} {pe_display}")
+                                    except (ValueError, TypeError, OverflowError):
+                                        st.text("PE Ratio: - (Error)")
                                 else:
                                     st.text("PE Ratio: - (N/A)")
                                 
                                 # EPS Current
                                 if 'eps_current' in stock and pd.notna(stock['eps_current']):
-                                    st.text(f"EPS: ₹{stock['eps_current']:.2f}")
+                                    try:
+                                        eps_val = float(stock['eps_current'])
+                                        if abs(eps_val) >= 1000:
+                                            eps_display = f"₹{eps_val/1000:.1f}K"
+                                        elif abs(eps_val) >= 100:
+                                            eps_display = f"₹{eps_val:.0f}"
+                                        else:
+                                            eps_display = f"₹{eps_val:.2f}"
+                                        st.text(f"EPS: {eps_display}")
+                                    except (ValueError, TypeError):
+                                        st.text("EPS: - (Error)")
                                 else:
                                     st.text("EPS: - (N/A)")
                                 
-                                # EPS Change with color
+                                # EPS Change with enhanced display
                                 if 'eps_change_pct' in stock and pd.notna(stock['eps_change_pct']):
-                                    eps_chg = stock['eps_change_pct']
-                                    if eps_chg > 0:
-                                        eps_emoji = "📈"
-                                        eps_color = "green"
-                                    else:
-                                        eps_emoji = "📉"
-                                        eps_color = "red"
-                                    st.text(f"EPS Growth: {eps_emoji} {eps_chg:+.1f}%")
+                                    try:
+                                        eps_chg = float(stock['eps_change_pct'])
+                                        
+                                        # Format the change value
+                                        if np.isinf(eps_chg):
+                                            eps_display = "∞" if eps_chg > 0 else "-∞"
+                                        elif abs(eps_chg) >= 10000:
+                                            eps_display = f"{eps_chg/1000:+.1f}K%"
+                                        elif abs(eps_chg) >= 1000:
+                                            eps_display = f"{eps_chg:+.0f}%"
+                                        else:
+                                            eps_display = f"{eps_chg:+.1f}%"
+                                        
+                                        # Get emoji based on value
+                                        if eps_chg >= 100:
+                                            eps_emoji = "🚀"
+                                        elif eps_chg >= 50:
+                                            eps_emoji = "🔥"
+                                        elif eps_chg >= 20:
+                                            eps_emoji = "📈"
+                                        elif eps_chg >= 0:
+                                            eps_emoji = "➕"
+                                        elif eps_chg >= -20:
+                                            eps_emoji = "➖"
+                                        elif eps_chg >= -50:
+                                            eps_emoji = "📉"
+                                        else:
+                                            eps_emoji = "⚠️"
+                                        
+                                        st.text(f"EPS Growth: {eps_emoji} {eps_display}")
+                                    except (ValueError, TypeError, OverflowError):
+                                        st.text("EPS Growth: - (Error)")
                                 else:
                                     st.text("EPS Growth: - (N/A)")
                         
