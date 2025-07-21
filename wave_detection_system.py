@@ -1,12 +1,12 @@
 """
-Wave Detection Ultimate 3.0 - FINAL PRODUCTION VERSION
-====================================================
+Wave Detection Ultimate 3.0 - FINAL PRODUCTION VERSION (FIXED)
+=============================================================
 Professional Stock Ranking System with Advanced Analytics
-All bugs fixed, fully optimized, production-ready.
+All syntax errors fixed, fully optimized, production-ready.
 
-Version: 3.0.0-FINAL
+Version: 3.0.1-FINAL
 Last Updated: December 2024
-Status: PERMANENT RELEASE - No further updates needed
+Status: PERMANENT RELEASE - Syntax fix applied
 """
 
 import streamlit as st
@@ -2318,7 +2318,7 @@ def main():
         else:
             st.warning("No stocks match the selected filters.")
     
-    # Tab 2: Wave Radar - ALL TIME BEST IMPLEMENTATION
+    # Tab 2: Wave Radar - FIXED VERSION
     with tab2:
         st.markdown("### 🌊 Wave Radar - Early Momentum Detection System")
         st.markdown("*Catch waves as they form, not after they've peaked!*")
@@ -2387,12 +2387,8 @@ def main():
         
         # Calculate Wave Signals
         if not filtered_df.empty:
-            try:
-                # 1. MOMENTUM SHIFT DETECTION
-                st.markdown("#### 🚀 Momentum Shifts - Stocks Entering Strength")
-                
-                # Calculate momentum shifts
-                momentum_shifts = filtered_df.copy()
+            # 1. MOMENTUM SHIFT DETECTION
+            st.markdown("#### 🚀 Momentum Shifts - Stocks Entering Strength")
             
             # Calculate momentum shifts
             momentum_shifts = filtered_df.copy()
