@@ -1,4 +1,3 @@
-```python
 """
 Wave Detection Ultimate 3.0 - FINAL PRODUCTION VERSION
 ====================================================
