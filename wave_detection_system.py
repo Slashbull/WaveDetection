@@ -1195,6 +1195,47 @@ class RankingEngine:
             mask = df['trend_quality'] >= 80
             pattern_conditions.append(('📈 QUALITY TREND', mask))
         
+        # SMART FUNDAMENTAL PATTERNS - Only evaluate when data exists
+        # 12. Value Momentum
+        if 'pe' in df.columns and 'percentile' in df.columns:
+            # Only evaluate for stocks with valid PE data
+            has_pe = df['pe'].notna() & (df['pe'] > 0) & (df['pe'] < 1000)
+            value_momentum = has_pe & (df['pe'] < 15) & (df['master_score'] >= 70)
+            pattern_conditions.append(('💎 VALUE MOMENTUM', value_momentum))
+        
+        # 13. Earnings Rocket
+        if 'eps_change_pct' in df.columns and 'acceleration_score' in df.columns:
+            # Only evaluate for stocks with EPS data
+            has_eps_growth = df['eps_change_pct'].notna()
+            earnings_rocket = has_eps_growth & (df['eps_change_pct'] > 50) & (df['acceleration_score'] >= 70)
+            pattern_conditions.append(('📊 EARNINGS ROCKET', earnings_rocket))
+        
+        # 14. Quality Leader
+        if all(col in df.columns for col in ['pe', 'eps_change_pct', 'percentile']):
+            # Comprehensive quality check
+            has_complete_data = df['pe'].notna() & df['eps_change_pct'].notna() & (df['pe'] > 0)
+            quality_leader = (
+                has_complete_data &
+                (df['pe'] >= 10) & (df['pe'] <= 25) &
+                (df['eps_change_pct'] > 20) &
+                (df['percentile'] >= 80)
+            )
+            pattern_conditions.append(('🏆 QUALITY LEADER', quality_leader))
+        
+        # 15. Turnaround Play
+        if 'eps_change_pct' in df.columns and 'volume_score' in df.columns:
+            # Stocks becoming profitable or showing massive improvement
+            has_eps = df['eps_change_pct'].notna()
+            turnaround = has_eps & (df['eps_change_pct'] > 100) & (df['volume_score'] >= 70)
+            pattern_conditions.append(('⚡ TURNAROUND', turnaround))
+        
+        # 16. Overvalued Warning
+        if 'pe' in df.columns:
+            # Flag extremely high PE stocks
+            has_pe = df['pe'].notna() & (df['pe'] > 0)
+            overvalued = has_pe & (df['pe'] > 50)
+            pattern_conditions.append(('⚠️ HIGH PE', overvalued))
+        
         # Build pattern strings for each row
         patterns_list = []
         for idx in df.index:
@@ -1305,6 +1346,34 @@ class FilterEngine:
                 filtered_df = filtered_df[
                     (filtered_df['trend_quality'] >= min_trend) & 
                     (filtered_df['trend_quality'] <= max_trend)
+                ]
+        
+        # SMART PE FILTERS - Handle gracefully
+        # Min PE filter
+        min_pe = filters.get('min_pe')
+        if min_pe is not None and 'pe' in filtered_df.columns:
+            # Only filter stocks that have PE data
+            filtered_df = filtered_df[
+                (filtered_df['pe'].isna()) |  # Keep stocks without PE data
+                ((filtered_df['pe'] > 0) & (filtered_df['pe'] >= min_pe))  # Filter those with PE
+            ]
+        
+        # Max PE filter
+        max_pe = filters.get('max_pe')
+        if max_pe is not None and 'pe' in filtered_df.columns:
+            # Only filter stocks that have PE data
+            filtered_df = filtered_df[
+                (filtered_df['pe'].isna()) |  # Keep stocks without PE data
+                ((filtered_df['pe'] > 0) & (filtered_df['pe'] <= max_pe))  # Filter those with PE
+            ]
+        
+        # Data completeness filter
+        if filters.get('require_fundamental_data', False):
+            if 'pe' in filtered_df.columns and 'eps_change_pct' in filtered_df.columns:
+                filtered_df = filtered_df[
+                    filtered_df['pe'].notna() & 
+                    (filtered_df['pe'] > 0) &
+                    filtered_df['eps_change_pct'].notna()
                 ]
         
         filtered_count = len(filtered_df)
@@ -1625,7 +1694,7 @@ class ExportEngine:
     
     @staticmethod
     def create_excel_report(df: pd.DataFrame) -> BytesIO:
-        """Create comprehensive Excel report"""
+        """Create comprehensive Excel report with smart fundamental data handling"""
         output = BytesIO()
         
         try:
@@ -1640,15 +1709,21 @@ class ExportEngine:
                     'border': 1
                 })
                 
-                # 1. Top 100 Stocks
+                # Format for good/bad values
+                good_format = workbook.add_format({'font_color': '#2ecc71'})
+                bad_format = workbook.add_format({'font_color': '#e74c3c'})
+                neutral_format = workbook.add_format({'font_color': '#95a5a6'})
+                
+                # 1. Top 100 Stocks - ENHANCED with fundamentals
                 top_100 = df.nlargest(min(100, len(df)), 'master_score').copy()
                 
-                # Select and order columns
+                # Select and order columns - now includes PE and EPS
                 export_cols = [
                     'rank', 'ticker', 'company_name', 'master_score',
                     'position_score', 'volume_score', 'momentum_score',
                     'acceleration_score', 'breakout_score', 'rvol_score',
-                    'trend_quality', 'price', 'from_low_pct', 'from_high_pct',
+                    'trend_quality', 'price', 'pe', 'eps_current', 'eps_change_pct',
+                    'from_low_pct', 'from_high_pct',
                     'ret_1d', 'ret_7d', 'ret_30d', 'rvol',
                     'patterns', 'category', 'sector'
                 ]
@@ -1663,10 +1738,11 @@ class ExportEngine:
                 for i, col in enumerate(available_cols):
                     worksheet.write(0, i, col, header_format)
                 
-                # 2. All Stocks Summary
+                # 2. All Stocks Summary - ENHANCED
                 summary_cols = [
                     'rank', 'ticker', 'company_name', 'master_score',
-                    'trend_quality', 'price', 'ret_30d', 'rvol', 
+                    'trend_quality', 'price', 'pe', 'eps_change_pct',
+                    'ret_30d', 'rvol', 
                     'patterns', 'category', 'sector'
                 ]
                 available_summary = [col for col in summary_cols if col in df.columns]
@@ -1674,31 +1750,66 @@ class ExportEngine:
                     writer, sheet_name='All Stocks', index=False
                 )
                 
-                # 3. Sector Analysis
+                # 3. Sector Analysis - ENHANCED with PE/EPS
                 if 'sector' in df.columns:
                     try:
-                        sector_analysis = df.groupby('sector').agg({
-                            'master_score': ['mean', 'std', 'min', 'max', 'count'],
-                            'rvol': 'mean',
-                            'ret_30d': 'mean'
-                        }).round(2)
+                        # Create comprehensive sector analysis
+                        sector_agg = {'master_score': ['mean', 'std', 'min', 'max', 'count'],
+                                     'rvol': 'mean',
+                                     'ret_30d': 'mean'}
+                        
+                        # Add PE analysis if available
+                        if 'pe' in df.columns:
+                            sector_agg['pe'] = lambda x: x[x > 0].mean() if any(x > 0) else np.nan
+                        
+                        # Add EPS growth analysis if available
+                        if 'eps_change_pct' in df.columns:
+                            sector_agg['eps_change_pct'] = lambda x: x.dropna().mean()
+                        
+                        sector_analysis = df.groupby('sector').agg(sector_agg).round(2)
+                        
+                        # Flatten column names
+                        flat_cols = []
+                        for col in sector_analysis.columns:
+                            if isinstance(col, tuple):
+                                flat_cols.append(f"{col[0]}_{col[1]}")
+                            else:
+                                flat_cols.append(col)
+                        sector_analysis.columns = flat_cols
+                        
                         sector_analysis.to_excel(writer, sheet_name='Sector Analysis')
                     except Exception as e:
                         logger.warning(f"Unable to create sector analysis: {str(e)}")
                 
-                # 4. Category Analysis
+                # 4. Category Analysis - ENHANCED
                 if 'category' in df.columns:
                     try:
-                        category_analysis = df.groupby('category').agg({
-                            'master_score': ['mean', 'std', 'min', 'max', 'count'],
-                            'rvol': 'mean',
-                            'ret_30d': 'mean'
-                        }).round(2)
+                        category_agg = {'master_score': ['mean', 'std', 'min', 'max', 'count'],
+                                       'rvol': 'mean',
+                                       'ret_30d': 'mean'}
+                        
+                        if 'pe' in df.columns:
+                            category_agg['pe'] = lambda x: x[x > 0].mean() if any(x > 0) else np.nan
+                        
+                        if 'eps_change_pct' in df.columns:
+                            category_agg['eps_change_pct'] = lambda x: x.dropna().mean()
+                        
+                        category_analysis = df.groupby('category').agg(category_agg).round(2)
+                        
+                        # Flatten column names
+                        flat_cols = []
+                        for col in category_analysis.columns:
+                            if isinstance(col, tuple):
+                                flat_cols.append(f"{col[0]}_{col[1]}")
+                            else:
+                                flat_cols.append(col)
+                        category_analysis.columns = flat_cols
+                        
                         category_analysis.to_excel(writer, sheet_name='Category Analysis')
                     except Exception as e:
                         logger.warning(f"Unable to create category analysis: {str(e)}")
                 
-                # 5. Pattern Analysis
+                # 5. Pattern Analysis - Including new fundamental patterns
                 pattern_data = []
                 for pattern in df['patterns'].dropna():
                     if pattern:
@@ -1714,8 +1825,63 @@ class ExportEngine:
                         writer, sheet_name='Pattern Analysis', index=False
                     )
                 
-                # 6. Wave Radar Signals (if detected)
-                # Check for momentum shifts
+                # 6. NEW: Fundamental Analysis Sheet
+                if any(col in df.columns for col in ['pe', 'eps_current', 'eps_change_pct']):
+                    try:
+                        # Create fundamental analysis
+                        fund_df = df.copy()
+                        
+                        # Filter for stocks with fundamental data
+                        if 'pe' in fund_df.columns:
+                            fund_df = fund_df[fund_df['pe'].notna() & (fund_df['pe'] > 0)]
+                        
+                        if len(fund_df) > 0:
+                            # Categorize by PE ranges
+                            pe_categories = []
+                            if 'pe' in fund_df.columns:
+                                fund_df['pe_category'] = pd.cut(
+                                    fund_df['pe'],
+                                    bins=[0, 10, 15, 20, 30, 50, float('inf')],
+                                    labels=['0-10 (Deep Value)', '10-15 (Value)', 
+                                           '15-20 (Fair)', '20-30 (Growth)', 
+                                           '30-50 (High Growth)', '50+ (Expensive)']
+                                )
+                            
+                            # Top value plays (Low PE + High Score)
+                            if 'pe' in fund_df.columns:
+                                value_plays = fund_df[
+                                    (fund_df['pe'] < 20) & 
+                                    (fund_df['master_score'] > 60)
+                                ].nlargest(20, 'master_score')
+                                
+                                if len(value_plays) > 0:
+                                    value_cols = ['ticker', 'company_name', 'master_score', 
+                                                 'pe', 'eps_change_pct', 'price', 'ret_30d', 
+                                                 'category', 'sector']
+                                    available_value_cols = [col for col in value_cols if col in value_plays.columns]
+                                    value_plays[available_value_cols].to_excel(
+                                        writer, sheet_name='Value Plays', index=False
+                                    )
+                            
+                            # Growth champions (High EPS growth)
+                            if 'eps_change_pct' in fund_df.columns:
+                                growth_champs = fund_df[
+                                    fund_df['eps_change_pct'] > 25
+                                ].nlargest(20, 'eps_change_pct')
+                                
+                                if len(growth_champs) > 0:
+                                    growth_cols = ['ticker', 'company_name', 'eps_change_pct',
+                                                  'pe', 'master_score', 'price', 'ret_30d',
+                                                  'category', 'sector']
+                                    available_growth_cols = [col for col in growth_cols if col in growth_champs.columns]
+                                    growth_champs[available_growth_cols].to_excel(
+                                        writer, sheet_name='Growth Champions', index=False
+                                    )
+                        
+                    except Exception as e:
+                        logger.warning(f"Unable to create fundamental analysis: {str(e)}")
+                
+                # 7. Wave Radar Signals - Including fundamental signals
                 momentum_shifts = df[
                     (df['momentum_score'] >= 50) & 
                     (df['acceleration_score'] >= 60)
@@ -1723,13 +1889,42 @@ class ExportEngine:
                 
                 if len(momentum_shifts) > 0:
                     wave_cols = ['ticker', 'company_name', 'master_score', 
-                                'momentum_score', 'acceleration_score', 'rvol', 
+                                'momentum_score', 'acceleration_score', 'rvol',
+                                'pe', 'eps_change_pct', 
                                 'category', 'sector']
-                    momentum_shifts[wave_cols].to_excel(
+                    available_wave_cols = [col for col in wave_cols if col in momentum_shifts.columns]
+                    momentum_shifts[available_wave_cols].to_excel(
                         writer, sheet_name='Wave Radar Signals', index=False
                     )
                 
-                logger.info("Excel report created successfully")
+                # 8. NEW: Data Quality Report
+                quality_df = pd.DataFrame({
+                    'Metric': ['Total Stocks', 'With PE Data', 'With EPS Current', 
+                              'With EPS Change %', 'Complete Fundamental Data',
+                              'Technical Only'],
+                    'Count': [
+                        len(df),
+                        df['pe'].notna().sum() if 'pe' in df.columns else 0,
+                        df['eps_current'].notna().sum() if 'eps_current' in df.columns else 0,
+                        df['eps_change_pct'].notna().sum() if 'eps_change_pct' in df.columns else 0,
+                        ((df['pe'].notna() if 'pe' in df.columns else False) & 
+                         (df['eps_change_pct'].notna() if 'eps_change_pct' in df.columns else False)).sum(),
+                        len(df) - (df['pe'].notna().sum() if 'pe' in df.columns else 0)
+                    ],
+                    'Percentage': [
+                        100,
+                        df['pe'].notna().sum() / len(df) * 100 if 'pe' in df.columns and len(df) > 0 else 0,
+                        df['eps_current'].notna().sum() / len(df) * 100 if 'eps_current' in df.columns and len(df) > 0 else 0,
+                        df['eps_change_pct'].notna().sum() / len(df) * 100 if 'eps_change_pct' in df.columns and len(df) > 0 else 0,
+                        ((df['pe'].notna() if 'pe' in df.columns else False) & 
+                         (df['eps_change_pct'].notna() if 'eps_change_pct' in df.columns else False)).sum() / len(df) * 100 if len(df) > 0 else 0,
+                        (len(df) - (df['pe'].notna().sum() if 'pe' in df.columns else 0)) / len(df) * 100 if len(df) > 0 else 0
+                    ]
+                })
+                quality_df['Percentage'] = quality_df['Percentage'].round(1)
+                quality_df.to_excel(writer, sheet_name='Data Quality', index=False)
+                
+                logger.info("Excel report created successfully with enhanced fundamental analysis")
                 
         except Exception as e:
             logger.error(f"Error creating Excel report: {str(e)}")
@@ -1740,12 +1935,13 @@ class ExportEngine:
     
     @staticmethod
     def create_csv_export(df: pd.DataFrame) -> str:
-        """Create CSV export with selected columns"""
+        """Create CSV export with selected columns including fundamentals"""
         export_cols = [
             'rank', 'ticker', 'company_name', 'master_score',
             'position_score', 'volume_score', 'momentum_score',
             'acceleration_score', 'breakout_score', 'rvol_score',
-            'trend_quality', 'price', 'from_low_pct', 'from_high_pct',
+            'trend_quality', 'price', 'pe', 'eps_current', 'eps_change_pct',
+            'from_low_pct', 'from_high_pct',
             'ret_1d', 'ret_7d', 'ret_30d', 'ret_3m', 'ret_6m', 'ret_1y',
             'rvol', 'vol_ratio_30d_90d', 'vol_ratio_90d_180d',
             'patterns', 'category', 'sector', 'eps_tier', 'pe_tier'
@@ -1861,9 +2057,16 @@ def main():
                 • **Acceleration Alerts**: Momentum building signals
                 • **Volume Surges**: Unusual activity detection
                 
+                **💎 NEW! Hybrid Mode Features:**
+                • **PE Ratio Display**: Valuation context
+                • **EPS Growth %**: Earnings momentum
+                • **Smart Patterns**: Value Momentum, Earnings Rocket
+                • **Quality Filters**: PE ranges, EPS growth filters
+                • **Enhanced Reports**: Fundamental analysis sheets
+                
                 **Core Features:**
                 • Real-time RVOL integration
-                • 11 advanced pattern detections
+                • 11 advanced pattern detections + 5 fundamental patterns
                 • Smart Trend filter with visual indicators
                 • Category-relative rankings
                 • Smart search with relevance
@@ -1925,6 +2128,21 @@ def main():
     with st.sidebar:
         # Ensure we always have filters dict initialized
         filters = {}
+        
+        # Display Mode Toggle - SMART IMPLEMENTATION
+        st.markdown("### 📊 Display Mode")
+        display_mode = st.radio(
+            "Choose your view:",
+            options=["Technical", "Hybrid (Technical + Fundamentals)"],
+            index=0,
+            help="Technical: Pure momentum analysis | Hybrid: Adds PE & EPS data",
+            key="display_mode_toggle"
+        )
+        
+        # Store display preference
+        show_fundamentals = (display_mode == "Hybrid (Technical + Fundamentals)")
+        
+        st.markdown("---")
         
         # Category filter with count
         categories = filter_engine.get_unique_values(ranked_df, 'category')
@@ -2068,6 +2286,53 @@ def main():
                         filters['min_eps_change'] = None
                 else:
                     filters['min_eps_change'] = None
+            
+            # SMART PE FILTER - Only show in hybrid mode
+            if show_fundamentals and 'pe' in ranked_df.columns:
+                st.markdown("**🔍 Fundamental Filters**")
+                
+                # PE Range Filter
+                col1, col2 = st.columns(2)
+                with col1:
+                    min_pe_input = st.text_input(
+                        "Min PE Ratio",
+                        value="",
+                        placeholder="e.g. 10",
+                        help="Minimum PE ratio (leave empty for no minimum)"
+                    )
+                    
+                    if min_pe_input.strip():
+                        try:
+                            filters['min_pe'] = float(min_pe_input)
+                        except ValueError:
+                            st.error("Please enter a valid number for Min PE")
+                            filters['min_pe'] = None
+                    else:
+                        filters['min_pe'] = None
+                
+                with col2:
+                    max_pe_input = st.text_input(
+                        "Max PE Ratio",
+                        value="",
+                        placeholder="e.g. 30",
+                        help="Maximum PE ratio (leave empty for no maximum)"
+                    )
+                    
+                    if max_pe_input.strip():
+                        try:
+                            filters['max_pe'] = float(max_pe_input)
+                        except ValueError:
+                            st.error("Please enter a valid number for Max PE")
+                            filters['max_pe'] = None
+                    else:
+                        filters['max_pe'] = None
+                
+                # Data completeness filter
+                filters['require_fundamental_data'] = st.checkbox(
+                    "Only show stocks with PE and EPS data",
+                    value=False,
+                    help="Filter out stocks missing fundamental data"
+                )
     
     # Apply filters
     filtered_df = filter_engine.apply_filters(ranked_df, filters)
@@ -2086,13 +2351,17 @@ def main():
             st.write(f"PE Tiers: {filters.get('pe_tiers', [])}")
             st.write(f"Price Tiers: {filters.get('price_tiers', [])}")
             st.write(f"Min EPS Change: {filters.get('min_eps_change', None)}")
+            if show_fundamentals:
+                st.write(f"Min PE: {filters.get('min_pe', None)}")
+                st.write(f"Max PE: {filters.get('max_pe', None)}")
+                st.write(f"Require Fundamental Data: {filters.get('require_fundamental_data', False)}")
             st.write(f"**Filter Result:**")
             st.write(f"Before: {len(ranked_df)} stocks")
             st.write(f"After: {len(filtered_df)} stocks")
             st.write(f"Filtered: {len(ranked_df) - len(filtered_df)} stocks")
     
     # Main content area
-    # Summary metrics
+    # Summary metrics with SMART fundamental indicators
     col1, col2, col3, col4, col5, col6 = st.columns(6)
     
     with col1:
@@ -2119,21 +2388,53 @@ def main():
             st.metric("Avg Score", "N/A")
     
     with col3:
-        # Show score range
-        if not filtered_df.empty and 'master_score' in filtered_df.columns:
-            min_score = filtered_df['master_score'].min()
-            max_score = filtered_df['master_score'].max()
-            score_range = f"{min_score:.1f}-{max_score:.1f}"
+        # Show score range OR PE data based on display mode
+        if show_fundamentals and 'pe' in filtered_df.columns:
+            # Count stocks with valid PE data
+            valid_pe = filtered_df['pe'].notna() & (filtered_df['pe'] > 0) & (filtered_df['pe'] < 1000)
+            pe_coverage = valid_pe.sum()
+            pe_pct = (pe_coverage / len(filtered_df) * 100) if len(filtered_df) > 0 else 0
+            
+            # Calculate average PE for stocks with valid data
+            if pe_coverage > 0:
+                avg_pe = filtered_df.loc[valid_pe, 'pe'].mean()
+                st.metric(
+                    "Avg PE",
+                    f"{avg_pe:.1f}x",
+                    f"{pe_pct:.0f}% have data"
+                )
+            else:
+                st.metric("PE Data", "Limited", "No PE data")
         else:
-            score_range = "N/A"
-        st.metric("Score Range", score_range)
+            # Default score range display
+            if not filtered_df.empty and 'master_score' in filtered_df.columns:
+                min_score = filtered_df['master_score'].min()
+                max_score = filtered_df['master_score'].max()
+                score_range = f"{min_score:.1f}-{max_score:.1f}"
+            else:
+                score_range = "N/A"
+            st.metric("Score Range", score_range)
     
     with col4:
-        if 'acceleration_score' in filtered_df.columns:
-            accelerating = (filtered_df['acceleration_score'] >= 80).sum()
+        # Show acceleration OR EPS growth based on display mode
+        if show_fundamentals and 'eps_change_pct' in filtered_df.columns:
+            # Count stocks with positive EPS growth
+            valid_eps_change = filtered_df['eps_change_pct'].notna()
+            positive_eps_growth = valid_eps_change & (filtered_df['eps_change_pct'] > 0)
+            growth_count = positive_eps_growth.sum()
+            
+            st.metric(
+                "EPS Growth +ve",
+                f"{growth_count}",
+                f"{valid_eps_change.sum()} have data"
+            )
         else:
-            accelerating = 0
-        st.metric("Accelerating", f"{accelerating}")
+            # Default acceleration display
+            if 'acceleration_score' in filtered_df.columns:
+                accelerating = (filtered_df['acceleration_score'] >= 80).sum()
+            else:
+                accelerating = 0
+            st.metric("Accelerating", f"{accelerating}")
     
     with col5:
         if 'rvol' in filtered_df.columns:
@@ -2227,9 +2528,21 @@ def main():
             if 'trend_indicator' in display_df.columns:
                 display_cols['trend_indicator'] = 'Trend'
             
+            # Add price column
+            display_cols['price'] = 'Price'
+            
+            # SMART FUNDAMENTAL COLUMNS - Only show when enabled
+            if show_fundamentals:
+                # Add PE column if exists
+                if 'pe' in display_df.columns:
+                    display_cols['pe'] = 'PE'
+                
+                # Add EPS Change % column if exists
+                if 'eps_change_pct' in display_df.columns:
+                    display_cols['eps_change_pct'] = 'EPS Δ%'
+            
             # Add remaining columns
             display_cols.update({
-                'price': 'Price',
                 'from_low_pct': 'From Low',
                 'ret_30d': '30D Ret',
                 'rvol': 'RVOL',
@@ -2238,7 +2551,7 @@ def main():
                 'sector': 'Sector'
             })
             
-            # Format numeric columns
+            # Format numeric columns with ROBUST error handling
             format_rules = {
                 'master_score': '{:.1f}',
                 'price': '₹{:,.0f}',
@@ -2247,7 +2560,41 @@ def main():
                 'rvol': '{:.1f}x'
             }
             
-            # Apply formatting
+            # SMART PE FORMATTING FUNCTION
+            def format_pe(value):
+                """Format PE ratio with intelligent handling"""
+                try:
+                    if pd.isna(value) or value == 'N/A':
+                        return '-'
+                    
+                    val = float(value)
+                    if val < 0 or val == 0:
+                        return 'Loss'
+                    elif val > 1000:
+                        return '>1000'
+                    else:
+                        return f"{val:.1f}"
+                except:
+                    return '-'
+            
+            # SMART EPS CHANGE FORMATTING FUNCTION
+            def format_eps_change(value):
+                """Format EPS change % with color indicators"""
+                try:
+                    if pd.isna(value) or value == 'N/A':
+                        return '-'
+                    
+                    val = float(value)
+                    if val > 999:
+                        return '>999%'
+                    elif val < -99:
+                        return '<-99%'
+                    else:
+                        return f"{val:+.1f}%"
+                except:
+                    return '-'
+            
+            # Apply formatting with comprehensive error handling
             for col, fmt in format_rules.items():
                 if col in display_df.columns:
                     try:
@@ -2263,6 +2610,14 @@ def main():
                     except Exception as e:
                         logger.warning(f"Error formatting {col}: {str(e)}")
                         display_df[col] = display_df[col].fillna('-')
+            
+            # Apply special formatting for fundamentals when enabled
+            if show_fundamentals:
+                if 'pe' in display_df.columns:
+                    display_df['pe'] = display_df['pe'].apply(format_pe)
+                
+                if 'eps_change_pct' in display_df.columns:
+                    display_df['eps_change_pct'] = display_df['eps_change_pct'].apply(format_eps_change)
             
             # Rename columns for display
             display_df = display_df[[c for c in display_cols.keys() if c in display_df.columns]]
@@ -2299,13 +2654,34 @@ def main():
                         st.text("No 30D return data available")
                 
                 with stat_cols[2]:
-                    st.markdown("**RVOL Stats**")
-                    if 'rvol' in filtered_df.columns:
-                        st.text(f"Max: {filtered_df['rvol'].max():.1f}x")
-                        st.text(f"Avg: {filtered_df['rvol'].mean():.1f}x")
-                        st.text(f">2x: {(filtered_df['rvol'] > 2).sum()}")
+                    if show_fundamentals:
+                        st.markdown("**Fundamentals**")
+                        if 'pe' in filtered_df.columns:
+                            valid_pe = filtered_df['pe'].notna() & (filtered_df['pe'] > 0) & (filtered_df['pe'] < 1000)
+                            if valid_pe.any():
+                                st.text(f"Avg PE: {filtered_df.loc[valid_pe, 'pe'].mean():.1f}x")
+                            else:
+                                st.text("Avg PE: N/A")
+                        else:
+                            st.text("PE: No data")
+                        
+                        if 'eps_change_pct' in filtered_df.columns:
+                            valid_eps = filtered_df['eps_change_pct'].notna()
+                            if valid_eps.any():
+                                st.text(f"Avg EPS Δ: {filtered_df.loc[valid_eps, 'eps_change_pct'].mean():+.1f}%")
+                                st.text(f"Growing: {(filtered_df['eps_change_pct'] > 0).sum()}")
+                            else:
+                                st.text("EPS Growth: N/A")
+                        else:
+                            st.text("EPS: No data")
                     else:
-                        st.text("No RVOL data available")
+                        st.markdown("**RVOL Stats**")
+                        if 'rvol' in filtered_df.columns:
+                            st.text(f"Max: {filtered_df['rvol'].max():.1f}x")
+                            st.text(f"Avg: {filtered_df['rvol'].mean():.1f}x")
+                            st.text(f">2x: {(filtered_df['rvol'] > 2).sum()}")
+                        else:
+                            st.text("No RVOL data available")
                 
                 with stat_cols[3]:
                     st.markdown("**Categories**")
@@ -3076,6 +3452,48 @@ def main():
                                 st.text(f"EPS Tier: {stock['eps_tier']}")
                             if 'pe_tier' in stock:
                                 st.text(f"PE Tier: {stock['pe_tier']}")
+                            
+                            # SMART FUNDAMENTAL DISPLAY
+                            if show_fundamentals:
+                                st.markdown("**💰 Fundamentals**")
+                                
+                                # PE Ratio with intelligent display
+                                if 'pe' in stock and pd.notna(stock['pe']):
+                                    pe_val = stock['pe']
+                                    if pe_val <= 0:
+                                        pe_display = "Loss"
+                                        pe_color = "🔴"
+                                    elif pe_val < 15:
+                                        pe_display = f"{pe_val:.1f}x"
+                                        pe_color = "🟢"
+                                    elif pe_val < 25:
+                                        pe_display = f"{pe_val:.1f}x"
+                                        pe_color = "🟡"
+                                    else:
+                                        pe_display = f"{pe_val:.1f}x"
+                                        pe_color = "🔴"
+                                    st.text(f"PE Ratio: {pe_color} {pe_display}")
+                                else:
+                                    st.text("PE Ratio: - (N/A)")
+                                
+                                # EPS Current
+                                if 'eps_current' in stock and pd.notna(stock['eps_current']):
+                                    st.text(f"EPS: ₹{stock['eps_current']:.2f}")
+                                else:
+                                    st.text("EPS: - (N/A)")
+                                
+                                # EPS Change with color
+                                if 'eps_change_pct' in stock and pd.notna(stock['eps_change_pct']):
+                                    eps_chg = stock['eps_change_pct']
+                                    if eps_chg > 0:
+                                        eps_emoji = "📈"
+                                        eps_color = "green"
+                                    else:
+                                        eps_emoji = "📉"
+                                        eps_color = "red"
+                                    st.text(f"EPS Growth: {eps_emoji} {eps_chg:+.1f}%")
+                                else:
+                                    st.text("EPS Growth: - (N/A)")
                         
                         with detail_cols[1]:
                             st.markdown("**📈 Performance**")
