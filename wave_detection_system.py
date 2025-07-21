@@ -1441,20 +1441,20 @@ class SearchEngine:
     """Advanced search functionality with improved robustness"""
     
     @staticmethod
-    def create_search_index(df: pd.DataFrame) -> Dict[str, List[int]]:
-        """Create search index mapping search terms to row indices"""
+    def create_search_index(df: pd.DataFrame) -> Dict[str, Set[str]]:
+        """Create search index mapping search terms to ticker symbols"""
         search_index = {}
         
         try:
-            for idx, row in df.iterrows():
+            for _, row in df.iterrows():
                 ticker = str(row.get('ticker', '')).upper()
                 if not ticker or ticker == 'NAN':
                     continue
                 
                 # Index by ticker
                 if ticker not in search_index:
-                    search_index[ticker] = []
-                search_index[ticker].append(idx)
+                    search_index[ticker] = set()
+                search_index[ticker].add(ticker)
                 
                 # Index by company name words
                 company_name = str(row.get('company_name', ''))
@@ -1463,8 +1463,8 @@ class SearchEngine:
                     for word in company_words:
                         if len(word) > 2:  # Skip short words
                             if word not in search_index:
-                                search_index[word] = []
-                            search_index[word].append(idx)
+                                search_index[word] = set()
+                            search_index[word].add(ticker)
             
             logger.info(f"Created search index with {len(search_index)} terms")
             
@@ -1475,7 +1475,7 @@ class SearchEngine:
     
     @staticmethod
     def search_stocks(df: pd.DataFrame, query: str, 
-                     search_index: Optional[Dict[str, List[int]]] = None) -> pd.DataFrame:
+                     search_index: Optional[Dict[str, Set[str]]] = None) -> pd.DataFrame:
         """Search stocks with relevance scoring"""
         if not query or df.empty:
             return pd.DataFrame()
@@ -1490,16 +1490,16 @@ class SearchEngine:
             
             # Use search index if available
             if search_index:
-                matching_indices = set()
+                matching_tickers = set()
                 query_words = query.split()
                 
                 for word in query_words:
                     if word in search_index:
-                        matching_indices.update(search_index[word])
+                        matching_tickers.update(search_index[word])
                 
-                if matching_indices:
-                    # Use iloc for index-based selection
-                    return df.iloc[list(matching_indices)]
+                if matching_tickers:
+                    # Filter by ticker instead of using index positions
+                    return df[df['ticker'].isin(matching_tickers)]
             
             # Fallback to string contains
             mask = (
@@ -1753,10 +1753,6 @@ def main():
         st.session_state.search_index = None
     if 'last_refresh' not in st.session_state:
         st.session_state.last_refresh = datetime.now()
-    if 'search_query' not in st.session_state:
-        st.session_state.search_query = ""
-    if 'active_tab' not in st.session_state:
-        st.session_state.active_tab = 0
     
     # Sidebar configuration
     with st.sidebar:
@@ -1791,6 +1787,10 @@ def main():
                 if key in st.session_state:
                     del st.session_state[key]
             st.rerun()
+        
+        # Debug checkbox at the bottom of sidebar
+        st.markdown("---")
+        show_debug = st.checkbox("🐛 Show Debug Info", value=False)
     
     # Data loading and processing
     try:
@@ -2024,6 +2024,28 @@ def main():
     # Apply filters
     filtered_df = filter_engine.apply_filters(ranked_df, filters)
     filtered_df = filtered_df.sort_values('rank')
+    
+    # Debug filter information
+    if show_debug:
+        with st.sidebar.expander("Filter Debug Info", expanded=True):
+            st.write("**Active Filters:**")
+            st.write(f"Categories: {filters.get('categories', [])}")
+            st.write(f"Sectors: {filters.get('sectors', [])}")
+            st.write(f"Min Score: {filters.get('min_score', 0)}")
+            st.write(f"Patterns: {filters.get('patterns', [])}")
+            st.write(f"Trend Range: {filters.get('trend_range', 'All')}")
+            st.write(f"EPS Tiers: {filters.get('eps_tiers', [])}")
+            st.write(f"PE Tiers: {filters.get('pe_tiers', [])}")
+            st.write(f"Price Tiers: {filters.get('price_tiers', [])}")
+            st.write(f"Min EPS Change: {filters.get('min_eps_change', None)}")
+            if show_fundamentals:
+                st.write(f"Min PE: {filters.get('min_pe', None)}")
+                st.write(f"Max PE: {filters.get('max_pe', None)}")
+                st.write(f"Require Fundamental Data: {filters.get('require_fundamental_data', False)}")
+            st.write(f"**Filter Result:**")
+            st.write(f"Before: {len(ranked_df)} stocks")
+            st.write(f"After: {len(filtered_df)} stocks")
+            st.write(f"Filtered: {len(ranked_df) - len(filtered_df)} stocks")
     
     # Main content area
     # Summary metrics
@@ -3009,7 +3031,7 @@ def main():
         else:
             st.info("No data available for analysis.")
     
-    # Tab 4: Search - Fixed to stay on Search tab
+    # Tab 4: Search - Fixed to work properly
     with tabs[3]:
         st.markdown("### 🔍 Advanced Stock Search")
         
@@ -3017,30 +3039,19 @@ def main():
         col1, col2 = st.columns([4, 1])
         
         with col1:
-            # Use form to prevent tab switching on Enter
-            with st.form(key='search_form'):
-                search_query = st.text_input(
-                    "Search stocks",
-                    placeholder="Enter ticker or company name...",
-                    help="Search by ticker symbol or company name",
-                    key="search_input",
-                    value=st.session_state.get('search_query', '')
-                )
-                
-                # Hidden submit button (triggered by Enter)
-                submit = st.form_submit_button("Search", use_container_width=False)
+            search_query = st.text_input(
+                "Search stocks",
+                placeholder="Enter ticker or company name...",
+                help="Search by ticker symbol or company name",
+                key="search_input"
+            )
         
         with col2:
             st.markdown("<br>", unsafe_allow_html=True)
-            # Additional search button outside form
             search_clicked = st.button("🔎 Search", type="primary", use_container_width=True)
         
-        # Update search query in session state
-        if search_query:
-            st.session_state.search_query = search_query
-        
-        # Perform search if query exists or button clicked
-        if (search_query and submit) or search_clicked:
+        # Perform search
+        if search_query or search_clicked:
             search_results = SearchEngine.search_stocks(
                 filtered_df, 
                 search_query,
