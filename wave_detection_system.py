@@ -2680,6 +2680,9 @@ def main():
                 help="Show category rotation flow and market regime detection"
             )
         
+        # Initialize wave_filtered_df before using it
+        wave_filtered_df = filtered_df.copy()
+        
         with radar_col4:
             # Calculate overall Wave Strength
             if not wave_filtered_df.empty:
@@ -2762,10 +2765,7 @@ def main():
                     - **Acceleration Alerts:** Score ≥ 60 (early signals)
                     """)
         
-        # Apply timeframe filters to create wave_filtered_df
-        wave_filtered_df = filtered_df.copy()
-        
-        # Apply intelligent timeframe filtering
+        # Apply intelligent timeframe filtering to the already initialized wave_filtered_df
         if wave_timeframe != "All Waves":
             try:
                 if wave_timeframe == "Intraday Surge":
@@ -2808,6 +2808,7 @@ def main():
             except KeyError as e:
                 logger.warning(f"Column missing for {wave_timeframe} filter: {str(e)}")
                 st.warning(f"Some data not available for {wave_timeframe} filter")
+                # Reset to original filtered data if timeframe filtering fails
                 wave_filtered_df = filtered_df.copy()
         
         # Wave Radar Analysis sections
