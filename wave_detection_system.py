@@ -2637,10 +2637,24 @@ def main():
         radar_col1, radar_col2, radar_col3, radar_col4 = st.columns([2, 2, 2, 1])
         
         with radar_col1:
+            # Enhanced timeframe options with intelligent filtering
             wave_timeframe = st.selectbox(
                 "Wave Detection Timeframe",
-                ["Real-Time (Today)", "3-Day Formation", "Weekly Formation"],
-                help="How far back to detect wave formation"
+                options=[
+                    "All Waves",
+                    "Intraday Surge",
+                    "3-Day Buildup", 
+                    "Weekly Breakout",
+                    "Monthly Trend"
+                ],
+                index=0,
+                help="""
+                🌊 All Waves: Complete unfiltered view
+                ⚡ Intraday Surge: High RVOL & today's movers
+                📈 3-Day Buildup: Building momentum patterns
+                🚀 Weekly Breakout: Near 52w highs with volume
+                💪 Monthly Trend: Established trends with SMAs
+                """
             )
         
         with radar_col2:
@@ -2649,6 +2663,13 @@ def main():
                 options=["Conservative", "Balanced", "Aggressive"],
                 value="Balanced",
                 help="Conservative = Stronger signals, Aggressive = More signals"
+            )
+            
+            # Sensitivity details toggle
+            show_sensitivity_details = st.checkbox(
+                "Show thresholds",
+                value=False,
+                help="Display exact threshold values for current sensitivity"
             )
         
         with radar_col3:
@@ -2661,14 +2682,14 @@ def main():
         
         with radar_col4:
             # Calculate overall Wave Strength
-            if not filtered_df.empty:
+            if not wave_filtered_df.empty:
                 try:
-                    momentum_count = len(filtered_df[filtered_df['momentum_score'] >= 60]) if 'momentum_score' in filtered_df.columns else 0
-                    accel_count = len(filtered_df[filtered_df['acceleration_score'] >= 70]) if 'acceleration_score' in filtered_df.columns else 0
-                    rvol_count = len(filtered_df[filtered_df['rvol'] >= 2]) if 'rvol' in filtered_df.columns else 0
-                    breakout_count = len(filtered_df[filtered_df['breakout_score'] >= 70]) if 'breakout_score' in filtered_df.columns else 0
+                    momentum_count = len(wave_filtered_df[wave_filtered_df['momentum_score'] >= 60]) if 'momentum_score' in wave_filtered_df.columns else 0
+                    accel_count = len(wave_filtered_df[wave_filtered_df['acceleration_score'] >= 70]) if 'acceleration_score' in wave_filtered_df.columns else 0
+                    rvol_count = len(wave_filtered_df[wave_filtered_df['rvol'] >= 2]) if 'rvol' in wave_filtered_df.columns else 0
+                    breakout_count = len(wave_filtered_df[wave_filtered_df['breakout_score'] >= 70]) if 'breakout_score' in wave_filtered_df.columns else 0
                     
-                    total_stocks = len(filtered_df)
+                    total_stocks = len(wave_filtered_df)
                     if total_stocks > 0:
                         wave_strength = (
                             momentum_count * 0.3 +
@@ -2691,10 +2712,10 @@ def main():
                     
                     # If market regime is hidden, still calculate and show regime in metric
                     regime_indicator = ""
-                    if not show_market_regime and not filtered_df.empty and 'category' in filtered_df.columns:
+                    if not show_market_regime and not wave_filtered_df.empty and 'category' in wave_filtered_df.columns:
                         # Quick regime calculation for display
                         try:
-                            quick_flow = filtered_df.groupby('category')['master_score'].mean()
+                            quick_flow = wave_filtered_df.groupby('category')['master_score'].mean()
                             if len(quick_flow) > 0:
                                 top_category = quick_flow.idxmax()
                                 if 'Small' in top_category or 'Micro' in top_category:
@@ -2713,24 +2734,106 @@ def main():
                     logger.error(f"Error calculating wave strength: {str(e)}")
                     st.metric("Wave Strength", "N/A", "Error")
         
+        # Display sensitivity thresholds if enabled
+        if show_sensitivity_details:
+            with st.expander("📊 Current Sensitivity Thresholds", expanded=True):
+                if sensitivity == "Conservative":
+                    st.markdown("""
+                    **Conservative Settings** 🛡️
+                    - **Momentum Shifts:** Score ≥ 60, Acceleration ≥ 70
+                    - **Emerging Patterns:** Within 5% of qualifying threshold
+                    - **Volume Surges:** RVOL ≥ 3.0x (extreme volumes only)
+                    - **Acceleration Alerts:** Score ≥ 85 (strongest signals)
+                    """)
+                elif sensitivity == "Balanced":
+                    st.markdown("""
+                    **Balanced Settings** ⚖️
+                    - **Momentum Shifts:** Score ≥ 50, Acceleration ≥ 60
+                    - **Emerging Patterns:** Within 10% of qualifying threshold
+                    - **Volume Surges:** RVOL ≥ 2.0x (standard threshold)
+                    - **Acceleration Alerts:** Score ≥ 70 (good acceleration)
+                    """)
+                else:  # Aggressive
+                    st.markdown("""
+                    **Aggressive Settings** 🚀
+                    - **Momentum Shifts:** Score ≥ 40, Acceleration ≥ 50
+                    - **Emerging Patterns:** Within 15% of qualifying threshold
+                    - **Volume Surges:** RVOL ≥ 1.5x (building volume)
+                    - **Acceleration Alerts:** Score ≥ 60 (early signals)
+                    """)
+        
+        # Apply timeframe filters to create wave_filtered_df
+        wave_filtered_df = filtered_df.copy()
+        
+        # Apply intelligent timeframe filtering
+        if wave_timeframe != "All Waves":
+            try:
+                if wave_timeframe == "Intraday Surge":
+                    # Focus on today's high volume movers
+                    wave_filtered_df = wave_filtered_df[
+                        (wave_filtered_df['rvol'] >= 2.5) &
+                        (wave_filtered_df['ret_1d'] > 2) &
+                        (wave_filtered_df['price'] > wave_filtered_df['prev_close'] * 1.02)
+                    ]
+                    
+                elif wave_timeframe == "3-Day Buildup":
+                    # Stocks building momentum over 3 days
+                    if 'ret_3d' in wave_filtered_df.columns:
+                        wave_filtered_df = wave_filtered_df[
+                            (wave_filtered_df['ret_3d'] > 5) &
+                            (wave_filtered_df['vol_ratio_7d_90d'] > 1.5) &
+                            (wave_filtered_df['price'] > wave_filtered_df['sma_20d'])
+                        ]
+                    
+                elif wave_timeframe == "Weekly Breakout":
+                    # Stocks near highs with strong weekly momentum
+                    if 'ret_7d' in wave_filtered_df.columns:
+                        wave_filtered_df = wave_filtered_df[
+                            (wave_filtered_df['ret_7d'] > 8) &
+                            (wave_filtered_df['vol_ratio_7d_90d'] > 2.0) &
+                            (wave_filtered_df['from_high_pct'] > -10)
+                        ]
+                    
+                elif wave_timeframe == "Monthly Trend":
+                    # Established trends with technical confirmation
+                    if all(col in wave_filtered_df.columns for col in ['ret_30d', 'sma_20d', 'sma_50d']):
+                        wave_filtered_df = wave_filtered_df[
+                            (wave_filtered_df['ret_30d'] > 15) &
+                            (wave_filtered_df['price'] > wave_filtered_df['sma_20d']) &
+                            (wave_filtered_df['sma_20d'] > wave_filtered_df['sma_50d']) &
+                            (wave_filtered_df['vol_ratio_30d_180d'] > 1.2) &
+                            (wave_filtered_df['from_low_pct'] > 30)
+                        ]
+                        
+            except KeyError as e:
+                logger.warning(f"Column missing for {wave_timeframe} filter: {str(e)}")
+                st.warning(f"Some data not available for {wave_timeframe} filter")
+                wave_filtered_df = filtered_df.copy()
+        
         # Wave Radar Analysis sections
-        if not filtered_df.empty:
+        if not wave_filtered_df.empty:
             # 1. MOMENTUM SHIFT DETECTION
             st.markdown("#### 🚀 Momentum Shifts - Stocks Entering Strength")
             
             # Calculate momentum shifts
-            momentum_shifts = filtered_df.copy()
+            momentum_shifts = wave_filtered_df.copy()
             
             # Identify crossing points based on sensitivity
             if sensitivity == "Conservative":
                 cross_threshold = 60
                 min_acceleration = 70
+                min_rvol_threshold = 3.0
+                acceleration_alert_threshold = 85
             elif sensitivity == "Balanced":
                 cross_threshold = 50
                 min_acceleration = 60
+                min_rvol_threshold = 2.0
+                acceleration_alert_threshold = 70
             else:  # Aggressive
                 cross_threshold = 40
                 min_acceleration = 50
+                min_rvol_threshold = 1.5
+                acceleration_alert_threshold = 60
             
             # Find stocks crossing into strength
             if 'ret_30d' in momentum_shifts.columns:
@@ -2748,6 +2851,27 @@ def main():
                 return_condition
             )
             
+            # Calculate multi-signal count for each stock
+            momentum_shifts['signal_count'] = 0
+            
+            # Signal 1: Momentum shift
+            momentum_shifts.loc[momentum_shifts['momentum_shift'], 'signal_count'] += 1
+            
+            # Signal 2: High RVOL
+            if 'rvol' in momentum_shifts.columns:
+                momentum_shifts.loc[momentum_shifts['rvol'] >= min_rvol_threshold, 'signal_count'] += 1
+            
+            # Signal 3: Strong acceleration
+            momentum_shifts.loc[momentum_shifts['acceleration_score'] >= acceleration_alert_threshold, 'signal_count'] += 1
+            
+            # Signal 4: Volume surge
+            if 'vol_ratio_7d_90d' in momentum_shifts.columns:
+                momentum_shifts.loc[momentum_shifts['vol_ratio_7d_90d'] >= 1.5, 'signal_count'] += 1
+            
+            # Signal 5: Breakout ready
+            if 'breakout_score' in momentum_shifts.columns:
+                momentum_shifts.loc[momentum_shifts['breakout_score'] >= 75, 'signal_count'] += 1
+            
             # Calculate shift strength
             momentum_shifts['shift_strength'] = (
                 momentum_shifts['momentum_score'] * 0.4 +
@@ -2759,29 +2883,35 @@ def main():
             top_shifts = momentum_shifts[momentum_shifts['momentum_shift']].nlargest(20, 'shift_strength')
             
             if len(top_shifts) > 0:
+                # Sort by signal count first, then by shift strength
+                top_shifts = top_shifts.sort_values(['signal_count', 'shift_strength'], ascending=[False, False])
+                
                 # Select available columns for display
                 display_columns = ['ticker', 'company_name', 'master_score', 'momentum_score', 
-                                 'acceleration_score', 'rvol']
+                                 'acceleration_score', 'rvol', 'signal_count']
                 
                 if 'ret_7d' in top_shifts.columns:
-                    display_columns.append('ret_7d')
+                    display_columns.insert(-1, 'ret_7d')
                 
                 display_columns.append('category')
                 
                 shift_display = top_shifts[display_columns].copy()
                 
-                # Add shift indicators
+                # Add shift indicators with multi-signal emoji
                 shift_display['Signal'] = shift_display.apply(
-                    lambda x: "🔥 HOT" if x['acceleration_score'] > 80 else "📈 RISING", axis=1
+                    lambda x: f"{'🔥' * min(x['signal_count'], 3)} {x['signal_count']}/5", axis=1
                 )
                 
                 # Format for display
                 if 'ret_7d' in shift_display.columns:
                     shift_display['ret_7d'] = shift_display['ret_7d'].apply(lambda x: f"{x:.1f}%" if pd.notna(x) else "0.0%")
-                else:
-                    shift_display['ret_7d'] = "N/A"
                 
                 shift_display['rvol'] = shift_display['rvol'].apply(lambda x: f"{x:.1f}x")
+                
+                # Format signal count for display
+                shift_display['signal_count'] = shift_display['signal_count'].apply(
+                    lambda x: f"{x} {'🏆' if x >= 4 else '✨' if x >= 3 else ''}"
+                )
                 
                 # Rename columns
                 rename_dict = {
@@ -2791,6 +2921,7 @@ def main():
                     'momentum_score': 'Momentum',
                     'acceleration_score': 'Acceleration',
                     'rvol': 'RVOL',
+                    'signal_count': 'Signals',
                     'category': 'Category'
                 }
                 
@@ -2804,8 +2935,13 @@ def main():
                     use_container_width=True,
                     hide_index=True
                 )
+                
+                # Show multi-signal leaders summary
+                multi_signal_leaders = top_shifts[top_shifts['signal_count'] >= 3]
+                if len(multi_signal_leaders) > 0:
+                    st.success(f"🏆 Found {len(multi_signal_leaders)} stocks with 3+ signals (strongest momentum)")
             else:
-                st.info("No momentum shifts detected with current settings. Try 'Aggressive' sensitivity.")
+                st.info(f"No momentum shifts detected in {wave_timeframe} timeframe. Try 'Aggressive' sensitivity or 'All Waves' timeframe.")
             
             # 2. CATEGORY ROTATION FLOW
             if show_market_regime:
@@ -2816,14 +2952,14 @@ def main():
                 with col1:
                     # Calculate category performance using TOP 25 by market cap
                     try:
-                        if not filtered_df.empty and 'category' in filtered_df.columns and 'market_cap' in filtered_df.columns:
+                        if not wave_filtered_df.empty and 'category' in wave_filtered_df.columns and 'market_cap' in wave_filtered_df.columns:
                             # Group by category and get top 25 by market cap
                             category_leaders = pd.DataFrame()
                             
-                            for category in filtered_df['category'].unique():
+                            for category in wave_filtered_df['category'].unique():
                                 if category != 'Unknown':
                                     # Get stocks in this category
-                                    cat_stocks = filtered_df[filtered_df['category'] == category]
+                                    cat_stocks = wave_filtered_df[wave_filtered_df['category'] == category]
                                     
                                     # Sort by market cap and take top 25
                                     if len(cat_stocks) > 25:
@@ -2899,9 +3035,9 @@ def main():
                                 category_flow = pd.DataFrame()
                         else:
                             # Fallback if market_cap column is missing
-                            if not filtered_df.empty and 'category' in filtered_df.columns:
+                            if not wave_filtered_df.empty and 'category' in wave_filtered_df.columns:
                                 # Use all stocks (original method)
-                                category_flow = filtered_df.groupby('category').agg({
+                                category_flow = wave_filtered_df.groupby('category').agg({
                                     'master_score': ['mean', 'count'],
                                     'momentum_score': 'mean',
                                     'volume_score': 'mean',
@@ -3014,8 +3150,16 @@ def main():
             # 3. EMERGING PATTERNS
             st.markdown("#### 🎯 Emerging Patterns - About to Qualify")
             
-            # Calculate pattern emergence
-            pattern_emergence = filtered_df.copy()
+            # Calculate pattern emergence based on sensitivity
+            pattern_emergence = wave_filtered_df.copy()
+            
+            # Set pattern distance thresholds based on sensitivity
+            if sensitivity == "Conservative":
+                pattern_distance = 5  # Within 5% of qualifying
+            elif sensitivity == "Balanced":
+                pattern_distance = 10  # Within 10% of qualifying
+            else:  # Aggressive
+                pattern_distance = 15  # Within 15% of qualifying
             
             # Check how close to pattern thresholds
             emergence_data = []
@@ -3023,7 +3167,7 @@ def main():
             # Category Leader emergence
             if 'category_percentile' in pattern_emergence.columns:
                 close_to_leader = pattern_emergence[
-                    (pattern_emergence['category_percentile'] >= 85) & 
+                    (pattern_emergence['category_percentile'] >= (90 - pattern_distance)) & 
                     (pattern_emergence['category_percentile'] < 90)
                 ]
                 for _, stock in close_to_leader.iterrows():
@@ -3039,7 +3183,7 @@ def main():
             # Breakout Ready emergence
             if 'breakout_score' in pattern_emergence.columns:
                 close_to_breakout = pattern_emergence[
-                    (pattern_emergence['breakout_score'] >= 75) & 
+                    (pattern_emergence['breakout_score'] >= (80 - pattern_distance)) & 
                     (pattern_emergence['breakout_score'] < 80)
                 ]
                 for _, stock in close_to_breakout.iterrows():
@@ -3052,17 +3196,24 @@ def main():
                         'Score': stock['master_score']
                     })
             
-            # Volume Explosion emergence
+            # Volume Explosion emergence (based on sensitivity)
+            if sensitivity == "Conservative":
+                rvol_threshold = 3.0
+            elif sensitivity == "Balanced":
+                rvol_threshold = 2.0
+            else:  # Aggressive
+                rvol_threshold = 1.5
+                
             close_to_explosion = pattern_emergence[
-                (pattern_emergence['rvol'] >= 2.5) & 
-                (pattern_emergence['rvol'] < 3.0)
+                (pattern_emergence['rvol'] >= (rvol_threshold - 0.5)) & 
+                (pattern_emergence['rvol'] < rvol_threshold)
             ]
             for _, stock in close_to_explosion.iterrows():
                 emergence_data.append({
                     'Ticker': stock['ticker'],
                     'Company': stock['company_name'],
                     'Pattern': '⚡ VOL EXPLOSION',
-                    'Distance': f"{3.0 - stock['rvol']:.1f}x away",
+                    'Distance': f"{rvol_threshold - stock['rvol']:.1f}x away",
                     'Current': f"{stock['rvol']:.1f}x",
                     'Score': stock['master_score']
                 })
@@ -3077,23 +3228,34 @@ def main():
                     st.metric("Emerging Patterns", len(emergence_df))
                     st.caption("Stocks about to trigger pattern alerts")
             else:
-                st.info("No patterns emerging with current filters.")
+                st.info(f"No patterns emerging within {pattern_distance}% threshold with current {wave_timeframe} timeframe.")
             
             # 4. ACCELERATION ALERTS
             st.markdown("#### ⚡ Acceleration Alerts - Momentum Building")
             
+            # Set acceleration threshold based on sensitivity
+            if sensitivity == "Conservative":
+                accel_threshold = 85
+                momentum_threshold = 70
+            elif sensitivity == "Balanced":
+                accel_threshold = 70
+                momentum_threshold = 60
+            else:  # Aggressive
+                accel_threshold = 60
+                momentum_threshold = 50
+            
             # Find accelerating stocks
             accel_conditions = (
-                (filtered_df['acceleration_score'] >= 70) &
-                (filtered_df['momentum_score'] >= 60)
+                (wave_filtered_df['acceleration_score'] >= accel_threshold) &
+                (wave_filtered_df['momentum_score'] >= momentum_threshold)
             )
             
             # Add return pace condition if data available
-            if 'ret_7d' in filtered_df.columns and 'ret_30d' in filtered_df.columns:
+            if 'ret_7d' in wave_filtered_df.columns and 'ret_30d' in wave_filtered_df.columns:
                 with np.errstate(divide='ignore', invalid='ignore'):
-                    accel_conditions &= (filtered_df['ret_7d'] > filtered_df['ret_30d'] / 30 * 7)
+                    accel_conditions &= (wave_filtered_df['ret_7d'] > wave_filtered_df['ret_30d'] / 30 * 7)
             
-            accelerating = filtered_df[accel_conditions].nlargest(10, 'acceleration_score')
+            accelerating = wave_filtered_df[accel_conditions].nlargest(10, 'acceleration_score')
             
             if len(accelerating) > 0:
                 # Create acceleration visualization
@@ -3135,7 +3297,7 @@ def main():
                         ))
                 
                 fig_accel.update_layout(
-                    title="Acceleration Profiles - Momentum Building",
+                    title=f"Acceleration Profiles - Momentum Building (Score ≥ {accel_threshold})",
                     xaxis_title="Time Frame",
                     yaxis_title="Return % (Annualized)",
                     height=350,
@@ -3152,18 +3314,26 @@ def main():
                 
                 st.plotly_chart(fig_accel, use_container_width=True)
             else:
-                st.info("No strong acceleration signals detected.")
+                st.info(f"No acceleration signals detected with {sensitivity} sensitivity (requires score ≥ {accel_threshold}).")
             
             # 5. VOLUME SURGE DETECTION
             st.markdown("#### 🌊 Volume Surges - Unusual Activity NOW")
             
+            # Set RVOL threshold based on sensitivity
+            if sensitivity == "Conservative":
+                rvol_surge_threshold = 3.0
+            elif sensitivity == "Balanced":
+                rvol_surge_threshold = 2.0
+            else:  # Aggressive
+                rvol_surge_threshold = 1.5
+            
             # Find volume surges
-            surge_conditions = (filtered_df['rvol'] >= 2.0)
+            surge_conditions = (wave_filtered_df['rvol'] >= rvol_surge_threshold)
             
-            if 'vol_ratio_1d_90d' in filtered_df.columns:
-                surge_conditions |= (filtered_df['vol_ratio_1d_90d'] >= 2.0)
+            if 'vol_ratio_1d_90d' in wave_filtered_df.columns:
+                surge_conditions |= (wave_filtered_df['vol_ratio_1d_90d'] >= rvol_surge_threshold)
             
-            volume_surges = filtered_df[surge_conditions].copy()
+            volume_surges = wave_filtered_df[surge_conditions].copy()
             
             if len(volume_surges) > 0:
                 # Calculate surge score
@@ -3231,7 +3401,7 @@ def main():
                         for cat, count in surge_categories.head(3).items():
                             st.caption(f"{cat}: {count} stocks")
             else:
-                st.info("No significant volume surges detected.")
+                st.info(f"No volume surges detected with {sensitivity} sensitivity (requires RVOL ≥ {rvol_surge_threshold}x).")
             
             # Wave Radar Summary
             st.markdown("---")
@@ -3250,8 +3420,8 @@ def main():
                 else:
                     # Quick regime calculation if market regime is hidden
                     try:
-                        if not filtered_df.empty and 'category' in filtered_df.columns:
-                            quick_flow = filtered_df.groupby('category')['master_score'].mean()
+                        if not wave_filtered_df.empty and 'category' in wave_filtered_df.columns:
+                            quick_flow = wave_filtered_df.groupby('category')['master_score'].mean()
                             if len(quick_flow) > 0:
                                 top_cat = quick_flow.idxmax()
                                 if 'Small' in top_cat or 'Micro' in top_cat:
@@ -3274,15 +3444,35 @@ def main():
                 st.metric("Emerging Patterns", emergence_count)
             
             with summary_cols[3]:
-                accel_count = len(filtered_df[filtered_df['acceleration_score'] >= 70])
+                if 'acceleration_score' in wave_filtered_df.columns:
+                    # Use appropriate threshold based on sensitivity
+                    if sensitivity == "Conservative":
+                        accel_threshold = 85
+                    elif sensitivity == "Balanced":
+                        accel_threshold = 70
+                    else:  # Aggressive
+                        accel_threshold = 60
+                    accel_count = len(wave_filtered_df[wave_filtered_df['acceleration_score'] >= accel_threshold])
+                else:
+                    accel_count = 0
                 st.metric("Accelerating", accel_count)
             
             with summary_cols[4]:
-                surge_count = len(filtered_df[filtered_df['rvol'] >= 2])
+                if 'rvol' in wave_filtered_df.columns:
+                    # Use appropriate threshold based on sensitivity
+                    if sensitivity == "Conservative":
+                        surge_threshold = 3.0
+                    elif sensitivity == "Balanced":
+                        surge_threshold = 2.0
+                    else:  # Aggressive
+                        surge_threshold = 1.5
+                    surge_count = len(wave_filtered_df[wave_filtered_df['rvol'] >= surge_threshold])
+                else:
+                    surge_count = 0
                 st.metric("Volume Surges", surge_count)
         
         else:
-            st.warning("No data available for Wave Radar analysis.")
+            st.warning(f"No data available for Wave Radar analysis with {wave_timeframe} timeframe.")
     
     # Tab 3: Analysis
     with tabs[2]:
