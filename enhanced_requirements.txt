@@ -1,0 +1,63 @@
+# Enhanced Wave Detection Ultimate 4.0 Requirements
+# Enhanced with additional visualization and analysis libraries
+
+# Core Streamlit and data processing
+streamlit>=1.28.0
+pandas>=1.5.3
+numpy>=1.24.2
+plotly>=5.17.0
+requests>=2.31.0
+
+# Enhanced visualization libraries
+seaborn>=0.12.2
+matplotlib>=3.7.0
+
+# Statistical and scientific computing
+scipy>=1.11.0
+
+# Excel/CSV export capabilities
+xlsxwriter>=3.1.9
+openpyxl>=3.1.2
+
+# Enhanced data manipulation
+pyarrow>=13.0.0  # For faster parquet operations
+fastparquet>=0.8.3  # Alternative parquet engine
+
+# Optional AI/ML enhancements (future features)
+# scikit-learn>=1.3.0  # For ML-based predictions
+# yfinance>=0.2.12     # For real-time data fetching
+# ta>=0.10.2           # Technical analysis indicators
+
+# Performance optimization
+numba>=0.57.0        # JIT compilation for speed
+joblib>=1.3.0        # Parallel processing
+
+# Enhanced data validation
+pydantic>=2.0.0      # Data validation and settings management
+
+# Time series analysis
+statsmodels>=0.14.0  # Statistical modeling
+
+# Network requests with retry logic
+urllib3>=2.0.0
+httpx>=0.24.0
+
+# Date/time utilities
+python-dateutil>=2.8.2
+
+# Configuration management
+python-dotenv>=1.0.0
+
+# Memory optimization
+memory-profiler>=0.61.0
+
+# Logging enhancements
+loguru>=0.7.0
+
+# Development and testing (optional)
+# pytest>=7.4.0
+# black>=23.0.0
+# flake8>=6.0.0
+
+# Note: These versions are compatible with Python 3.8+
+# Streamlit Cloud will automatically install these dependencies
