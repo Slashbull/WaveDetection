@@ -376,12 +376,19 @@ class DataProcessor:
         # Add tier classifications
         df = DataProcessor._add_tier_classifications(df)
         
-        # FIX: Cap RVOL at reasonable maximum to prevent extreme values
+        # FIX: Calculate or fix RVOL values
         if 'rvol' not in df.columns:
-            df['rvol'] = 1.0
+            # Auto-calculate RVOL if volume data is available: rvol = volume_1d / volume_90d
+            if 'volume_1d' in df.columns and 'volume_90d' in df.columns:
+                df['rvol'] = df['volume_1d'] / df['volume_90d'].replace(0, np.nan)
+                logger.info("Auto-calculated RVOL from volume_1d / volume_90d")
+            else:
+                df['rvol'] = 1.0
         else:
             df['rvol'] = pd.to_numeric(df['rvol'], errors='coerce')
-            df['rvol'] = df['rvol'].fillna(1.0).clip(lower=0.01, upper=CONFIG.RVOL_MAX_THRESHOLD)
+            
+        # Cap RVOL at reasonable maximum to prevent extreme values
+        df['rvol'] = df['rvol'].fillna(1.0).clip(lower=0.01, upper=CONFIG.RVOL_MAX_THRESHOLD)
             
             # Log if we capped any extreme values
             extreme_rvol_count = (df['rvol'] == CONFIG.RVOL_MAX_THRESHOLD).sum()
@@ -1970,7 +1977,7 @@ def main():
         st.error(f"❌ Error: {str(e)}")
         with st.expander("🔍 Error Details"):
             st.code(str(e))
-            st.info("Common issues:\n- Network connectivity\n- Google Sheets permissions\n- Data format issues")
+            st.info("Common issues:\n- CSV file not found or corrupted\n- Invalid data format in CSV\n- Missing required columns (ticker, price)\n- File permissions or access issues")
         st.stop()
     
     # Quick Action Buttons (Top of page)
