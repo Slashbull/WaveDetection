@@ -52,9 +52,8 @@ logger = logging.getLogger(__name__)
 class Config:
     """System configuration with validated weights"""
     
-    # Data source - HARDCODED for production
-    DEFAULT_SHEET_URL: str = "https://docs.google.com/spreadsheets/d/1Wa4-4K7hyTTCrqJ0pUzS-NaLFiRQpBgI8KBdHx9obKk/edit?usp=sharing"
-    DEFAULT_GID: str = "2026492216"
+    # Data source - Local CSV file
+    DEFAULT_CSV_FILE: str = "ALL STOCKS (2025) - Watchlist (4).csv"
     
     # Cache settings optimized for Streamlit Community Cloud
     CACHE_TTL: int = 3600  # 1 hour for better performance
@@ -216,24 +215,20 @@ class DataValidator:
 # ============================================
 
 @st.cache_data(ttl=CONFIG.CACHE_TTL, show_spinner=False)
-def load_and_process_data(sheet_url: str, gid: str) -> Tuple[pd.DataFrame, datetime]:
-    """Load and process data with smart caching - filters remain live"""
+def load_and_process_data(csv_file_path: str = "ALL STOCKS (2025) - Watchlist (4).csv") -> Tuple[pd.DataFrame, datetime]:
+    """Load and process data from local CSV file with smart caching - filters remain live"""
     try:
         # Record start time
         start_time = time.perf_counter()
         
         # Validate inputs
-        if not sheet_url or not gid:
-            raise ValueError("Sheet URL and GID are required")
+        if not csv_file_path:
+            raise ValueError("CSV file path is required")
         
-        # Construct CSV URL
-        base_url = sheet_url.split('/edit')[0]
-        csv_url = f"{base_url}/export?format=csv&gid={gid}"
-        
-        logger.info(f"Loading data from Google Sheets")
+        logger.info(f"Loading data from local CSV file: {csv_file_path}")
         
         # Load with timeout and error handling
-        df = pd.read_csv(csv_url, low_memory=False)
+        df = pd.read_csv(csv_file_path, low_memory=False)
         
         if df.empty:
             raise ValueError("Loaded empty dataframe")
@@ -1959,7 +1954,7 @@ def main():
         else:
             # Load and process data with caching
             with st.spinner("📥 Loading and processing data..."):
-                ranked_df, data_timestamp = load_and_process_data(CONFIG.DEFAULT_SHEET_URL, CONFIG.DEFAULT_GID)
+                ranked_df, data_timestamp = load_and_process_data()
                 st.session_state.ranked_df = ranked_df
                 st.session_state.data_timestamp = data_timestamp
                 st.session_state.last_refresh = datetime.now()
