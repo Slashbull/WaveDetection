@@ -1947,7 +1947,11 @@ def main():
             # Clear all filter-related session state and widget keys
             filter_keys = [
                 'category_filter', 'sector_filter', 'eps_tier_filter', 
-                'pe_tier_filter', 'price_tier_filter', 'patterns_filter', 'display_mode_toggle'
+                'pe_tier_filter', 'price_tier_filter', 'patterns_filter', 'display_mode_toggle',
+                'min_score_filter', 'trend_filter_select', 'eps_change_filter',
+                'min_pe_filter', 'max_pe_filter', 'fundamental_data_filter',
+                'display_count_filter', 'sort_by_filter', 'wave_timeframe_filter',
+                'export_template_filter', 'search_input'
             ]
             for key in filter_keys:
                 if key in st.session_state:
@@ -1994,7 +1998,11 @@ def main():
             """)
         
         # Debug checkbox at the bottom of sidebar
-        show_debug = st.checkbox("🐛 Show Debug Info", value=False)
+        show_debug = st.checkbox(
+            "🐛 Show Debug Info", 
+            value=st.session_state.get("debug_mode_filter", False),
+            key="debug_mode_filter"
+        )
     
     # Data loading and processing with smart caching
     try:
@@ -2153,9 +2161,10 @@ def main():
             "Minimum Master Score",
             min_value=0,
             max_value=100,
-            value=0,
+            value=st.session_state.get("min_score_filter", 0),
             step=5,
-            help="Filter stocks by minimum score"
+            help="Filter stocks by minimum score",
+            key="min_score_filter"
         )
         
         # Pattern filter
@@ -2184,11 +2193,18 @@ def main():
             "⚠️ Weak/Downtrend (<40)": (0, 39)
         }
         
+        # Get saved trend filter or default to first option
+        saved_trend = st.session_state.get("trend_filter_select", "All Trends")
+        trend_index = 0
+        if saved_trend in trend_options:
+            trend_index = list(trend_options.keys()).index(saved_trend)
+        
         filters['trend_filter'] = st.selectbox(
             "Trend Quality",
             options=list(trend_options.keys()),
-            index=0,
-            help="Filter stocks by trend strength based on SMA alignment"
+            index=trend_index,
+            help="Filter stocks by trend strength based on SMA alignment",
+            key="trend_filter_select"
         )
         filters['trend_range'] = trend_options[filters['trend_filter']]
         
@@ -2234,9 +2250,10 @@ def main():
             if 'eps_change_pct' in ranked_df_display.columns:
                 eps_change_input = st.text_input(
                     "Min EPS Change %",
-                    value="",
+                    value=st.session_state.get("eps_change_filter", ""),
                     placeholder="e.g. -50 or leave empty",
-                    help="Enter minimum EPS growth percentage (e.g., -50 for -50% or higher), or leave empty to include all stocks"
+                    help="Enter minimum EPS growth percentage (e.g., -50 for -50% or higher), or leave empty to include all stocks",
+                    key="eps_change_filter"
                 )
                 
                 if eps_change_input.strip():
@@ -2256,9 +2273,10 @@ def main():
                 with col1:
                     min_pe_input = st.text_input(
                         "Min PE Ratio",
-                        value="",
+                        value=st.session_state.get("min_pe_filter", ""),
                         placeholder="e.g. 10",
-                        help="Minimum PE ratio (leave empty for no minimum)"
+                        help="Minimum PE ratio (leave empty for no minimum)",
+                        key="min_pe_filter"
                     )
                     
                     if min_pe_input.strip():
@@ -2273,9 +2291,10 @@ def main():
                 with col2:
                     max_pe_input = st.text_input(
                         "Max PE Ratio",
-                        value="",
+                        value=st.session_state.get("max_pe_filter", ""),
                         placeholder="e.g. 30",
-                        help="Maximum PE ratio (leave empty for no maximum)"
+                        help="Maximum PE ratio (leave empty for no maximum)",
+                        key="max_pe_filter"
                     )
                     
                     if max_pe_input.strip():
@@ -2290,8 +2309,9 @@ def main():
                 # Data completeness filter
                 filters['require_fundamental_data'] = st.checkbox(
                     "Only show stocks with PE and EPS data",
-                    value=False,
-                    help="Filter out stocks missing fundamental data"
+                    value=st.session_state.get("fundamental_data_filter", False),
+                    help="Filter out stocks missing fundamental data",
+                    key="fundamental_data_filter"
                 )
     
     # Apply filters (unless quick filter is active)
@@ -2440,10 +2460,17 @@ def main():
         # Display options
         col1, col2, col3 = st.columns([2, 2, 6])
         with col1:
+            # Get saved display count or use preference
+            saved_count = st.session_state.get("display_count_filter", st.session_state.user_preferences['default_top_n'])
+            count_index = 0
+            if saved_count in CONFIG.AVAILABLE_TOP_N:
+                count_index = CONFIG.AVAILABLE_TOP_N.index(saved_count)
+            
             display_count = st.selectbox(
                 "Show top",
                 options=CONFIG.AVAILABLE_TOP_N,
-                index=CONFIG.AVAILABLE_TOP_N.index(st.session_state.user_preferences['default_top_n'])
+                index=count_index,
+                key="display_count_filter"
             )
             # Update preference
             st.session_state.user_preferences['default_top_n'] = display_count
@@ -2453,10 +2480,17 @@ def main():
             if 'trend_quality' in filtered_df.columns:
                 sort_options.append('Trend')
             
+            # Get saved sort option or default to first
+            saved_sort = st.session_state.get("sort_by_filter", "Rank")
+            sort_index = 0
+            if saved_sort in sort_options:
+                sort_index = sort_options.index(saved_sort)
+            
             sort_by = st.selectbox(
                 "Sort by",
                 options=sort_options,
-                index=0
+                index=sort_index,
+                key="sort_by_filter"
             )
         
         # Get display data
@@ -2711,23 +2745,32 @@ def main():
         
         with radar_col1:
             # Enhanced timeframe options with intelligent filtering
+            timeframe_options = [
+                "All Waves",
+                "Intraday Surge",
+                "3-Day Buildup", 
+                "Weekly Breakout",
+                "Monthly Trend"
+            ]
+            
+            # Get saved timeframe or default to first
+            saved_timeframe = st.session_state.get("wave_timeframe_filter", "All Waves")
+            timeframe_index = 0
+            if saved_timeframe in timeframe_options:
+                timeframe_index = timeframe_options.index(saved_timeframe)
+            
             wave_timeframe = st.selectbox(
                 "Wave Detection Timeframe",
-                options=[
-                    "All Waves",
-                    "Intraday Surge",
-                    "3-Day Buildup", 
-                    "Weekly Breakout",
-                    "Monthly Trend"
-                ],
-                index=0,
+                options=timeframe_options,
+                index=timeframe_index,
                 help="""
                 🌊 All Waves: Complete unfiltered view
                 ⚡ Intraday Surge: High RVOL & today's movers
                 📈 3-Day Buildup: Building momentum patterns
                 🚀 Weekly Breakout: Near 52w highs with volume
                 💪 Monthly Trend: Established trends with SMAs
-                """
+                """,
+                key="wave_timeframe_filter"
             )
         
         with radar_col2:
@@ -3959,15 +4002,25 @@ def main():
         
         # Export template selection
         st.markdown("#### 📋 Export Templates")
+        template_options = [
+            "Full Analysis (All Data)",
+            "Day Trader Focus",
+            "Swing Trader Focus",
+            "Investor Focus"
+        ]
+        
+        # Get saved template or default to first
+        saved_template = st.session_state.get("export_template_filter", template_options[0])
+        template_index = 0
+        if saved_template in template_options:
+            template_index = template_options.index(saved_template)
+        
         export_template = st.radio(
             "Choose export template:",
-            options=[
-                "Full Analysis (All Data)",
-                "Day Trader Focus",
-                "Swing Trader Focus",
-                "Investor Focus"
-            ],
-            help="Select a template based on your trading style"
+            options=template_options,
+            index=template_index,
+            help="Select a template based on your trading style",
+            key="export_template_filter"
         )
         
         # Map template names to keys
