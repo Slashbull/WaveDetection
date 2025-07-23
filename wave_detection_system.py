@@ -227,11 +227,18 @@ def load_and_process_data(csv_file_path: str = "ALL STOCKS (2025) - Watchlist (4
         
         logger.info(f"Loading data from local CSV file: {csv_file_path}")
         
-        # Load with timeout and error handling
-        df = pd.read_csv(csv_file_path, low_memory=False)
+        # Load with robust error handling for various CSV formats
+        try:
+            df = pd.read_csv(csv_file_path, low_memory=False)
+        except UnicodeDecodeError:
+            # Try different encoding
+            df = pd.read_csv(csv_file_path, low_memory=False, encoding='latin1')
+        except pd.errors.ParserError:
+            # Try with different separator or quoting
+            df = pd.read_csv(csv_file_path, low_memory=False, sep=',', quotechar='"', encoding='utf-8')
         
         if df.empty:
-            raise ValueError("Loaded empty dataframe")
+            raise ValueError("Loaded empty dataframe - check if CSV file contains data")
         
         logger.info(f"Successfully loaded {len(df):,} rows with {len(df.columns)} columns")
         
@@ -389,11 +396,11 @@ class DataProcessor:
             
         # Cap RVOL at reasonable maximum to prevent extreme values
         df['rvol'] = df['rvol'].fillna(1.0).clip(lower=0.01, upper=CONFIG.RVOL_MAX_THRESHOLD)
-            
-            # Log if we capped any extreme values
-            extreme_rvol_count = (df['rvol'] == CONFIG.RVOL_MAX_THRESHOLD).sum()
-            if extreme_rvol_count > 0:
-                logger.info(f"Capped {extreme_rvol_count} extreme RVOL values at {CONFIG.RVOL_MAX_THRESHOLD}")
+        
+        # Log if we capped any extreme values
+        extreme_rvol_count = (df['rvol'] == CONFIG.RVOL_MAX_THRESHOLD).sum()
+        if extreme_rvol_count > 0:
+            logger.info(f"Capped {extreme_rvol_count} extreme RVOL values at {CONFIG.RVOL_MAX_THRESHOLD}")
         
         logger.info(f"Processed {len(df)} valid stocks")
         return df
@@ -1815,7 +1822,7 @@ def main():
         initial_sidebar_state="expanded"
     )
     
-    # Custom CSS for better UI
+    # Custom CSS for better UI and UX
     st.markdown("""
     <style>
     .main {padding: 0rem 1rem;}
@@ -1839,14 +1846,27 @@ def main():
     /* Quick action button styling */
     div.stButton > button {
         width: 100%;
+        transition: all 0.2s ease;
     }
-    div.quick-action > button {
-        background-color: #f0f2f6;
-        border: 1px solid #ddd;
+    div.stButton > button:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
     }
-    div.quick-action > button:hover {
-        background-color: #e0e2e6;
-        border-color: #bbb;
+    /* Improve mobile responsiveness */
+    @media (max-width: 768px) {
+        .main {padding: 0rem 0.5rem;}
+        div[data-testid="metric-container"] {
+            padding: 3% 3% 3% 5%;
+        }
+    }
+    /* Loading animation */
+    @keyframes pulse {
+        0% { opacity: 1; }
+        50% { opacity: 0.5; }
+        100% { opacity: 1; }
+    }
+    .loading-text {
+        animation: pulse 1.5s infinite;
     }
     </style>
     """, unsafe_allow_html=True)
@@ -1924,14 +1944,23 @@ def main():
         
         # Clear Filters button
         if st.button("🗑️ Clear All Filters", use_container_width=True):
-            # Clear all filter-related session state
+            # Clear all filter-related session state and widget keys
             filter_keys = [
                 'category_filter', 'sector_filter', 'eps_tier_filter', 
-                'pe_tier_filter', 'price_tier_filter'
+                'pe_tier_filter', 'price_tier_filter', 'patterns_filter', 'display_mode_toggle'
             ]
             for key in filter_keys:
                 if key in st.session_state:
                     del st.session_state[key]
+            
+            # Reset user preferences to default
+            st.session_state.user_preferences = {
+                'default_top_n': CONFIG.DEFAULT_TOP_N,
+                'display_mode': 'Technical',
+                'last_filters': {}
+            }
+            
+            # Force immediate rerun to sync UI
             st.rerun()
         
         # Performance metrics (if available)
@@ -1947,8 +1976,24 @@ def main():
                 for func_name, elapsed in slowest:
                     st.caption(f"{func_name}: {elapsed:.2f}s")
         
-        # Debug checkbox at the bottom of sidebar
+        # Help section
         st.markdown("---")
+        with st.expander("❓ How to Use"):
+            st.markdown("""
+            **Quick Start:**
+            1. 📈 Use Quick Actions for common searches
+            2. 🔍 Apply filters to narrow results
+            3. 📊 Check analytics for market insights
+            4. 📥 Export data for further analysis
+            
+            **Tips:**
+            - Higher Master Score = Better opportunity
+            - RVOL > 2.0 = High volume activity
+            - Use patterns for specific strategies
+            - Clear filters if no results found
+            """)
+        
+        # Debug checkbox at the bottom of sidebar
         show_debug = st.checkbox("🐛 Show Debug Info", value=False)
     
     # Data loading and processing with smart caching
@@ -1968,6 +2013,9 @@ def main():
                 
                 # Calculate data quality
                 st.session_state.data_quality = calculate_data_quality(ranked_df)
+                
+                # Show success message
+                st.success(f"✅ Successfully loaded {len(ranked_df):,} stocks")
         
         # Create or use cached search index
         if st.session_state.search_index is None:
@@ -1980,9 +2028,11 @@ def main():
             st.info("Common issues:\n- CSV file not found or corrupted\n- Invalid data format in CSV\n- Missing required columns (ticker, price)\n- File permissions or access issues")
         st.stop()
     
-    # Quick Action Buttons (Top of page)
+    # Quick Action Buttons (Top of page) - Responsive design
     st.markdown("### ⚡ Quick Actions")
-    qa_col1, qa_col2, qa_col3, qa_col4, qa_col5 = st.columns(5)
+    # Use responsive columns that stack on mobile
+    qa_col1, qa_col2, qa_col3 = st.columns([2, 2, 2])
+    qa_col4, qa_col5, qa_col6 = st.columns([2, 2, 2])
     
     quick_filter_applied = False
     quick_filter = None
@@ -2011,6 +2061,14 @@ def main():
         if st.button("🌊 Show All", use_container_width=True):
             quick_filter = None
             quick_filter_applied = False
+    
+    with qa_col6:
+        # Add a refresh data button
+        if st.button("🔄 Refresh", use_container_width=True):
+            st.cache_data.clear()
+            st.session_state.search_index = None
+            st.session_state.last_refresh = datetime.now()
+            st.rerun()
     
     # Apply quick filters if clicked
     if quick_filter:
@@ -2067,7 +2125,7 @@ def main():
         selected_categories = st.multiselect(
             "Market Cap Category",
             options=category_options,
-            default=[],  # Empty default
+            default=st.session_state.get("category_filter", []),  # Read from session state
             placeholder="Select categories (empty = All)",
             key="category_filter"
         )
@@ -2083,7 +2141,7 @@ def main():
         selected_sectors = st.multiselect(
             "Sector",
             options=sectors,
-            default=[],  # Empty default
+            default=st.session_state.get("sector_filter", []),  # Read from session state
             placeholder="Select sectors (empty = All)",
             key="sector_filter"
         )
@@ -2110,9 +2168,10 @@ def main():
             filters['patterns'] = st.multiselect(
                 "Patterns",
                 options=sorted(all_patterns),
-                default=[],
+                default=st.session_state.get("patterns_filter", []),
                 placeholder="Select patterns (empty = All)",
-                help="Filter by specific patterns"
+                help="Filter by specific patterns",
+                key="patterns_filter"
             )
         
         # Trend filter
@@ -2141,7 +2200,7 @@ def main():
             selected_eps_tiers = st.multiselect(
                 "EPS Tier",
                 options=eps_tiers,
-                default=[],
+                default=st.session_state.get("eps_tier_filter", []),
                 placeholder="Select EPS tiers (empty = All)",
                 key="eps_tier_filter"
             )
@@ -2153,7 +2212,7 @@ def main():
             selected_pe_tiers = st.multiselect(
                 "PE Tier",
                 options=pe_tiers,
-                default=[],
+                default=st.session_state.get("pe_tier_filter", []),
                 placeholder="Select PE tiers (empty = All)",
                 key="pe_tier_filter"
             )
@@ -2165,7 +2224,7 @@ def main():
             selected_price_tiers = st.multiselect(
                 "Price Range",
                 options=price_tiers,
-                default=[],
+                default=st.session_state.get("price_tier_filter", []),
                 placeholder="Select price ranges (empty = All)",
                 key="price_tier_filter"
             )
@@ -2269,8 +2328,9 @@ def main():
             st.write(f"Filtered: {len(ranked_df) - len(filtered_df)} stocks")
     
     # Main content area
-    # Summary metrics
-    col1, col2, col3, col4, col5, col6 = st.columns(6)
+    # Summary metrics - Responsive layout
+    col1, col2, col3 = st.columns(3)
+    col4, col5, col6 = st.columns(3)
     
     with col1:
         total_stocks = len(filtered_df)
@@ -2545,13 +2605,24 @@ def main():
             display_df = display_df[[c for c in display_cols.keys() if c in display_df.columns]]
             display_df.columns = [display_cols[c] for c in display_df.columns]
             
-            # Display with styling
-            st.dataframe(
-                display_df,
-                use_container_width=True,
-                height=min(600, len(display_df) * 35 + 50),
-                hide_index=True
-            )
+            # Check if we have data to display
+            if len(display_df) == 0:
+                st.warning("🔍 No stocks match your current filters.")
+                st.info("""
+                **Try these suggestions:**
+                - Clear some filters using the 'Clear All Filters' button
+                - Reduce the minimum score requirement
+                - Select different market cap categories or sectors
+                - Check if you have any restrictive pattern filters applied
+                """)
+            else:
+                # Display with styling
+                st.dataframe(
+                    display_df,
+                    use_container_width=True,
+                    height=min(600, len(display_df) * 35 + 50),
+                    hide_index=True
+                )
             
             # Quick stats below table
             with st.expander("📊 Quick Statistics"):
