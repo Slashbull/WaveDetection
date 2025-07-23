@@ -581,7 +581,7 @@ class RankingEngine:
     
     @staticmethod
     def calculate_acceleration_score(df: pd.DataFrame) -> pd.Series:
-        """Calculate if momentum is accelerating"""
+        """Calculate if momentum is accelerating - FIXED LOGIC"""
         acceleration_score = pd.Series(50, index=df.index, dtype=float)
         
         req_cols = ['ret_1d', 'ret_7d', 'ret_30d']
@@ -595,29 +595,41 @@ class RankingEngine:
         ret_7d = df['ret_7d'].fillna(0) if 'ret_7d' in df.columns else pd.Series(0, index=df.index)
         ret_30d = df['ret_30d'].fillna(0) if 'ret_30d' in df.columns else pd.Series(0, index=df.index)
         
-        # Safe division to avoid divide by zero
+        # FIXED: Compare rates over consistent time periods
+        # Convert all returns to weekly rates for proper comparison
         with np.errstate(divide='ignore', invalid='ignore'):
-            daily_avg_7d = ret_7d / 7
-            daily_avg_30d = ret_30d / 30
+            weekly_rate_from_1d = ret_1d * 7      # Project 1-day to weekly
+            weekly_rate_from_7d = ret_7d          # Already weekly
+            weekly_rate_from_30d = ret_30d * (7/30)  # Convert monthly to weekly
         
         if all(col in df.columns for col in req_cols):
-            perfect = (ret_1d > daily_avg_7d) & (daily_avg_7d > daily_avg_30d) & (ret_1d > 0)
+            # Perfect acceleration: 1D pace > 7D pace > 30D pace, all positive
+            perfect = (
+                (weekly_rate_from_1d > weekly_rate_from_7d) & 
+                (weekly_rate_from_7d > weekly_rate_from_30d) & 
+                (ret_1d > 0)
+            )
             acceleration_score.loc[perfect] = 100
             
-            good = (~perfect) & (ret_1d > daily_avg_7d) & (ret_1d > 0)
+            # Good acceleration: 1D pace > 7D pace, positive
+            good = (~perfect) & (weekly_rate_from_1d > weekly_rate_from_7d) & (ret_1d > 0)
             acceleration_score.loc[good] = 80
             
+            # Moderate: Positive today but slower than recent pace
             moderate = (~perfect) & (~good) & (ret_1d > 0)
             acceleration_score.loc[moderate] = 60
             
+            # Slight deceleration: Down today but recent trend positive
             slight_decel = (ret_1d <= 0) & (ret_7d > 0)
             acceleration_score.loc[slight_decel] = 40
             
+            # Strong deceleration: Both today and recent trend negative
             strong_decel = (ret_1d <= 0) & (ret_7d <= 0)
             acceleration_score.loc[strong_decel] = 20
         else:
+            # Fallback with available data
             if 'ret_1d' in df.columns and 'ret_7d' in df.columns:
-                accelerating = ret_1d > daily_avg_7d
+                accelerating = weekly_rate_from_1d > weekly_rate_from_7d
                 acceleration_score.loc[accelerating & (ret_1d > 0)] = 75
                 acceleration_score.loc[~accelerating & (ret_1d > 0)] = 55
                 acceleration_score.loc[ret_1d <= 0] = 35
