@@ -2338,7 +2338,7 @@ class FilterEngine:
             if key in st.session_state:
                 del st.session_state[key]
                 deleted_count += 1
-        
+                
         # ==== MEMORY LEAK FIX - START ====
         # Now clean up ANY dynamically created widget keys
         # This is crucial for preventing memory leaks
@@ -2663,7 +2663,42 @@ class FilterEngine:
             'quick_filter': None,
             'quick_filter_applied': False
         }
+
+        # Clean up ALL dynamically created widget keys
+        all_widget_patterns = [
+            '_multiselect', '_slider', '_selectbox', '_checkbox', 
+            '_input', '_radio', '_button', '_expander', '_toggle',
+            '_number_input', '_text_area', '_date_input', '_time_input',
+            '_color_picker', '_file_uploader', '_camera_input'
+        ]
         
+        # Collect keys to delete (can't modify dict during iteration)
+        dynamic_keys_to_delete = []
+        
+        for key in list(st.session_state.keys()):
+            # Check if this key ends with any widget pattern
+            for pattern in all_widget_patterns:
+                if pattern in key:
+                    dynamic_keys_to_delete.append(key)
+                    break
+        
+        # Delete the dynamic keys
+        for key in dynamic_keys_to_delete:
+            try:
+                del st.session_state[key]
+                logger.debug(f"Deleted dynamic widget key: {key}")
+            except KeyError:
+                # Key might have been deleted already
+                pass
+        
+        # Also clean up any keys that start with 'FormSubmitter'
+        form_keys_to_delete = [key for key in st.session_state.keys() if key.startswith('FormSubmitter')]
+        for key in form_keys_to_delete:
+            try:
+                del st.session_state[key]
+            except KeyError:
+                pass
+        # ==== COMPREHENSIVE WIDGET CLEANUP - END ====
         st.session_state.active_filter_count = 0
         logger.info("Filters reset to defaults")
         
