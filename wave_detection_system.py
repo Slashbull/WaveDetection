@@ -2535,7 +2535,6 @@ class SearchEngine:
         
         try:
             query = query.upper().strip()
-            # Then use case-insensitive comparison:
             df['ticker'].str.upper().str.contains(query.upper())
             
             # Method 1: Direct ticker match
