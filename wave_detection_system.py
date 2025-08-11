@@ -1873,7 +1873,7 @@ class PatternDetector:
         summary_df = pd.DataFrame(summary_data)
         summary_df = summary_df.sort_values('Count', ascending=False)
         
-        return summary_df
+        return summary_df 
         
 # ============================================
 # MARKET INTELLIGENCE
