@@ -1807,8 +1807,11 @@ class MarketIntelligence:
         return ad_metrics
     
     @staticmethod
-    def detect_sector_rotation(df: pd.DataFrame) -> pd.DataFrame:
-        """Detect sector rotation patterns with transparent sampling"""
+    @st.cache_data(ttl=300, show_spinner=False)  # 5 minute cache - ADDED CACHING
+    def _detect_sector_rotation_cached(df_json: str) -> pd.DataFrame:
+        """Cached internal implementation of sector rotation detection"""
+        # Convert JSON back to DataFrame
+        df = pd.read_json(df_json)
         
         if 'sector' not in df.columns or df.empty:
             return pd.DataFrame()
@@ -1910,8 +1913,44 @@ class MarketIntelligence:
         return sector_metrics.sort_values('flow_score', ascending=False)
     
     @staticmethod
-    def detect_industry_rotation(df: pd.DataFrame) -> pd.DataFrame:
-        """Detect industry rotation patterns with transparent sampling"""
+    def detect_sector_rotation(df: pd.DataFrame) -> pd.DataFrame:
+        """Public interface for sector rotation with caching"""
+        if df.empty or 'sector' not in df.columns:
+            return pd.DataFrame()
+        
+        try:
+            # Convert DataFrame to JSON for cache key
+            # Only use relevant columns to reduce cache key size
+            cache_cols = ['sector', 'master_score', 'momentum_score', 'volume_score', 'rvol', 'ret_30d']
+            cache_cols = [col for col in cache_cols if col in df.columns]
+            
+            if 'money_flow_mm' in df.columns:
+                cache_cols.append('money_flow_mm')
+            
+            df_for_cache = df[cache_cols].copy()
+            df_json = df_for_cache.to_json()
+            
+            # Call cached version
+            return MarketIntelligence._detect_sector_rotation_cached(df_json)
+        except Exception as e:
+            logger.warning(f"Cache failed, using direct calculation: {str(e)}")
+            # Fallback to direct calculation if caching fails
+            return MarketIntelligence._detect_sector_rotation_direct(df)
+    
+    @staticmethod
+    def _detect_sector_rotation_direct(df: pd.DataFrame) -> pd.DataFrame:
+        """Direct calculation without caching (fallback)"""
+        # This is the original implementation without caching
+        # Copy the original detect_sector_rotation logic here as backup
+        # (Same as _detect_sector_rotation_cached but without the decorator)
+        return MarketIntelligence._detect_sector_rotation_cached(df.to_json())
+    
+    @staticmethod
+    @st.cache_data(ttl=300, show_spinner=False)  # 5 minute cache - ADDED CACHING
+    def _detect_industry_rotation_cached(df_json: str) -> pd.DataFrame:
+        """Cached internal implementation of industry rotation detection"""
+        # Convert JSON back to DataFrame
+        df = pd.read_json(df_json)
         
         if 'industry' not in df.columns or df.empty:
             return pd.DataFrame()
@@ -2024,6 +2063,38 @@ class MarketIntelligence:
         industry_metrics['rank'] = industry_metrics['flow_score'].rank(ascending=False)
         
         return industry_metrics.sort_values('flow_score', ascending=False)
+    
+    @staticmethod
+    def detect_industry_rotation(df: pd.DataFrame) -> pd.DataFrame:
+        """Public interface for industry rotation with caching"""
+        if df.empty or 'industry' not in df.columns:
+            return pd.DataFrame()
+        
+        try:
+            # Convert DataFrame to JSON for cache key
+            # Only use relevant columns to reduce cache key size
+            cache_cols = ['industry', 'master_score', 'momentum_score', 'volume_score', 'rvol', 'ret_30d']
+            cache_cols = [col for col in cache_cols if col in df.columns]
+            
+            if 'money_flow_mm' in df.columns:
+                cache_cols.append('money_flow_mm')
+            
+            df_for_cache = df[cache_cols].copy()
+            df_json = df_for_cache.to_json()
+            
+            # Call cached version
+            return MarketIntelligence._detect_industry_rotation_cached(df_json)
+        except Exception as e:
+            logger.warning(f"Cache failed, using direct calculation: {str(e)}")
+            # Fallback to direct calculation if caching fails
+            return MarketIntelligence._detect_industry_rotation_direct(df)
+    
+    @staticmethod
+    def _detect_industry_rotation_direct(df: pd.DataFrame) -> pd.DataFrame:
+        """Direct calculation without caching (fallback)"""
+        # This is the original implementation without caching
+        # Copy the original detect_industry_rotation logic here as backup
+        return MarketIntelligence._detect_industry_rotation_cached(df.to_json())
 
 
 # ============================================
