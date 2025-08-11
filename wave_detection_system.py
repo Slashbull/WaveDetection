@@ -2399,6 +2399,7 @@ class FilterEngine:
         'min_score': 0,
         'max_score': 100,
         'patterns': [],
+        'trend_filter': "All Trends",
         'trend_range': (0, 100),
         'eps_tiers': [],
         'pe_tiers': [],
@@ -2406,238 +2407,217 @@ class FilterEngine:
         'min_eps_change': None,
         'min_pe': None,
         'max_pe': None,
-        'require_fundamental': False,
+        'require_fundamental_data': False,
         'wave_states': [],
         'wave_strength_range': (0, 100),
         'min_rvol': None,
         'max_rvol': None,
-        'quick_filter': None
+        'quick_filter': None,
+        'quick_filter_applied': False
     }
     
     @staticmethod
-    def initialize():
-        """Initialize filter state ONCE at app start"""
-        if 'filters' not in st.session_state:
-            st.session_state.filters = FilterEngine.DEFAULT_FILTERS.copy()
+    def initialize_filters():
+        """Initialize filter state ONCE at app start - MATCHES YOUR V2.py"""
+        if 'filter_state' not in st.session_state:
+            st.session_state.filter_state = FilterEngine.DEFAULT_FILTERS.copy()
             logger.info("Filter state initialized")
     
     @staticmethod
-    def get_filters() -> Dict[str, Any]:
-        """Get current filter state"""
-        FilterEngine.initialize()
-        return st.session_state.filters.copy()
+    def get_filter(key: str, default: Any = None) -> Any:
+        """Get filter value from centralized state - MATCHES YOUR V2.py"""
+        FilterEngine.initialize_filters()
+        return st.session_state.filter_state.get(key, default)
     
     @staticmethod
-    def update_filter(key: str, value: Any) -> None:
-        """Update single filter value"""
-        FilterEngine.initialize()
-        st.session_state.filters[key] = value
-        logger.debug(f"Filter updated: {key} = {value}")
-    
-    @staticmethod
-    def clear_all() -> None:
-        """Reset all filters to defaults"""
-        st.session_state.filters = FilterEngine.DEFAULT_FILTERS.copy()
-        st.session_state.quick_filter = None
-        logger.info("All filters cleared")
-    
-    @staticmethod
-    def apply_quick_filter(filter_type: str, df: pd.DataFrame) -> pd.DataFrame:
-        """Apply predefined quick filters"""
-        if df.empty:
-            return df
-        
-        quick_filters = {
-            'top_gainers': lambda x: x[x['momentum_score'] >= 80] if 'momentum_score' in x.columns else x,
-            'volume_surges': lambda x: x[x['rvol'] >= 3] if 'rvol' in x.columns else x,
-            'breakout_ready': lambda x: x[x['breakout_score'] >= 80] if 'breakout_score' in x.columns else x,
-            'hidden_gems': lambda x: x[x['patterns'].str.contains('HIDDEN GEM', na=False)] if 'patterns' in x.columns else x,
-            'acceleration': lambda x: x[x['acceleration_score'] >= 85] if 'acceleration_score' in x.columns else x,
-            'wave_cresting': lambda x: x[x['wave_state'].str.contains('CRESTING', na=False)] if 'wave_state' in x.columns else x
-        }
-        
-        if filter_type in quick_filters:
-            filtered = quick_filters[filter_type](df)
-            logger.info(f"Quick filter '{filter_type}' applied: {len(df)} → {len(filtered)} stocks")
-            return filtered
-        
-        return df
-    
-    @staticmethod
-    @PerformanceMonitor.timer(target_time=0.1)
-    def apply_filters(df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Apply all active filters using vectorized operations.
-        Clean, fast, memory-efficient.
-        """
-        if df.empty:
-            return df
-        
-        FilterEngine.initialize()
-        filters = st.session_state.filters
-        result_df = df.copy()
-        
-        # Track filter application
-        applied_filters = []
-        
-        # 1. CATEGORICAL FILTERS (categories, sectors, industries)
-        for col, filter_key in [
-            ('category', 'categories'),
-            ('sector', 'sectors'), 
-            ('industry', 'industries')
-        ]:
-            if filters[filter_key] and col in result_df.columns:
-                result_df = result_df[result_df[col].isin(filters[filter_key])]
-                applied_filters.append(f"{filter_key}: {len(filters[filter_key])} selected")
-        
-        # 2. SCORE FILTERS
-        if 'master_score' in result_df.columns:
-            if filters['min_score'] > 0:
-                result_df = result_df[result_df['master_score'] >= filters['min_score']]
-                applied_filters.append(f"min_score: {filters['min_score']}")
-            
-            if filters['max_score'] < 100:
-                result_df = result_df[result_df['master_score'] <= filters['max_score']]
-                applied_filters.append(f"max_score: {filters['max_score']}")
-        
-        # 3. PATTERN FILTER
-        if filters['patterns'] and 'patterns' in result_df.columns:
-            pattern_mask = pd.Series(False, index=result_df.index)
-            for pattern in filters['patterns']:
-                pattern_mask |= result_df['patterns'].str.contains(pattern, na=False, regex=False)
-            result_df = result_df[pattern_mask]
-            applied_filters.append(f"patterns: {len(filters['patterns'])} selected")
-        
-        # 4. TREND FILTER
-        if 'trend_quality' in result_df.columns:
-            min_trend, max_trend = filters['trend_range']
-            if (min_trend, max_trend) != (0, 100):
-                result_df = result_df[
-                    (result_df['trend_quality'] >= min_trend) & 
-                    (result_df['trend_quality'] <= max_trend)
-                ]
-                applied_filters.append(f"trend_range: {min_trend}-{max_trend}")
-        
-        # 5. TIER FILTERS
-        for col, filter_key in [
-            ('eps_tier', 'eps_tiers'),
-            ('pe_tier', 'pe_tiers'),
-            ('price_tier', 'price_tiers')
-        ]:
-            if filters[filter_key] and col in result_df.columns:
-                result_df = result_df[result_df[col].isin(filters[filter_key])]
-                applied_filters.append(f"{filter_key}: {len(filters[filter_key])} selected")
-        
-        # 6. FUNDAMENTAL FILTERS
-        if 'eps_change_pct' in result_df.columns and filters['min_eps_change'] is not None:
-            result_df = result_df[result_df['eps_change_pct'] >= filters['min_eps_change']]
-            applied_filters.append(f"min_eps_change: {filters['min_eps_change']}")
-        
-        if 'pe' in result_df.columns:
-            if filters['min_pe'] is not None:
-                result_df = result_df[result_df['pe'] >= filters['min_pe']]
-                applied_filters.append(f"min_pe: {filters['min_pe']}")
-            
-            if filters['max_pe'] is not None:
-                result_df = result_df[result_df['pe'] <= filters['max_pe']]
-                applied_filters.append(f"max_pe: {filters['max_pe']}")
-            
-            if filters['require_fundamental']:
-                result_df = result_df[result_df['pe'].notna() & (result_df['pe'] > 0)]
-                applied_filters.append("require_fundamental: True")
-        
-        # 7. WAVE FILTERS
-        if filters['wave_states'] and 'wave_state' in result_df.columns:
-            result_df = result_df[result_df['wave_state'].isin(filters['wave_states'])]
-            applied_filters.append(f"wave_states: {len(filters['wave_states'])} selected")
-        
-        if 'overall_wave_strength' in result_df.columns:
-            min_ws, max_ws = filters['wave_strength_range']
-            if (min_ws, max_ws) != (0, 100):
-                result_df = result_df[
-                    (result_df['overall_wave_strength'] >= min_ws) & 
-                    (result_df['overall_wave_strength'] <= max_ws)
-                ]
-                applied_filters.append(f"wave_strength: {min_ws}-{max_ws}")
-        
-        # 8. RVOL FILTERS
-        if 'rvol' in result_df.columns:
-            if filters['min_rvol'] is not None:
-                result_df = result_df[result_df['rvol'] >= filters['min_rvol']]
-                applied_filters.append(f"min_rvol: {filters['min_rvol']}")
-            
-            if filters['max_rvol'] is not None:
-                result_df = result_df[result_df['rvol'] <= filters['max_rvol']]
-                applied_filters.append(f"max_rvol: {filters['max_rvol']}")
-        
-        # Log filter results
-        if applied_filters:
-            logger.info(f"Filters applied: {', '.join(applied_filters)}")
-            logger.info(f"Stocks reduced: {len(df)} → {len(result_df)}")
-        
-        return result_df
+    def set_filter(key: str, value: Any) -> None:
+        """Set filter value in centralized state - MATCHES YOUR V2.py"""
+        FilterEngine.initialize_filters()
+        st.session_state.filter_state[key] = value
     
     @staticmethod
     def get_active_count() -> int:
-        """Count number of active filters"""
-        FilterEngine.initialize()
-        filters = st.session_state.filters
+        """Count active filters - MATCHES YOUR V2.py"""
+        FilterEngine.initialize_filters()
         count = 0
+        filters = st.session_state.filter_state
         
         # Check each filter type
-        checks = [
-            filters['categories'],
-            filters['sectors'],
-            filters['industries'],
-            filters['min_score'] > 0,
-            filters['max_score'] < 100,
-            filters['patterns'],
-            filters['trend_range'] != (0, 100),
-            filters['eps_tiers'],
-            filters['pe_tiers'],
-            filters['price_tiers'],
-            filters['min_eps_change'] is not None,
-            filters['min_pe'] is not None,
-            filters['max_pe'] is not None,
-            filters['require_fundamental'],
-            filters['wave_states'],
-            filters['wave_strength_range'] != (0, 100),
-            filters['min_rvol'] is not None,
-            filters['max_rvol'] is not None,
-            filters['quick_filter'] is not None
-        ]
+        if filters.get('categories'): count += 1
+        if filters.get('sectors'): count += 1
+        if filters.get('industries'): count += 1
+        if filters.get('min_score', 0) > 0: count += 1
+        if filters.get('patterns'): count += 1
+        if filters.get('trend_filter') != "All Trends": count += 1
+        if filters.get('eps_tiers'): count += 1
+        if filters.get('pe_tiers'): count += 1
+        if filters.get('price_tiers'): count += 1
+        if filters.get('min_eps_change') is not None: count += 1
+        if filters.get('min_pe') is not None: count += 1
+        if filters.get('max_pe') is not None: count += 1
+        if filters.get('require_fundamental_data'): count += 1
+        if filters.get('wave_states'): count += 1
+        if filters.get('wave_strength_range') != (0, 100): count += 1
         
-        return sum(1 for check in checks if check)
+        return count
     
     @staticmethod
-    def get_filter_summary() -> List[str]:
-        """Get human-readable summary of active filters"""
-        FilterEngine.initialize()
-        filters = st.session_state.filters
-        summary = []
+    def clear_all_filters():
+        """Reset all filters to defaults - FIXED VERSION"""
+        # Reset centralized filter state
+        st.session_state.filter_state = FilterEngine.DEFAULT_FILTERS.copy()
         
-        if filters['categories']:
-            summary.append(f"Categories: {', '.join(filters['categories'][:3])}{'...' if len(filters['categories']) > 3 else ''}")
+        # NO MORE WIDGET KEY DELETION - Let Streamlit handle it!
+        # This was causing memory leaks
         
-        if filters['sectors']:
-            summary.append(f"Sectors: {', '.join(filters['sectors'][:3])}{'...' if len(filters['sectors']) > 3 else ''}")
+        # Reset active filter count
+        st.session_state.active_filter_count = 0
         
-        if filters['min_score'] > 0:
-            summary.append(f"Min Score: {filters['min_score']}")
+        # Clear quick filter
+        st.session_state.quick_filter = None
+        st.session_state.quick_filter_applied = False
         
-        if filters['patterns']:
-            summary.append(f"Patterns: {len(filters['patterns'])} selected")
-        
-        if filters['quick_filter']:
-            summary.append(f"Quick: {filters['quick_filter']}")
-        
-        return summary
+        logger.info("All filters cleared successfully")
     
     @staticmethod
-    def get_available_options(df: pd.DataFrame, column: str) -> List[Any]:
+    def sync_widget_to_filter(widget_key: str, filter_key: str):
+        """Sync widget state to filter state - MATCHES YOUR V2.py"""
+        if widget_key in st.session_state:
+            st.session_state.filter_state[filter_key] = st.session_state[widget_key]
+    
+    @staticmethod
+    def build_filter_dict() -> Dict[str, Any]:
+        """Build filter dictionary for apply_filters method - MATCHES YOUR V2.py"""
+        FilterEngine.initialize_filters()
+        filters = {}
+        state = st.session_state.filter_state
+        
+        # Map internal state to filter dict format
+        if state.get('categories'):
+            filters['categories'] = state['categories']
+        if state.get('sectors'):
+            filters['sectors'] = state['sectors']
+        if state.get('industries'):
+            filters['industries'] = state['industries']
+        if state.get('min_score', 0) > 0:
+            filters['min_score'] = state['min_score']
+        if state.get('patterns'):
+            filters['patterns'] = state['patterns']
+        if state.get('trend_filter') != "All Trends":
+            filters['trend_filter'] = state['trend_filter']
+            filters['trend_range'] = state.get('trend_range', (0, 100))
+        if state.get('eps_tiers'):
+            filters['eps_tiers'] = state['eps_tiers']
+        if state.get('pe_tiers'):
+            filters['pe_tiers'] = state['pe_tiers']
+        if state.get('price_tiers'):
+            filters['price_tiers'] = state['price_tiers']
+        if state.get('min_eps_change') is not None:
+            filters['min_eps_change'] = state['min_eps_change']
+        if state.get('min_pe') is not None:
+            filters['min_pe'] = state['min_pe']
+        if state.get('max_pe') is not None:
+            filters['max_pe'] = state['max_pe']
+        if state.get('require_fundamental_data'):
+            filters['require_fundamental_data'] = True
+        if state.get('wave_states'):
+            filters['wave_states'] = state['wave_states']
+        if state.get('wave_strength_range') != (0, 100):
+            filters['wave_strength_range'] = state['wave_strength_range']
+            
+        return filters
+    
+    @staticmethod
+    @PerformanceMonitor.timer(target_time=0.1)
+    def apply_filters(df: pd.DataFrame, filters: Optional[Dict[str, Any]] = None) -> pd.DataFrame:
         """
-        Get available options for a filter column.
-        Simple version - no complex interconnected filtering.
+        Apply all filters to dataframe efficiently - SIMPLIFIED VERSION
+        """
+        if df.empty:
+            return df
+        
+        # Use provided filters or get from state
+        if filters is None:
+            filters = FilterEngine.build_filter_dict()
+        
+        if not filters:
+            return df
+        
+        # Start with full dataframe
+        result = df
+        
+        # 1. Category filters
+        if 'categories' in filters and 'category' in result.columns:
+            result = result[result['category'].isin(filters['categories'])]
+        
+        if 'sectors' in filters and 'sector' in result.columns:
+            result = result[result['sector'].isin(filters['sectors'])]
+        
+        if 'industries' in filters and 'industry' in result.columns:
+            result = result[result['industry'].isin(filters['industries'])]
+        
+        # 2. Score filter
+        if filters.get('min_score', 0) > 0 and 'master_score' in result.columns:
+            result = result[result['master_score'] >= filters['min_score']]
+        
+        # 3. Pattern filter
+        if filters.get('patterns') and 'patterns' in result.columns:
+            pattern_mask = pd.Series(False, index=result.index)
+            for pattern in filters['patterns']:
+                pattern_mask |= result['patterns'].str.contains(pattern, na=False, regex=False)
+            result = result[pattern_mask]
+        
+        # 4. Trend filter
+        trend_range = filters.get('trend_range')
+        if trend_range and trend_range != (0, 100) and 'trend_quality' in result.columns:
+            min_trend, max_trend = trend_range
+            result = result[(result['trend_quality'] >= min_trend) & 
+                          (result['trend_quality'] <= max_trend)]
+        
+        # 5. EPS change filter
+        if filters.get('min_eps_change') is not None and 'eps_change_pct' in result.columns:
+            result = result[result['eps_change_pct'] >= filters['min_eps_change']]
+        
+        # 6. PE filters
+        if filters.get('min_pe') is not None and 'pe' in result.columns:
+            result = result[result['pe'] >= filters['min_pe']]
+        
+        if filters.get('max_pe') is not None and 'pe' in result.columns:
+            result = result[result['pe'] <= filters['max_pe']]
+        
+        # 7. Tier filters
+        if 'eps_tiers' in filters and 'eps_tier' in result.columns:
+            result = result[result['eps_tier'].isin(filters['eps_tiers'])]
+        
+        if 'pe_tiers' in filters and 'pe_tier' in result.columns:
+            result = result[result['pe_tier'].isin(filters['pe_tiers'])]
+        
+        if 'price_tiers' in filters and 'price_tier' in result.columns:
+            result = result[result['price_tier'].isin(filters['price_tiers'])]
+        
+        # 8. Data completeness filter
+        if filters.get('require_fundamental_data', False):
+            if 'pe' in result.columns and 'eps_change_pct' in result.columns:
+                result = result[result['pe'].notna() & (result['pe'] > 0) & result['eps_change_pct'].notna()]
+        
+        # 9. Wave filters
+        if 'wave_states' in filters and 'wave_state' in result.columns:
+            result = result[result['wave_state'].isin(filters['wave_states'])]
+        
+        wave_strength_range = filters.get('wave_strength_range')
+        if wave_strength_range and wave_strength_range != (0, 100) and 'overall_wave_strength' in result.columns:
+            min_ws, max_ws = wave_strength_range
+            result = result[(result['overall_wave_strength'] >= min_ws) & 
+                          (result['overall_wave_strength'] <= max_ws)]
+        
+        logger.info(f"Filters reduced {len(df)} to {len(result)} stocks")
+        
+        return result
+    
+    @staticmethod
+    def get_filter_options(df: pd.DataFrame, column: str, current_filters: Optional[Dict[str, Any]] = None) -> List[str]:
+        """
+        Get available options for a filter - SIMPLIFIED VERSION
         """
         if df.empty or column not in df.columns:
             return []
@@ -2646,207 +2626,26 @@ class FilterEngine:
         values = df[column].dropna().unique()
         
         # Filter out invalid values
-        valid_values = [
-            v for v in values 
-            if str(v).strip() not in ['Unknown', 'unknown', '', 'nan', 'NaN', 'None', 'N/A', '-']
-        ]
+        values = [v for v in values if str(v).strip() not in ['Unknown', 'unknown', '', 'nan', 'NaN', 'None', 'N/A', '-']]
         
         # Sort appropriately
         try:
-            # Try numeric sort first
-            return sorted(valid_values, key=lambda x: float(str(x).replace(',', '')))
+            values = sorted(values, key=lambda x: float(str(x).replace(',', '')))
         except (ValueError, TypeError):
-            # Fall back to string sort
-            return sorted(valid_values, key=str)
+            values = sorted(values, key=str)
+        
+        return values
     
     @staticmethod
-    def export_filter_state() -> Dict[str, Any]:
-        """Export current filter state for saving/loading"""
-        FilterEngine.initialize()
-        return st.session_state.filters.copy()
-    
-    @staticmethod
-    def import_filter_state(state: Dict[str, Any]) -> None:
-        """Import saved filter state"""
-        FilterEngine.initialize()
-        # Validate and merge with defaults
-        for key in FilterEngine.DEFAULT_FILTERS:
-            if key in state:
-                st.session_state.filters[key] = state[key]
-        logger.info("Filter state imported")
-    
-    @staticmethod
-    def render_filter_sidebar(df: pd.DataFrame) -> None:
-        """
-        Render filter controls in sidebar.
-        Clean, simple, no memory leaks.
-        """
-        FilterEngine.initialize()
-        filters = st.session_state.filters
+    def reset_to_defaults():
+        """Reset filters to default state - MATCHES YOUR V2.py"""
+        FilterEngine.initialize_filters()
         
-        st.sidebar.markdown("### 🔍 Smart Filters")
+        # Reset only the filter values
+        st.session_state.filter_state = FilterEngine.DEFAULT_FILTERS.copy()
+        st.session_state.active_filter_count = 0
         
-        # Show active filter count
-        active_count = FilterEngine.get_active_count()
-        if active_count > 0:
-            st.sidebar.info(f"🔍 **{active_count} filter{'s' if active_count > 1 else ''} active**")
-            
-            # Show filter summary
-            summary = FilterEngine.get_filter_summary()
-            if summary:
-                with st.sidebar.expander("Active Filters", expanded=False):
-                    for item in summary:
-                        st.write(f"• {item}")
-        
-        # Clear filters button
-        if st.sidebar.button("🗑️ Clear All Filters", 
-                           use_container_width=True,
-                           type="primary" if active_count > 0 else "secondary"):
-            FilterEngine.clear_all()
-            st.rerun()
-        
-        st.sidebar.markdown("---")
-        
-        # BASIC FILTERS
-        
-        # Categories
-        if 'category' in df.columns:
-            categories = FilterEngine.get_available_options(df, 'category')
-            if categories:
-                selected = st.sidebar.multiselect(
-                    "Market Cap Category",
-                    options=categories,
-                    default=filters['categories'],
-                    placeholder="All Categories"
-                )
-                FilterEngine.update_filter('categories', selected)
-        
-        # Sectors
-        if 'sector' in df.columns:
-            sectors = FilterEngine.get_available_options(df, 'sector')
-            if sectors:
-                selected = st.sidebar.multiselect(
-                    "Sector",
-                    options=sectors,
-                    default=filters['sectors'],
-                    placeholder="All Sectors"
-                )
-                FilterEngine.update_filter('sectors', selected)
-        
-        # Score filter
-        if 'master_score' in df.columns:
-            min_score = st.sidebar.slider(
-                "Minimum Master Score",
-                min_value=0,
-                max_value=100,
-                value=filters['min_score'],
-                step=5
-            )
-            FilterEngine.update_filter('min_score', min_score)
-        
-        # Pattern filter
-        if 'patterns' in df.columns:
-            all_patterns = set()
-            for patterns_str in df['patterns'].dropna():
-                if patterns_str:
-                    all_patterns.update(patterns_str.split(' | '))
-            
-            if all_patterns:
-                selected = st.sidebar.multiselect(
-                    "Patterns",
-                    options=sorted(all_patterns),
-                    default=filters['patterns'],
-                    placeholder="All Patterns"
-                )
-                FilterEngine.update_filter('patterns', selected)
-        
-        # ADVANCED FILTERS
-        with st.sidebar.expander("🔧 Advanced Filters"):
-            
-            # Trend filter
-            if 'trend_quality' in df.columns:
-                st.markdown("**Trend Quality**")
-                trend_range = st.slider(
-                    "Trend Score Range",
-                    min_value=0,
-                    max_value=100,
-                    value=filters['trend_range'],
-                    step=5
-                )
-                FilterEngine.update_filter('trend_range', trend_range)
-            
-            # Wave filters
-            if 'overall_wave_strength' in df.columns:
-                st.markdown("**Wave Strength**")
-                wave_range = st.slider(
-                    "Wave Strength Range",
-                    min_value=0,
-                    max_value=100,
-                    value=filters['wave_strength_range'],
-                    step=5
-                )
-                FilterEngine.update_filter('wave_strength_range', wave_range)
-            
-            # RVOL filter
-            if 'rvol' in df.columns:
-                st.markdown("**Relative Volume**")
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    min_rvol = st.number_input(
-                        "Min RVOL",
-                        min_value=0.0,
-                        max_value=100.0,
-                        value=filters['min_rvol'] or 0.0,
-                        step=0.5,
-                        format="%.1f"
-                    )
-                    FilterEngine.update_filter('min_rvol', min_rvol if min_rvol > 0 else None)
-                
-                with col2:
-                    max_rvol = st.number_input(
-                        "Max RVOL",
-                        min_value=0.0,
-                        max_value=100.0,
-                        value=filters['max_rvol'] or 100.0,
-                        step=0.5,
-                        format="%.1f"
-                    )
-                    FilterEngine.update_filter('max_rvol', max_rvol if max_rvol < 100 else None)
-            
-            # Fundamental filters
-            if 'pe' in df.columns:
-                st.markdown("**Fundamentals**")
-                
-                require_fundamental = st.checkbox(
-                    "Only stocks with PE/EPS data",
-                    value=filters['require_fundamental']
-                )
-                FilterEngine.update_filter('require_fundamental', require_fundamental)
-                
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    min_pe = st.number_input(
-                        "Min PE",
-                        min_value=-100.0,
-                        max_value=1000.0,
-                        value=filters['min_pe'] or 0.0,
-                        step=5.0,
-                        format="%.1f"
-                    )
-                    FilterEngine.update_filter('min_pe', min_pe if min_pe != 0 else None)
-                
-                with col2:
-                    max_pe = st.number_input(
-                        "Max PE",
-                        min_value=-100.0,
-                        max_value=1000.0,
-                        value=filters['max_pe'] or 1000.0,
-                        step=5.0,
-                        format="%.1f"
-                    )
-                    FilterEngine.update_filter('max_pe', max_pe if max_pe != 1000 else None)
+        logger.info("Filters reset to defaults")
         
 # ============================================
 # SEARCH ENGINE
