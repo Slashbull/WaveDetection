@@ -65,7 +65,7 @@ class Config:
     DEFAULT_GID: str = "1823439984"
     
     # Cache settings - Dynamic refresh
-    CACHE_TTL: int = 900  # 15 minutes for better data freshness
+    CACHE_TTL: int = 3600  
     STALE_DATA_HOURS: int = 24
     
     # Master Score 3.0 weights (total = 100%)
