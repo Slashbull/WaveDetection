@@ -791,7 +791,7 @@ class AdvancedMetrics:
         if all(col in df.columns for col in ['ret_7d', 'ret_30d']):
             with np.errstate(divide='ignore', invalid='ignore'):
                 daily_ret_7d = np.where(df['ret_7d'] != 0, df['ret_7d'] / 7, 0)
-            daily_ret_7d = pd.Series(daily_ret_7d, index=df.index)
+                daily_ret_7d = pd.Series(daily_ret_7d, index=df.index)
                 daily_ret_30d = pd.Series(np.where(df['ret_30d'].fillna(0) != 0, df['ret_30d'].fillna(0) / 30, np.nan), index=df.index)
             df['momentum_harmony'] += ((daily_ret_7d.fillna(-np.inf) > daily_ret_30d.fillna(-np.inf))).astype(int)
         
