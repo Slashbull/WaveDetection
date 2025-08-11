@@ -1324,9 +1324,7 @@ class PatternDetector:
         '🏦 INSTITUTIONAL': {'importance_weight': 10},
         '⚡ VOL EXPLOSION': {'importance_weight': 15},
         '🎯 BREAKOUT': {'importance_weight': 10},
-        '👑 MARKET LEADER': {'importance_weight': 15},
         '🌊 MOMENTUM WAVE': {'importance_weight': 10},
-        '💰 LIQUID LEADER': {'importance_weight': 5},
         '💪 LONG STRENGTH': {'importance_weight': 5},
         '📈 QUALITY TREND': {'importance_weight': 10},
         '💎 VALUE MOMENTUM': {'importance_weight': 10},
@@ -1352,7 +1350,6 @@ class PatternDetector:
         '⚠️ VOLUME DIVERGENCE': {'importance_weight': -10},  # Negative - warning signal
         '⚡ GOLDEN CROSS': {'importance_weight': 12},        # Strong bullish
         '📉 EXHAUSTION': {'importance_weight': -15},         # Strong bearish
-        '🔺 PYRAMID': {'importance_weight': 10},             # Accumulation
         '🌪️ VACUUM': {'importance_weight': 18},             # High potential bounce
     }
 
@@ -1674,49 +1671,29 @@ class PatternDetector:
         return patterns
         
     @staticmethod
-    def _calculate_pattern_confidence(df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Calculates a numerical confidence score for each stock based on the
-        quantity and importance of the patterns it exhibits.
-        """
-        if 'patterns' not in df.columns:
-            df['pattern_confidence'] = 0.0
-            return df
-        
-        # Calculate max possible score (use only positive weights for scaling)
-        max_possible_score = sum(
-            abs(item['importance_weight']) 
-            for item in PatternDetector.PATTERN_METADATA.values() 
-            if item['importance_weight'] > 0
-        )
-        
-        def calculate_confidence(patterns_str):
-            """Calculate confidence for a single row's patterns"""
-            if pd.isna(patterns_str) or patterns_str == '':
-                return 0.0
-            
-            # Split patterns and strip whitespace
-            patterns = [p.strip() for p in patterns_str.split(' | ')]
-            
-            # Calculate total weight
-            total_weight = 0
-            for pattern in patterns:
-                # Try exact match first
-                if pattern in PatternDetector.PATTERN_METADATA:
-                    total_weight += PatternDetector.PATTERN_METADATA[pattern]['importance_weight']
-                else:
-                    # Try matching without considering slight variations
-                    for key, value in PatternDetector.PATTERN_METADATA.items():
-                        if pattern == key or pattern.replace(' ', '') == key.replace(' ', ''):
-                            total_weight += value['importance_weight']
-                            break
-            
-            # Convert to percentage (only if max_possible_score > 0)
-            if max_possible_score > 0:
-                confidence = (abs(total_weight) / max_possible_score * 100)
-                return min(100, max(0, confidence))  # Clip to 0-100
+    def calculate_confidence(patterns_str):
+        if pd.isna(patterns_str) or patterns_str == '':
             return 0.0
         
+        patterns = [p.strip() for p in patterns_str.split(' | ')]
+        total_weight = 0
+        
+        for pattern in patterns:
+            # Try exact match first
+            for key, value in PatternDetector.PATTERN_METADATA.items():
+                # Remove emojis from both sides for comparison
+                key_words = ' '.join([w for w in key.split() if not w.startswith('�')])
+                pattern_words = ' '.join([w for w in pattern.split() if not w.startswith('�')])
+                
+                if key_words == pattern_words or key == pattern:
+                    total_weight += value['importance_weight']
+                    break
+        
+        if max_possible_score > 0:
+            confidence = (abs(total_weight) / max_possible_score * 100)
+            return min(100, max(0, confidence))
+        return 0.0
+    
         # Apply calculation to all rows
         df['pattern_confidence'] = df['patterns'].apply(calculate_confidence).round(2)
         
