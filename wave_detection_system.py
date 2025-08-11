@@ -1671,32 +1671,54 @@ class PatternDetector:
             patterns.append(('🌪️ VACUUM', mask))
 
         return patterns
-
+        
     @staticmethod
     def _calculate_pattern_confidence(df: pd.DataFrame) -> pd.DataFrame:
         """
         Calculates a numerical confidence score for each stock based on the
         quantity and importance of the patterns it exhibits.
         """
-        if 'patterns' not in df.columns or df['patterns'].eq('').all():
+        if 'patterns' not in df.columns:
             df['pattern_confidence'] = 0.0
             return df
-
-        pattern_list = df['patterns'].str.split(' | ').fillna(pd.Series([[]] * len(df), index=df.index))
         
-        max_possible_score = sum(item['importance_weight'] for item in PatternDetector.PATTERN_METADATA.values())
-
-        if max_possible_score > 0:
-            df['pattern_confidence'] = pattern_list.apply(
-                lambda patterns: sum(
-                    PatternDetector.PATTERN_METADATA.get(p, {'importance_weight': 0})['importance_weight']
-                    for p in patterns
-                )
-            )
-            df['pattern_confidence'] = (df['pattern_confidence'] / max_possible_score * 100).clip(0, 100).round(2)
-        else:
-            df['pattern_confidence'] = 0.0
-
+        # Calculate max possible score (use only positive weights for scaling)
+        max_possible_score = sum(
+            abs(item['importance_weight']) 
+            for item in PatternDetector.PATTERN_METADATA.values() 
+            if item['importance_weight'] > 0
+        )
+        
+        def calculate_confidence(patterns_str):
+            """Calculate confidence for a single row's patterns"""
+            if pd.isna(patterns_str) or patterns_str == '':
+                return 0.0
+            
+            # Split patterns and strip whitespace
+            patterns = [p.strip() for p in patterns_str.split(' | ')]
+            
+            # Calculate total weight
+            total_weight = 0
+            for pattern in patterns:
+                # Try exact match first
+                if pattern in PatternDetector.PATTERN_METADATA:
+                    total_weight += PatternDetector.PATTERN_METADATA[pattern]['importance_weight']
+                else:
+                    # Try matching without considering slight variations
+                    for key, value in PatternDetector.PATTERN_METADATA.items():
+                        if pattern == key or pattern.replace(' ', '') == key.replace(' ', ''):
+                            total_weight += value['importance_weight']
+                            break
+            
+            # Convert to percentage (only if max_possible_score > 0)
+            if max_possible_score > 0:
+                confidence = (abs(total_weight) / max_possible_score * 100)
+                return min(100, max(0, confidence))  # Clip to 0-100
+            return 0.0
+        
+        # Apply calculation to all rows
+        df['pattern_confidence'] = df['patterns'].apply(calculate_confidence).round(2)
+        
         return df
         
 # ============================================
@@ -5860,6 +5882,11 @@ def main():
         if search_query or search_clicked:
             with st.spinner("Searching..."):
                 search_results = SearchEngine.search_stocks(filtered_df, search_query)
+
+            if not search_results.empty:
+                # ENSURE PATTERN CONFIDENCE IS CALCULATED FOR SEARCH RESULTS
+                if 'patterns' in search_results.columns and 'pattern_confidence' not in search_results.columns:
+                    search_results = PatternDetector._calculate_pattern_confidence(search_results)
             
             if not search_results.empty:
                 st.success(f"Found {len(search_results)} matching stock(s)")
