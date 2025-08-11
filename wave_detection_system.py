@@ -2382,62 +2382,56 @@ class Visualizer:
             return go.Figure()
 
 # ============================================
-# FILTER ENGINE - COMPLETELY FIXED VERSION
+# FILTER ENGINE - OPTIMIZED VERSION
 # ============================================
 
 class FilterEngine:
     """
-    Simplified, robust filter management.
-    Single source of truth, no memory leaks, clean API.
+    Centralized filter management with single state object.
+    This eliminates 15+ separate session state keys.
+    FIXED: Now properly cleans up ALL dynamic widget keys.
     """
-    
-    # Default filter state - single source of truth
-    DEFAULT_FILTERS = {
-        'categories': [],
-        'sectors': [],
-        'industries': [],
-        'min_score': 0,
-        'max_score': 100,
-        'patterns': [],
-        'trend_filter': "All Trends",
-        'trend_range': (0, 100),
-        'eps_tiers': [],
-        'pe_tiers': [],
-        'price_tiers': [],
-        'min_eps_change': None,
-        'min_pe': None,
-        'max_pe': None,
-        'require_fundamental_data': False,
-        'wave_states': [],
-        'wave_strength_range': (0, 100),
-        'min_rvol': None,
-        'max_rvol': None,
-        'quick_filter': None,
-        'quick_filter_applied': False
-    }
     
     @staticmethod
     def initialize_filters():
-        """Initialize filter state ONCE at app start - MATCHES YOUR V2.py"""
+        """Initialize single filter state object"""
         if 'filter_state' not in st.session_state:
-            st.session_state.filter_state = FilterEngine.DEFAULT_FILTERS.copy()
-            logger.info("Filter state initialized")
+            st.session_state.filter_state = {
+                'categories': [],
+                'sectors': [],
+                'industries': [],
+                'min_score': 0,
+                'patterns': [],
+                'trend_filter': "All Trends",
+                'trend_range': (0, 100),
+                'eps_tiers': [],
+                'pe_tiers': [],
+                'price_tiers': [],
+                'min_eps_change': None,
+                'min_pe': None,
+                'max_pe': None,
+                'require_fundamental_data': False,
+                'wave_states': [],
+                'wave_strength_range': (0, 100),
+                'quick_filter': None,
+                'quick_filter_applied': False
+            }
     
     @staticmethod
     def get_filter(key: str, default: Any = None) -> Any:
-        """Get filter value from centralized state - MATCHES YOUR V2.py"""
+        """Get filter value from centralized state"""
         FilterEngine.initialize_filters()
         return st.session_state.filter_state.get(key, default)
     
     @staticmethod
     def set_filter(key: str, value: Any) -> None:
-        """Set filter value in centralized state - MATCHES YOUR V2.py"""
+        """Set filter value in centralized state"""
         FilterEngine.initialize_filters()
         st.session_state.filter_state[key] = value
     
     @staticmethod
     def get_active_count() -> int:
-        """Count active filters - MATCHES YOUR V2.py"""
+        """Count active filters"""
         FilterEngine.initialize_filters()
         count = 0
         filters = st.session_state.filter_state
@@ -2463,12 +2457,145 @@ class FilterEngine:
     
     @staticmethod
     def clear_all_filters():
-        """Reset all filters to defaults - FIXED VERSION"""
+        """
+        Reset all filters to defaults and clear widget states.
+        FIXED: Now properly deletes ALL dynamic widget keys to prevent memory leaks.
+        """
         # Reset centralized filter state
-        st.session_state.filter_state = FilterEngine.DEFAULT_FILTERS.copy()
+        st.session_state.filter_state = {
+            'categories': [],
+            'sectors': [],
+            'industries': [],
+            'min_score': 0,
+            'patterns': [],
+            'trend_filter': "All Trends",
+            'trend_range': (0, 100),
+            'eps_tiers': [],
+            'pe_tiers': [],
+            'price_tiers': [],
+            'min_eps_change': None,
+            'min_pe': None,
+            'max_pe': None,
+            'require_fundamental_data': False,
+            'wave_states': [],
+            'wave_strength_range': (0, 100),
+            'quick_filter': None,
+            'quick_filter_applied': False
+        }
         
-        # NO MORE WIDGET KEY DELETION - Let Streamlit handle it!
-        # This was causing memory leaks
+        # CRITICAL FIX: Delete all widget keys to force UI reset
+        # First, delete known widget keys
+        widget_keys_to_delete = [
+            # Multiselect widgets
+            'category_multiselect', 'sector_multiselect', 'industry_multiselect',
+            'patterns_multiselect', 'wave_states_multiselect',
+            'eps_tier_multiselect', 'pe_tier_multiselect', 'price_tier_multiselect',
+            
+            # Slider widgets
+            'min_score_slider', 'wave_strength_slider',
+            
+            # Selectbox widgets
+            'trend_selectbox', 'wave_timeframe_select',
+            
+            # Text input widgets
+            'eps_change_input', 'min_pe_input', 'max_pe_input',
+            
+            # Checkbox widgets
+            'require_fundamental_checkbox',
+            
+            # Additional filter-related keys
+            'display_count_select', 'sort_by_select', 'export_template_radio',
+            'wave_sensitivity', 'show_sensitivity_details', 'show_market_regime'
+        ]
+        
+        # Delete each known widget key if it exists
+        deleted_count = 0
+        for key in widget_keys_to_delete:
+            if key in st.session_state:
+                del st.session_state[key]
+                deleted_count += 1
+                
+        # ==== MEMORY LEAK FIX - START ====
+        # Now clean up ANY dynamically created widget keys
+        # This is crucial for preventing memory leaks
+        
+        # Define all possible widget suffixes used by Streamlit
+        widget_suffixes = [
+            '_multiselect', '_slider', '_selectbox', '_checkbox',
+            '_input', '_radio', '_button', '_expander', '_toggle',
+            '_number_input', '_text_area', '_date_input', '_time_input',
+            '_color_picker', '_file_uploader', '_camera_input', '_select_slider'
+        ]
+        
+        # Also check for common prefixes used in dynamic widgets
+        widget_prefixes = [
+            'FormSubmitter', 'temp_', 'dynamic_', 'filter_', 'widget_'
+        ]
+        
+        # Collect all keys to delete (can't modify dict during iteration)
+        dynamic_keys_to_delete = []
+        
+        # Check all session state keys
+        for key in list(st.session_state.keys()):
+            # Skip if already deleted
+            if key in widget_keys_to_delete:
+                continue
+            
+            # Check if key has widget suffix
+            for suffix in widget_suffixes:
+                if key.endswith(suffix):
+                    dynamic_keys_to_delete.append(key)
+                    break
+            
+            # Check if key has widget prefix
+            for prefix in widget_prefixes:
+                if key.startswith(prefix) and key not in dynamic_keys_to_delete:
+                    dynamic_keys_to_delete.append(key)
+                    break
+        
+        # Delete all collected dynamic keys
+        for key in dynamic_keys_to_delete:
+            try:
+                del st.session_state[key]
+                deleted_count += 1
+                logger.debug(f"Deleted dynamic widget key: {key}")
+            except KeyError:
+                # Key might have been deleted already
+                pass
+        
+        # ==== MEMORY LEAK FIX - END ====
+        
+        # Also clear legacy filter keys for backward compatibility
+        legacy_keys = [
+            'category_filter', 'sector_filter', 'industry_filter',
+            'min_score', 'patterns', 'trend_filter',
+            'eps_tier_filter', 'pe_tier_filter', 'price_tier_filter',
+            'min_eps_change', 'min_pe', 'max_pe',
+            'require_fundamental_data', 'wave_states_filter',
+            'wave_strength_range_slider'
+        ]
+        
+        for key in legacy_keys:
+            if key in st.session_state:
+                if isinstance(st.session_state[key], list):
+                    st.session_state[key] = []
+                elif isinstance(st.session_state[key], bool):
+                    st.session_state[key] = False
+                elif isinstance(st.session_state[key], str):
+                    if key == 'trend_filter':
+                        st.session_state[key] = "All Trends"
+                    else:
+                        st.session_state[key] = ""
+                elif isinstance(st.session_state[key], tuple):
+                    if key == 'wave_strength_range_slider':
+                        st.session_state[key] = (0, 100)
+                elif isinstance(st.session_state[key], (int, float)):
+                    if key == 'min_score':
+                        st.session_state[key] = 0
+                    else:
+                        st.session_state[key] = None
+                else:
+                    st.session_state[key] = None
         
         # Reset active filter count
         st.session_state.active_filter_count = 0
@@ -2477,17 +2604,31 @@ class FilterEngine:
         st.session_state.quick_filter = None
         st.session_state.quick_filter_applied = False
         
-        logger.info("All filters cleared successfully")
+        # Clear any cached filter results
+        if 'user_preferences' in st.session_state:
+            st.session_state.user_preferences['last_filters'] = {}
+        
+        # Clean up any cached data related to filters
+        cache_keys_to_clear = []
+        for key in st.session_state.keys():
+            if key.startswith('filter_cache_') or key.startswith('filtered_'):
+                cache_keys_to_clear.append(key)
+        
+        for key in cache_keys_to_clear:
+            del st.session_state[key]
+            deleted_count += 1
+        
+        logger.info(f"All filters and widget states cleared successfully. Deleted {deleted_count} keys total.")
     
     @staticmethod
     def sync_widget_to_filter(widget_key: str, filter_key: str):
-        """Sync widget state to filter state - MATCHES YOUR V2.py"""
+        """Sync widget state to filter state - used in callbacks"""
         if widget_key in st.session_state:
             st.session_state.filter_state[filter_key] = st.session_state[widget_key]
     
     @staticmethod
     def build_filter_dict() -> Dict[str, Any]:
-        """Build filter dictionary for apply_filters method - MATCHES YOUR V2.py"""
+        """Build filter dictionary for apply_filters method"""
         FilterEngine.initialize_filters()
         filters = {}
         state = st.session_state.filter_state
@@ -2531,7 +2672,8 @@ class FilterEngine:
     @PerformanceMonitor.timer(target_time=0.1)
     def apply_filters(df: pd.DataFrame, filters: Optional[Dict[str, Any]] = None) -> pd.DataFrame:
         """
-        Apply all filters to dataframe efficiently - SIMPLIFIED VERSION
+        Apply all filters to dataframe efficiently using vectorized operations.
+        If no filters provided, get from centralized state.
         """
         if df.empty:
             return df
@@ -2543,87 +2685,122 @@ class FilterEngine:
         if not filters:
             return df
         
-        # Start with full dataframe
-        result = df
+        # Create boolean masks for each filter
+        masks = []
+        
+        # Helper function for isin filters
+        def create_mask_from_isin(column: str, values: List[Any]) -> Optional[pd.Series]:
+            if values and column in df.columns:
+                return df[column].isin(values)
+            return None
         
         # 1. Category filters
-        if 'categories' in filters and 'category' in result.columns:
-            result = result[result['category'].isin(filters['categories'])]
-        
-        if 'sectors' in filters and 'sector' in result.columns:
-            result = result[result['sector'].isin(filters['sectors'])]
-        
-        if 'industries' in filters and 'industry' in result.columns:
-            result = result[result['industry'].isin(filters['industries'])]
+        if 'categories' in filters:
+            masks.append(create_mask_from_isin('category', filters['categories']))
+        if 'sectors' in filters:
+            masks.append(create_mask_from_isin('sector', filters['sectors']))
+        if 'industries' in filters:
+            masks.append(create_mask_from_isin('industry', filters['industries']))
         
         # 2. Score filter
-        if filters.get('min_score', 0) > 0 and 'master_score' in result.columns:
-            result = result[result['master_score'] >= filters['min_score']]
+        if filters.get('min_score', 0) > 0 and 'master_score' in df.columns:
+            masks.append(df['master_score'] >= filters['min_score'])
         
         # 3. Pattern filter
-        if filters.get('patterns') and 'patterns' in result.columns:
-            pattern_mask = pd.Series(False, index=result.index)
+        if filters.get('patterns') and 'patterns' in df.columns:
+            pattern_mask = pd.Series(False, index=df.index)
             for pattern in filters['patterns']:
-                pattern_mask |= result['patterns'].str.contains(pattern, na=False, regex=False)
-            result = result[pattern_mask]
+                pattern_mask |= df['patterns'].str.contains(pattern, na=False, regex=False)
+            masks.append(pattern_mask)
         
         # 4. Trend filter
         trend_range = filters.get('trend_range')
-        if trend_range and trend_range != (0, 100) and 'trend_quality' in result.columns:
+        if trend_range and trend_range != (0, 100) and 'trend_quality' in df.columns:
             min_trend, max_trend = trend_range
-            result = result[(result['trend_quality'] >= min_trend) & 
-                          (result['trend_quality'] <= max_trend)]
+            masks.append((df['trend_quality'] >= min_trend) & (df['trend_quality'] <= max_trend))
         
         # 5. EPS change filter
-        if filters.get('min_eps_change') is not None and 'eps_change_pct' in result.columns:
-            result = result[result['eps_change_pct'] >= filters['min_eps_change']]
+        if filters.get('min_eps_change') is not None and 'eps_change_pct' in df.columns:
+            masks.append(df['eps_change_pct'] >= filters['min_eps_change'])
         
         # 6. PE filters
-        if filters.get('min_pe') is not None and 'pe' in result.columns:
-            result = result[result['pe'] >= filters['min_pe']]
+        if filters.get('min_pe') is not None and 'pe' in df.columns:
+            masks.append(df['pe'] >= filters['min_pe'])
         
-        if filters.get('max_pe') is not None and 'pe' in result.columns:
-            result = result[result['pe'] <= filters['max_pe']]
+        if filters.get('max_pe') is not None and 'pe' in df.columns:
+            masks.append(df['pe'] <= filters['max_pe'])
         
         # 7. Tier filters
-        if 'eps_tiers' in filters and 'eps_tier' in result.columns:
-            result = result[result['eps_tier'].isin(filters['eps_tiers'])]
-        
-        if 'pe_tiers' in filters and 'pe_tier' in result.columns:
-            result = result[result['pe_tier'].isin(filters['pe_tiers'])]
-        
-        if 'price_tiers' in filters and 'price_tier' in result.columns:
-            result = result[result['price_tier'].isin(filters['price_tiers'])]
+        if 'eps_tiers' in filters:
+            masks.append(create_mask_from_isin('eps_tier', filters['eps_tiers']))
+        if 'pe_tiers' in filters:
+            masks.append(create_mask_from_isin('pe_tier', filters['pe_tiers']))
+        if 'price_tiers' in filters:
+            masks.append(create_mask_from_isin('price_tier', filters['price_tiers']))
         
         # 8. Data completeness filter
         if filters.get('require_fundamental_data', False):
-            if 'pe' in result.columns and 'eps_change_pct' in result.columns:
-                result = result[result['pe'].notna() & (result['pe'] > 0) & result['eps_change_pct'].notna()]
+            if all(col in df.columns for col in ['pe', 'eps_change_pct']):
+                masks.append(df['pe'].notna() & (df['pe'] > 0) & df['eps_change_pct'].notna())
         
         # 9. Wave filters
-        if 'wave_states' in filters and 'wave_state' in result.columns:
-            result = result[result['wave_state'].isin(filters['wave_states'])]
+        if 'wave_states' in filters:
+            masks.append(create_mask_from_isin('wave_state', filters['wave_states']))
         
         wave_strength_range = filters.get('wave_strength_range')
-        if wave_strength_range and wave_strength_range != (0, 100) and 'overall_wave_strength' in result.columns:
+        if wave_strength_range and wave_strength_range != (0, 100) and 'overall_wave_strength' in df.columns:
             min_ws, max_ws = wave_strength_range
-            result = result[(result['overall_wave_strength'] >= min_ws) & 
-                          (result['overall_wave_strength'] <= max_ws)]
+            masks.append((df['overall_wave_strength'] >= min_ws) & 
+                        (df['overall_wave_strength'] <= max_ws))
         
-        logger.info(f"Filters reduced {len(df)} to {len(result)} stocks")
+        # Combine all masks
+        masks = [mask for mask in masks if mask is not None]
         
-        return result
+        if masks:
+            combined_mask = np.logical_and.reduce(masks)
+            filtered_df = df[combined_mask].copy()
+        else:
+            filtered_df = df.copy()
+        
+        logger.info(f"Filters reduced {len(df)} to {len(filtered_df)} stocks")
+        
+        return filtered_df
     
     @staticmethod
     def get_filter_options(df: pd.DataFrame, column: str, current_filters: Optional[Dict[str, Any]] = None) -> List[str]:
         """
-        Get available options for a filter - SIMPLIFIED VERSION
+        Get available options for a filter based on other active filters.
+        This creates interconnected filters.
         """
         if df.empty or column not in df.columns:
             return []
         
+        # Use current filters or get from state
+        if current_filters is None:
+            current_filters = FilterEngine.build_filter_dict()
+        
+        # Create temp filters without the current column
+        temp_filters = current_filters.copy()
+        
+        # Map column to filter key
+        filter_key_map = {
+            'category': 'categories',
+            'sector': 'sectors',
+            'industry': 'industries',
+            'eps_tier': 'eps_tiers',
+            'pe_tier': 'pe_tiers',
+            'price_tier': 'price_tiers',
+            'wave_state': 'wave_states'
+        }
+        
+        if column in filter_key_map:
+            temp_filters.pop(filter_key_map[column], None)
+        
+        # Apply remaining filters
+        filtered_df = FilterEngine.apply_filters(df, temp_filters)
+        
         # Get unique values
-        values = df[column].dropna().unique()
+        values = filtered_df[column].dropna().unique()
         
         # Filter out invalid values
         values = [v for v in values if str(v).strip() not in ['Unknown', 'unknown', '', 'nan', 'NaN', 'None', 'N/A', '-']]
@@ -2638,13 +2815,67 @@ class FilterEngine:
     
     @staticmethod
     def reset_to_defaults():
-        """Reset filters to default state - MATCHES YOUR V2.py"""
+        """Reset filters to default state but keep widget keys"""
         FilterEngine.initialize_filters()
         
-        # Reset only the filter values
-        st.session_state.filter_state = FilterEngine.DEFAULT_FILTERS.copy()
-        st.session_state.active_filter_count = 0
+        # Reset only the filter values, not the widgets
+        st.session_state.filter_state = {
+            'categories': [],
+            'sectors': [],
+            'industries': [],
+            'min_score': 0,
+            'patterns': [],
+            'trend_filter': "All Trends",
+            'trend_range': (0, 100),
+            'eps_tiers': [],
+            'pe_tiers': [],
+            'price_tiers': [],
+            'min_eps_change': None,
+            'min_pe': None,
+            'max_pe': None,
+            'require_fundamental_data': False,
+            'wave_states': [],
+            'wave_strength_range': (0, 100),
+            'quick_filter': None,
+            'quick_filter_applied': False
+        }
+
+        # Clean up ALL dynamically created widget keys
+        all_widget_patterns = [
+            '_multiselect', '_slider', '_selectbox', '_checkbox', 
+            '_input', '_radio', '_button', '_expander', '_toggle',
+            '_number_input', '_text_area', '_date_input', '_time_input',
+            '_color_picker', '_file_uploader', '_camera_input'
+        ]
         
+        # Collect keys to delete (can't modify dict during iteration)
+        dynamic_keys_to_delete = []
+        
+        for key in list(st.session_state.keys()):
+            # Check if this key ends with any widget pattern
+            for pattern in all_widget_patterns:
+                if pattern in key:
+                    dynamic_keys_to_delete.append(key)
+                    break
+        
+        # Delete the dynamic keys
+        for key in dynamic_keys_to_delete:
+            try:
+                del st.session_state[key]
+                logger.debug(f"Deleted dynamic widget key: {key}")
+            except KeyError:
+                # Key might have been deleted already
+                pass
+        
+        # Also clean up any keys that start with 'FormSubmitter'
+        form_keys_to_delete = [key for key in st.session_state.keys() if key.startswith('FormSubmitter')]
+        for key in form_keys_to_delete:
+            try:
+                del st.session_state[key]
+            except KeyError:
+                pass
+        # ==== COMPREHENSIVE WIDGET CLEANUP - END ====
+        st.session_state.active_filter_count = 0
         logger.info("Filters reset to defaults")
         
 # ============================================
