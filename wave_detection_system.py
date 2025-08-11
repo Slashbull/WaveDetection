@@ -2165,6 +2165,7 @@ class FilterEngine:
     """
     Centralized filter management with single state object.
     This eliminates 15+ separate session state keys.
+    FIXED: Now properly cleans up ALL dynamic widget keys.
     """
     
     @staticmethod
@@ -2232,7 +2233,10 @@ class FilterEngine:
     
     @staticmethod
     def clear_all_filters():
-        """Reset all filters to defaults and clear widget states"""
+        """
+        Reset all filters to defaults and clear widget states.
+        FIXED: Now properly deletes ALL dynamic widget keys to prevent memory leaks.
+        """
         # Reset centralized filter state
         st.session_state.filter_state = {
             'categories': [],
@@ -2256,6 +2260,7 @@ class FilterEngine:
         }
         
         # CRITICAL FIX: Delete all widget keys to force UI reset
+        # First, delete known widget keys
         widget_keys_to_delete = [
             # Multiselect widgets
             'category_multiselect', 'sector_multiselect', 'industry_multiselect',
@@ -2279,10 +2284,62 @@ class FilterEngine:
             'wave_sensitivity', 'show_sensitivity_details', 'show_market_regime'
         ]
         
-        # Delete each widget key if it exists
+        # Delete each known widget key if it exists
+        deleted_count = 0
         for key in widget_keys_to_delete:
             if key in st.session_state:
                 del st.session_state[key]
+                deleted_count += 1
+        
+        # ==== MEMORY LEAK FIX - START ====
+        # Now clean up ANY dynamically created widget keys
+        # This is crucial for preventing memory leaks
+        
+        # Define all possible widget suffixes used by Streamlit
+        widget_suffixes = [
+            '_multiselect', '_slider', '_selectbox', '_checkbox',
+            '_input', '_radio', '_button', '_expander', '_toggle',
+            '_number_input', '_text_area', '_date_input', '_time_input',
+            '_color_picker', '_file_uploader', '_camera_input', '_select_slider'
+        ]
+        
+        # Also check for common prefixes used in dynamic widgets
+        widget_prefixes = [
+            'FormSubmitter', 'temp_', 'dynamic_', 'filter_', 'widget_'
+        ]
+        
+        # Collect all keys to delete (can't modify dict during iteration)
+        dynamic_keys_to_delete = []
+        
+        # Check all session state keys
+        for key in list(st.session_state.keys()):
+            # Skip if already deleted
+            if key in widget_keys_to_delete:
+                continue
+            
+            # Check if key has widget suffix
+            for suffix in widget_suffixes:
+                if key.endswith(suffix):
+                    dynamic_keys_to_delete.append(key)
+                    break
+            
+            # Check if key has widget prefix
+            for prefix in widget_prefixes:
+                if key.startswith(prefix) and key not in dynamic_keys_to_delete:
+                    dynamic_keys_to_delete.append(key)
+                    break
+        
+        # Delete all collected dynamic keys
+        for key in dynamic_keys_to_delete:
+            try:
+                del st.session_state[key]
+                deleted_count += 1
+                logger.debug(f"Deleted dynamic widget key: {key}")
+            except KeyError:
+                # Key might have been deleted already
+                pass
+        
+        # ==== MEMORY LEAK FIX - END ====
         
         # Also clear legacy filter keys for backward compatibility
         legacy_keys = [
@@ -2323,7 +2380,21 @@ class FilterEngine:
         st.session_state.quick_filter = None
         st.session_state.quick_filter_applied = False
         
-        logger.info("All filters and widget states cleared successfully")
+        # Clear any cached filter results
+        if 'user_preferences' in st.session_state:
+            st.session_state.user_preferences['last_filters'] = {}
+        
+        # Clean up any cached data related to filters
+        cache_keys_to_clear = []
+        for key in st.session_state.keys():
+            if key.startswith('filter_cache_') or key.startswith('filtered_'):
+                cache_keys_to_clear.append(key)
+        
+        for key in cache_keys_to_clear:
+            del st.session_state[key]
+            deleted_count += 1
+        
+        logger.info(f"All filters and widget states cleared successfully. Deleted {deleted_count} keys total.")
     
     @staticmethod
     def sync_widget_to_filter(widget_key: str, filter_key: str):
@@ -2517,6 +2588,36 @@ class FilterEngine:
             values = sorted(values, key=str)
         
         return values
+    
+    @staticmethod
+    def reset_to_defaults():
+        """Reset filters to default state but keep widget keys"""
+        FilterEngine.initialize_filters()
+        
+        # Reset only the filter values, not the widgets
+        st.session_state.filter_state = {
+            'categories': [],
+            'sectors': [],
+            'industries': [],
+            'min_score': 0,
+            'patterns': [],
+            'trend_filter': "All Trends",
+            'trend_range': (0, 100),
+            'eps_tiers': [],
+            'pe_tiers': [],
+            'price_tiers': [],
+            'min_eps_change': None,
+            'min_pe': None,
+            'max_pe': None,
+            'require_fundamental_data': False,
+            'wave_states': [],
+            'wave_strength_range': (0, 100),
+            'quick_filter': None,
+            'quick_filter_applied': False
+        }
+        
+        st.session_state.active_filter_count = 0
+        logger.info("Filters reset to defaults")
         
 # ============================================
 # SEARCH ENGINE
