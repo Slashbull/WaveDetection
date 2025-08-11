@@ -1678,16 +1678,23 @@ class PatternDetector:
         patterns = [p.strip() for p in patterns_str.split(' | ')]
         total_weight = 0
         
+        # FIX: Create a mapping of pattern names without emojis
+        pattern_map = {}
+        for key in PatternDetector.PATTERN_METADATA.keys():
+            # Extract just the text part (remove emoji)
+            clean_key = ' '.join([word for word in key.split() if not any(ord(c) > 127 for c in word)])
+            pattern_map[clean_key] = key
+        
         for pattern in patterns:
-            # Try exact match first
-            for key, value in PatternDetector.PATTERN_METADATA.items():
-                # Remove emojis from both sides for comparison
-                key_words = ' '.join([w for w in key.split() if not w.startswith('�')])
-                pattern_words = ' '.join([w for w in pattern.split() if not w.startswith('�')])
-                
-                if key_words == pattern_words or key == pattern:
-                    total_weight += value['importance_weight']
-                    break
+            # Clean the pattern (remove emoji)
+            clean_pattern = ' '.join([word for word in pattern.split() if not any(ord(c) > 127 for c in word)])
+            
+            # Try to find match
+            if clean_pattern in pattern_map:
+                original_key = pattern_map[clean_pattern]
+                total_weight += PatternDetector.PATTERN_METADATA[original_key]['importance_weight']
+        
+        max_possible_score = sum(abs(v['importance_weight']) for v in PatternDetector.PATTERN_METADATA.values() if v['importance_weight'] > 0)
         
         if max_possible_score > 0:
             confidence = (abs(total_weight) / max_possible_score * 100)
@@ -5665,6 +5672,8 @@ def main():
                                     cat_df = wave_filtered_df[wave_filtered_df['category'] == cat]
                                     
                                     category_size = len(cat_df)
+                                    if category_size == 0: 
+                                        continue  
                                     if 1 <= category_size <= 5:
                                         sample_count = category_size
                                     elif 6 <= category_size <= 20:
