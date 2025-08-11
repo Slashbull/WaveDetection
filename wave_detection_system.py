@@ -3264,6 +3264,7 @@ class SessionStateManager:
         """
         Resets all filter-related session state keys to their default values.
         This provides a clean slate for the user.
+        FIXED: Now properly cleans ALL dynamic widget keys.
         """
         # Clear the centralized filter state
         if 'filter_state' in st.session_state:
@@ -3355,10 +3356,84 @@ class SessionStateManager:
                 del st.session_state[key]
                 deleted_count += 1
         
+        # ==== MEMORY LEAK FIX - START ====
+        # Clean up ANY dynamically created widget keys that weren't in the predefined list
+        # This catches widgets created on the fly or with dynamic keys
+        
+        all_widget_patterns = [
+            '_multiselect', '_slider', '_selectbox', '_checkbox', 
+            '_input', '_radio', '_button', '_expander', '_toggle',
+            '_number_input', '_text_area', '_date_input', '_time_input',
+            '_color_picker', '_file_uploader', '_camera_input'
+        ]
+        
+        # Collect keys to delete (can't modify dict during iteration)
+        dynamic_keys_to_delete = []
+        
+        for key in st.session_state.keys():
+            # Check if this key ends with any widget pattern
+            for pattern in all_widget_patterns:
+                if pattern in key and key not in widget_keys_to_delete:
+                    dynamic_keys_to_delete.append(key)
+                    break
+        
+        # Delete the dynamic keys
+        for key in dynamic_keys_to_delete:
+            try:
+                del st.session_state[key]
+                deleted_count += 1
+                logger.debug(f"Deleted dynamic widget key: {key}")
+            except KeyError:
+                # Key might have been deleted already
+                pass
+        
+        # Also clean up any keys that start with 'FormSubmitter'
+        form_keys_to_delete = [key for key in st.session_state.keys() if key.startswith('FormSubmitter')]
+        for key in form_keys_to_delete:
+            try:
+                del st.session_state[key]
+                deleted_count += 1
+            except KeyError:
+                pass
+        
+        # ==== MEMORY LEAK FIX - END ====
+        
+        # Also clear legacy filter keys for backward compatibility
+        legacy_keys = [
+            'category_filter', 'sector_filter', 'industry_filter',
+            'min_score', 'patterns', 'trend_filter',
+            'eps_tier_filter', 'pe_tier_filter', 'price_tier_filter',
+            'min_eps_change', 'min_pe', 'max_pe',
+            'require_fundamental_data', 'wave_states_filter',
+            'wave_strength_range_slider'
+        ]
+        
+        for key in legacy_keys:
+            if key in st.session_state:
+                if isinstance(st.session_state[key], list):
+                    st.session_state[key] = []
+                elif isinstance(st.session_state[key], bool):
+                    st.session_state[key] = False
+                elif isinstance(st.session_state[key], str):
+                    if key == 'trend_filter':
+                        st.session_state[key] = "All Trends"
+                    else:
+                        st.session_state[key] = ""
+                elif isinstance(st.session_state[key], tuple):
+                    if key == 'wave_strength_range_slider':
+                        st.session_state[key] = (0, 100)
+                elif isinstance(st.session_state[key], (int, float)):
+                    if key == 'min_score':
+                        st.session_state[key] = 0
+                    else:
+                        st.session_state[key] = None
+                else:
+                    st.session_state[key] = None
+        
         # Reset active filter count
         st.session_state.active_filter_count = 0
         
-        # Reset quick filter states
+        # Clear quick filter
         st.session_state.quick_filter = None
         st.session_state.quick_filter_applied = False
         
@@ -3366,7 +3441,7 @@ class SessionStateManager:
         if 'user_preferences' in st.session_state:
             st.session_state.user_preferences['last_filters'] = {}
         
-        logger.info(f"All filters cleared successfully. Deleted {deleted_count} widget keys.")
+        logger.info(f"All filters and widget states cleared successfully. Deleted {deleted_count} widget keys.")
     
     @staticmethod
     def sync_filter_states():
