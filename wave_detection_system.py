@@ -3398,7 +3398,7 @@ class UIComponents:
 
 
 
-        intel_cols = st.columns(3)
+            intel_cols = st.columns(3)
             
                 with intel_cols[0]:
                     # Market Regime Detection
