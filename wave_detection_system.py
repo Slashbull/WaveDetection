@@ -3318,7 +3318,7 @@ class UIComponents:
                         'Flow Score: %{y:.1f}<br>'
                         'Analyzed: %{customdata[0]} of %{customdata[1]} stocks<br>'
                         'Sampling: %{customdata[2]:.1f}%<br>'
-                        'Avg Score: %{customdata[3]:.1f}'
+                        'Avg Score: %{customdata[3]:.1f}<extra></extra>'
                     ),
                     customdata=np.column_stack((
                         top_10['analyzed_stocks'],
@@ -3393,29 +3393,6 @@ class UIComponents:
                 strength_meter = "🟢🟢⚪⚪⚪"
             
             st.write(strength_meter)
-            
-            st.markdown("---")
-            
-            # Top Performing Sectors
-            if 'sector' in filtered_df.columns and 'master_score' in filtered_df.columns:
-                sector_performance = filtered_df.groupby('sector').agg({
-                    'master_score': 'mean',
-                    'ticker': 'count'
-                }).round(1)
-                sector_performance.columns = ['Avg Score', 'Count']
-                sector_performance = sector_performance.sort_values('Avg Score', ascending=False)
-                
-                top_sectors = sector_performance.head(3)
-                
-                sectors_text = "**Top Sectors**\n"
-                for i, (sector, row) in enumerate(top_sectors.iterrows(), 1):
-                    emoji = "🥇" if i == 1 else "🥈" if i == 2 else "🥉"
-                    sectors_text += f"{emoji} {sector[:15]}: {row['Avg Score']:.1f}\n"
-                
-                st.success(sectors_text)
-            else:
-                st.success("**Top Sectors**\nN/A")
-
 
 # ============================================
 # SESSION STATE MANAGER
