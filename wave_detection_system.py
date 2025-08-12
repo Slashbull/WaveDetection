@@ -4960,6 +4960,22 @@ def main():
             display_df = display_df.sort_values('trend_quality', ascending=False)
         
         if not display_df.empty:
+            # Add trend indicator if available
+            if 'trend_quality' in display_df.columns:
+                def get_trend_indicator(score):
+                    if pd.isna(score):
+                        return "➖"
+                    elif score >= 80:
+                        return "🔥"
+                    elif score >= 60:
+                        return "✅"
+                    elif score >= 40:
+                        return "➡️"
+                    else:
+                        return "⚠️"
+                
+                display_df['trend_indicator'] = display_df['trend_quality'].apply(get_trend_indicator)
+                
             # ============================================
             # PREPARE DISPLAY DATAFRAME - KEEP NUMERIC!
             # ============================================
@@ -4972,6 +4988,13 @@ def main():
             
             # 2. SCORES (keep numeric for progress bars)
             display_columns.extend(['master_score'])
+
+            # 9. PATTERNS & SIGNALS
+            if 'wave_state' in display_df.columns:
+                display_columns.append('wave_state')
+
+             if 'trend_indicator' in display_df.columns:
+                display_cols['trend_indicator'] = 'Trend'
             
             # 3. PRICE & RANGE
             display_columns.extend(['price'])
