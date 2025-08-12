@@ -3472,7 +3472,7 @@ class UIComponents:
                     else:
                         st.success("**Top Sectors**\nN/A")
                 
-                st.markdown("---")
+        st.markdown("---")
 
 # ============================================
 # SESSION STATE MANAGER
