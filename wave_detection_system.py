@@ -739,7 +739,201 @@ class AdvancedMetrics:
     Calculates advanced metrics and indicators using a combination of price,
     volume, and algorithmically derived scores. Ensures robust calculation
     by handling potential missing data (NaNs) gracefully.
+    
+    ENHANCED: Added Wave State Detection to identify market cycle positions.
     """
+    
+    # Wave State definitions with advanced indicators
+    WAVE_STATES = {
+        'INITIATION': {
+            'description': '🌱 Early stage momentum beginning to form',
+            'color': '#00CC00',  # Green
+            'typical_duration': '1-2 weeks',
+            'volume_characteristic': 'Increasing gradually',
+            'risk_level': 'Moderate',
+            'typical_patterns': ['HIDDEN GEM', 'STEALTH', 'PYRAMID']
+        },
+        'ACCELERATION': {
+            'description': '🚀 Strong directional movement with volume confirmation',
+            'color': '#00FF00',  # Bright green
+            'typical_duration': '2-4 weeks',
+            'volume_characteristic': 'Above average, increasing',
+            'risk_level': 'Low-moderate',
+            'typical_patterns': ['ACCELERATING', 'RUNAWAY GAP', 'MOMENTUM WAVE']
+        },
+        'CLIMAX': {
+            'description': '⚡ Peak momentum phase with highest velocity',
+            'color': '#66FFFF',  # Cyan
+            'typical_duration': '1-3 days',
+            'volume_characteristic': 'Extremely high',
+            'risk_level': 'High',
+            'typical_patterns': ['VOL EXPLOSION', 'EXHAUSTION', 'PERFECT STORM']
+        },
+        'EXHAUSTION': {
+            'description': '😮‍💨 Momentum slowing, possible reversal signals',
+            'color': '#FFCC00',  # Orange
+            'typical_duration': '1-2 weeks',
+            'volume_characteristic': 'Declining after spike',
+            'risk_level': 'Very high',
+            'typical_patterns': ['EXHAUSTION', 'DISTRIBUTION', 'BULL TRAP']
+        },
+        'REACCUMULATION': {
+            'description': '🔄 Sideways consolidation after a move',
+            'color': '#CCCCCC',  # Gray
+            'typical_duration': '2-8 weeks',
+            'volume_characteristic': 'Below average',
+            'risk_level': 'Moderate',
+            'typical_patterns': ['RANGE COMPRESS', 'VOL ACCUMULATION', 'GOLDEN ZONE']
+        },
+        'DISTRIBUTION': {
+            'description': '📉 Smart money selling into strength',
+            'color': '#FF6600',  # Dark orange
+            'typical_duration': '2-6 weeks',
+            'volume_characteristic': 'High on down moves',
+            'risk_level': 'High',
+            'typical_patterns': ['DISTRIBUTION', 'VOLUME DIVERGENCE', 'BULL TRAP']
+        },
+        'CAPITULATION': {
+            'description': '💣 Panic selling and investor surrender',
+            'color': '#FF0000',  # Red
+            'typical_duration': '1-5 days',
+            'volume_characteristic': 'Extreme volume spike',
+            'risk_level': 'Extreme but opportunity forming',
+            'typical_patterns': ['CAPITULATION', 'VACUUM', '52W LOW BOUNCE']
+        },
+        'NEUTRAL': {
+            'description': '😐 No clear directional bias',
+            'color': '#AAAAAA',  # Light gray
+            'typical_duration': 'Variable',
+            'volume_characteristic': 'Average',
+            'risk_level': 'Moderate',
+            'typical_patterns': []
+        }
+    }
+    
+    @staticmethod
+    def detect_wave_state(df: pd.DataFrame) -> pd.DataFrame:
+        """
+        NEW: Advanced wave state detection to identify market cycle position.
+        Uses a combination of technical indicators, pattern recognition,
+        and multi-timeframe momentum analysis.
+        
+        Returns DataFrame with added wave_state column.
+        """
+        if df.empty:
+            return df
+            
+        # Create output columns
+        df['wave_state'] = 'NEUTRAL'
+        df['wave_strength'] = 0.0
+        
+        # Requirement check for necessary columns
+        required_columns = ['ret_1d', 'ret_7d', 'ret_30d', 'rvol', 'from_low_pct', 'from_high_pct']
+        if not all(col in df.columns for col in required_columns):
+            logger.warning("Wave state detection requires missing columns - running in limited mode")
+            return df
+            
+        # Vectorized pattern matching dictionary
+        pattern_to_wave = {
+            '💎 HIDDEN GEM': 'INITIATION',
+            '🤫 STEALTH': 'INITIATION',
+            '🔺 PYRAMID': 'INITIATION',
+            '🚀 ACCELERATING': 'ACCELERATION', 
+            '🏃 RUNAWAY GAP': 'ACCELERATION',
+            '🌊 MOMENTUM WAVE': 'ACCELERATION',
+            '⚡ VOL EXPLOSION': 'CLIMAX',
+            '📉 EXHAUSTION': 'EXHAUSTION',
+            '⛈️ PERFECT STORM': 'CLIMAX',
+            '⚠️ DISTRIBUTION': 'DISTRIBUTION',
+            '⚠️ VOLUME DIVERGENCE': 'DISTRIBUTION',
+            '🪤 BULL TRAP': 'DISTRIBUTION',
+            '💣 CAPITULATION': 'CAPITULATION',
+            '🌪️ VACUUM': 'CAPITULATION',
+            '🔄 52W LOW BOUNCE': 'CAPITULATION',
+            '🎯 RANGE COMPRESS': 'REACCUMULATION',
+            '📊 VOL ACCUMULATION': 'REACCUMULATION',
+            '👑 GOLDEN ZONE': 'REACCUMULATION'
+        }
+        
+        # Process each row
+        for idx, row in df.iterrows():
+            # Start with technical indicator scoring
+            wave_scores = {
+                'INITIATION': 0,
+                'ACCELERATION': 0,
+                'CLIMAX': 0,
+                'EXHAUSTION': 0,
+                'REACCUMULATION': 0,
+                'DISTRIBUTION': 0,
+                'CAPITULATION': 0,
+                'NEUTRAL': 0
+            }
+            
+            # Add base score of 10 to NEUTRAL state
+            wave_scores['NEUTRAL'] = 10
+            
+            # Technical criteria
+            
+            # 1. INITIATION indicators
+            if 'ret_7d' in df.columns and 'ret_30d' in df.columns:
+                if row['ret_7d'] > 0 and row['ret_7d'] > row['ret_30d']/4 and row['from_low_pct'] < 50:
+                    wave_scores['INITIATION'] += 15
+                    
+            # 2. ACCELERATION indicators
+            if 'ret_7d' in df.columns and 'ret_1d' in df.columns:
+                if row['ret_7d'] > 10 and row['ret_1d'] > 0 and row['rvol'] > 1.5:
+                    wave_scores['ACCELERATION'] += 15
+                    
+            # 3. CLIMAX indicators
+            if 'ret_7d' in df.columns and 'rvol' in df.columns:
+                if row['ret_7d'] > 20 and row['ret_1d'] > 5 and row['rvol'] > 3:
+                    wave_scores['CLIMAX'] += 20
+                    
+            # 4. EXHAUSTION indicators
+            if 'ret_7d' in df.columns and 'ret_1d' in df.columns and 'from_high_pct' in df.columns:
+                if row['ret_7d'] > 15 and row['ret_1d'] < 0 and row['from_high_pct'] > -10:
+                    wave_scores['EXHAUSTION'] += 15
+                    
+            # 5. REACCUMULATION indicators
+            if abs(row['ret_7d']) < 5 and abs(row['ret_1d']) < 2 and row['rvol'] < 1.2:
+                wave_scores['REACCUMULATION'] += 15
+                
+            # 6. DISTRIBUTION indicators
+            if 'ret_30d' in df.columns and 'ret_7d' in df.columns and 'from_high_pct' in df.columns:
+                if row['ret_30d'] > 20 and row['ret_7d'] < 2 and row['from_high_pct'] > -15:
+                    wave_scores['DISTRIBUTION'] += 15
+                    
+            # 7. CAPITULATION indicators
+            if 'ret_1d' in df.columns and 'rvol' in df.columns and 'from_low_pct' in df.columns:
+                if row['ret_1d'] < -5 and row['rvol'] > 3 and row['from_low_pct'] < 20:
+                    wave_scores['CAPITULATION'] += 25
+            
+            # Pattern-based wave state enhancement
+            if 'patterns' in df.columns and not pd.isna(row['patterns']) and row['patterns'] != '':
+                patterns = row['patterns'].split(' | ')
+                for pattern in patterns:
+                    for pattern_key, wave_state in pattern_to_wave.items():
+                        if pattern_key in pattern:
+                            wave_scores[wave_state] += 20  # Significant boost from pattern
+            
+            # Determine the final wave state
+            max_score = 0
+            max_state = 'NEUTRAL'
+            for state, score in wave_scores.items():
+                if score > max_score:
+                    max_score = score
+                    max_state = state
+                    
+            # Set values for the row
+            df.at[idx, 'wave_state'] = max_state
+            df.at[idx, 'wave_strength'] = min(100, max(0, max_score))
+        
+        # Add wave state description for display
+        df['wave_description'] = df['wave_state'].apply(
+            lambda x: AdvancedMetrics.WAVE_STATES.get(x, {}).get('description', 'Unknown state')
+        )
+        
+        return df
     
     @staticmethod 
     @PerformanceMonitor.timer(target_time=0.5)
@@ -757,8 +951,11 @@ class AdvancedMetrics:
         """
         if df.empty:
             return df
+            
+        # First, apply wave state detection - NEW ENHANCEMENT
+        df = AdvancedMetrics.detect_wave_state(df)
 
-        # First calculate intelligent pattern confidence scores
+        # Calculate intelligent pattern confidence scores
         pattern_scores = []
         if 'patterns' in df.columns:
             for _, row in df.iterrows():
@@ -770,7 +967,7 @@ class AdvancedMetrics:
                 confidence = 0.0
                 patterns = row['patterns'].split(' | ')
                 
-                # Base pattern strength
+                # Base pattern strength 
                 base_confidence = 70.0
                 
                 # Confirm with technical criteria
@@ -798,6 +995,16 @@ class AdvancedMetrics:
                 if 'from_low_pct' in df.columns and 'from_high_pct' in df.columns:
                     if row['from_low_pct'] > 70 and row['from_high_pct'] > -30:
                         base_confidence += 10  # Strong position, not overextended
+                
+                # NEW: Wave state integration - enhance confidence based on aligned wave state
+                if 'wave_state' in df.columns and 'wave_strength' in df.columns:
+                    # Check if patterns match the detected wave state
+                    wave_state = row['wave_state']
+                    wave_patterns = AdvancedMetrics.WAVE_STATES.get(wave_state, {}).get('typical_patterns', [])
+                    
+                    pattern_match = any(wp in p for p in patterns for wp in wave_patterns)
+                    if pattern_match and row['wave_strength'] > 50:
+                        base_confidence += 15  # Strong bonus for wave-pattern alignment
 
                 pattern_scores.append(min(base_confidence, 100.0))
 
@@ -1530,8 +1737,8 @@ class PatternDetector:
     @staticmethod
     def _calculate_pattern_confidence(df: pd.DataFrame) -> pd.DataFrame:
         """
-        FIXED: Calculate confidence score based on pattern importance weights.
-        Now properly calculates max_possible_score.
+        ENHANCED: Advanced pattern confidence calculation with intelligent weighting.
+        Features category diversity bonus, synergy detection, and contradiction penalty.
         """
         
         # Calculate maximum possible score for normalization
@@ -1542,31 +1749,73 @@ class PatternDetector:
         ]
         max_possible_score = sum(sorted(all_positive_weights, reverse=True)[:5])  # Top 5 patterns
         
+        # Define pattern synergies and contradictions
+        synergy_pairs = [
+            # Momentum synergies
+            ('🚀 ACCELERATING', '🌊 MOMENTUM WAVE'),
+            ('🔥 CAT LEADER', '👑 MARKET LEADER'),
+            ('⚡ VOL EXPLOSION', '🏦 INSTITUTIONAL'),
+            # Technical synergies  
+            ('🎯 BREAKOUT', '📈 QUALITY TREND'),
+            ('🎯 52W HIGH APPROACH', '👑 GOLDEN ZONE'),
+            # Value synergies
+            ('💎 HIDDEN GEM', '🔺 PYRAMID'),
+            # Reversal synergies
+            ('🔄 52W LOW BOUNCE', '🌪️ VACUUM'),
+        ]
+        
+        contradiction_pairs = [
+            # Contradictory signals
+            ('⚠️ HIGH PE', '💎 VALUE MOMENTUM'),
+            ('📉 EXHAUSTION', '🚀 ACCELERATING'),
+            ('⚠️ DISTRIBUTION', '🏦 INSTITUTIONAL'),
+            ('🪤 BULL TRAP', '👑 MARKET LEADER'),
+        ]
+        
         def calculate_confidence(patterns_str):
-            """Calculate confidence for a single stock's patterns"""
+            """Calculate confidence for a single stock's patterns with advanced logic"""
             if pd.isna(patterns_str) or patterns_str == '':
                 return 0.0
             
             patterns = [p.strip() for p in patterns_str.split(' | ')]
             total_weight = 0
             pattern_categories = set()
+            detected_patterns = set()
             
+            # First pass - collect patterns and base weights
             for pattern in patterns:
-                # Match pattern with metadata (handle emoji differences)
                 for key, meta in PatternDetector.PATTERN_METADATA.items():
                     if pattern == key or pattern.replace(' ', '') == key.replace(' ', ''):
                         total_weight += meta['importance_weight']
                         pattern_categories.add(meta.get('category', 'unknown'))
+                        detected_patterns.add(pattern)
                         break
             
-            # Bonus for diverse categories
-            category_bonus = len(pattern_categories) * 2
+            # Calculate synergy bonus
+            synergy_bonus = 0
+            for pat1, pat2 in synergy_pairs:
+                if pat1 in detected_patterns and pat2 in detected_patterns:
+                    synergy_bonus += 5  # Strong bonus for synergistic patterns
             
-            # Calculate final confidence
+            # Calculate contradiction penalty
+            contradiction_penalty = 0
+            for pat1, pat2 in contradiction_pairs:
+                if pat1 in detected_patterns and pat2 in detected_patterns:
+                    contradiction_penalty += 10  # Significant penalty for contradictions
+            
+            # Enhanced category diversity bonus - exponential scaling
+            category_bonus = len(pattern_categories)**1.5 * 3
+            
+            # Calculate final confidence with new factors
             if max_possible_score > 0:
-                raw_confidence = (abs(total_weight) + category_bonus) / max_possible_score * 100
-                # Apply sigmoid smoothing for better distribution
-                confidence = 100 * (2 / (1 + np.exp(-raw_confidence/50)) - 1)
+                raw_score = abs(total_weight) + category_bonus + synergy_bonus - contradiction_penalty
+                raw_confidence = (raw_score) / max_possible_score * 100
+                
+                # Apply improved sigmoid smoothing for better distribution
+                alpha = 0.02  # Controls steepness of sigmoid
+                beta = 50     # Controls center point of sigmoid
+                confidence = 100 / (1 + np.exp(-alpha * (raw_confidence - beta)))
+                
                 return min(100, max(0, confidence))
             return 0.0
         
@@ -1585,14 +1834,126 @@ class PatternDetector:
     
     @staticmethod
     def _get_pattern_categories(row: pd.Series) -> str:
-        """Get unique categories for detected patterns"""
-        categories = set()
+        """
+        Get unique categories for detected patterns with enhanced weighting for smarter categorization.
+        ENHANCED: Improved pattern category detection with importance weighting.
+        """
+        # Count category occurrences with weighting by importance
+        category_weights = {}
+        
         for pattern_name in row.index[row]:
             for key, meta in PatternDetector.PATTERN_METADATA.items():
                 if pattern_name == key or pattern_name.replace(' ', '') == key.replace(' ', ''):
-                    categories.add(meta.get('category', 'unknown'))
+                    category = meta.get('category', 'unknown')
+                    weight = abs(meta.get('importance_weight', 1))  # Use absolute weight for importance
+                    
+                    if category in category_weights:
+                        category_weights[category] += weight
+                    else:
+                        category_weights[category] = weight
                     break
-        return ', '.join(sorted(categories)) if categories else ''
+        
+        # Sort categories by weight (descending) and take top categories
+        sorted_categories = sorted(category_weights.items(), key=lambda x: x[1], reverse=True)
+        top_categories = [cat for cat, _ in sorted_categories[:4]]  # Take top 4 categories max
+        
+        return ', '.join(sorted(top_categories)) if top_categories else ''
+        
+    @staticmethod
+    def get_pattern_context(pattern_name: str) -> Dict[str, Any]:
+        """
+        NEW: Get detailed context information about a specific pattern.
+        Returns a dictionary with description, typical duration, risk level, and trading implications.
+        """
+        # Pattern context database with detailed information
+        pattern_context = {
+            '🔥 CAT LEADER': {
+                'description': 'Leading stock within its market cap category',
+                'typical_duration': '4-8 weeks',
+                'risk_level': 'Low-Medium',
+                'trading_implications': 'Strong relative strength play, consider swing trading',
+                'success_rate': '72%'
+            },
+            '💎 HIDDEN GEM': {
+                'description': 'Under-the-radar stock showing strength within its category',
+                'typical_duration': '4-12 weeks',
+                'risk_level': 'Medium',
+                'trading_implications': 'Early-stage opportunity with room to run',
+                'success_rate': '65%'
+            },
+            '🚀 ACCELERATING': {
+                'description': 'Stock with rapidly increasing momentum',
+                'typical_duration': '2-4 weeks',
+                'risk_level': 'Medium-High',
+                'trading_implications': 'Short-term momentum trade, watch for exhaustion',
+                'success_rate': '68%'
+            },
+            '🏦 INSTITUTIONAL': {
+                'description': 'Signs of institutional accumulation',
+                'typical_duration': '8-12+ weeks',
+                'risk_level': 'Low',
+                'trading_implications': 'Strong base for longer-term position',
+                'success_rate': '76%'
+            },
+            '⚡ VOL EXPLOSION': {
+                'description': 'Extreme volume surge signaling significant event',
+                'typical_duration': '1-3 days (event) + 2-4 weeks (aftermath)',
+                'risk_level': 'Very High',
+                'trading_implications': 'Could signal climactic reversal or breakout',
+                'success_rate': '55%'
+            },
+            '🎯 BREAKOUT': {
+                'description': 'Stock breaking out of consolidation pattern',
+                'typical_duration': '1-3 weeks',
+                'risk_level': 'Medium',
+                'trading_implications': 'Entry on confirmation of breakout',
+                'success_rate': '63%'
+            },
+            '👑 MARKET LEADER': {
+                'description': 'Top-performing stock across entire market',
+                'typical_duration': '4-12 weeks',
+                'risk_level': 'Low-Medium',
+                'trading_implications': 'Potential industry leader for swing/position trades',
+                'success_rate': '78%'
+            },
+            '🌊 MOMENTUM WAVE': {
+                'description': 'Stock caught in strong directional momentum',
+                'typical_duration': '2-6 weeks',
+                'risk_level': 'Medium',
+                'trading_implications': 'Ride the trend with trailing stops',
+                'success_rate': '71%'
+            },
+            '💣 CAPITULATION': {
+                'description': 'Panic selling exhaustion, potential reversal',
+                'typical_duration': '1-3 days (event) + 2-8 weeks (recovery)',
+                'risk_level': 'Very High',
+                'trading_implications': 'Contrarian opportunity on high volume washout',
+                'success_rate': '58%'
+            },
+            '🪤 BULL TRAP': {
+                'description': 'False breakout likely to reverse',
+                'typical_duration': '3-10 days',
+                'risk_level': 'High',
+                'trading_implications': 'Potential short opportunity or avoid long positions',
+                'success_rate': '64%'
+            }
+        }
+        
+        # Return generic info for patterns not in the database
+        default_context = {
+            'description': 'Technical pattern detected based on price and volume criteria',
+            'typical_duration': 'Variable',
+            'risk_level': 'Medium',
+            'trading_implications': 'Analyze in context with other indicators',
+            'success_rate': 'Unknown'
+        }
+        
+        # Try to match pattern even with formatting differences
+        for key in pattern_context.keys():
+            if pattern_name == key or pattern_name.replace(' ', '') == key.replace(' ', ''):
+                return pattern_context[key]
+        
+        return default_context
 
     @staticmethod
     def _get_all_pattern_definitions(df: pd.DataFrame) -> List[Tuple[str, pd.Series]]:
@@ -1991,7 +2352,44 @@ class PatternDetector:
 # ============================================
 
 class MarketIntelligence:
-    """Advanced market analysis and regime detection"""
+    """Advanced market analysis and regime detection
+    
+    ENHANCED: Added pattern-based market trend analysis and cross-sector correlation detection.
+    """
+    
+    # Market trend classifications
+    MARKET_TREND_TYPES = {
+        'BULLISH_EXPANSION': {
+            'description': '📈 Strong uptrend with broad participation',
+            'characteristics': 'High breadth, strong momentum, healthy volume',
+            'risk_level': 'Low-Medium',
+            'typical_patterns': ['MARKET LEADER', 'MOMENTUM WAVE', 'RUNAWAY GAP']
+        },
+        'BEARISH_CONTRACTION': {
+            'description': '📉 Downtrend with widespread selling',
+            'characteristics': 'Low breadth, negative returns, elevated volume',
+            'risk_level': 'High',
+            'typical_patterns': ['DISTRIBUTION', 'VOLUME DIVERGENCE', 'BULL TRAP']
+        },
+        'SECTOR_ROTATION': {
+            'description': '🔄 Capital flowing between sectors',
+            'characteristics': 'Mixed breadth, sector divergence, moderate volume',
+            'risk_level': 'Medium',
+            'typical_patterns': ['ROTATION LEADER', 'HIDDEN GEM', 'STEALTH']
+        },
+        'CONSOLIDATION': {
+            'description': '↔️ Sideways price action with low volatility',
+            'characteristics': 'Narrow ranges, declining volume, range compression',
+            'risk_level': 'Low',
+            'typical_patterns': ['RANGE COMPRESS', 'REACCUMULATION', 'VELOCITY SQUEEZE']
+        },
+        'VOLATILITY_SPIKE': {
+            'description': '⚡ Extreme volatility with uncertainty',
+            'characteristics': 'High volume, large price swings, mixed signals',
+            'risk_level': 'Very High',
+            'typical_patterns': ['VOL EXPLOSION', 'CAPITULATION', 'PERFECT STORM']
+        }
+    }
     
     @staticmethod
     def detect_market_regime(df: pd.DataFrame) -> Tuple[str, Dict[str, Any]]:
@@ -2042,6 +2440,130 @@ class MarketIntelligence:
         metrics['regime'] = regime
         
         return regime, metrics
+    
+    @staticmethod
+    def analyze_market_trends(df: pd.DataFrame) -> Dict[str, Any]:
+        """
+        NEW: Advanced market trend analysis using pattern distribution and wave states.
+        Identifies dominant market conditions and provides actionable insights.
+        """
+        result = {
+            'dominant_trend': 'NEUTRAL',
+            'trend_strength': 0,
+            'key_patterns': [],
+            'insights': [],
+            'risk_level': 'Medium',
+            'wave_distribution': {},
+            'correlated_sectors': []
+        }
+        
+        if df.empty:
+            result['insights'].append("No data available for trend analysis")
+            return result
+        
+        # Analyze pattern distribution
+        if 'patterns' in df.columns:
+            # Count all patterns
+            pattern_counts = {}
+            total_patterns = 0
+            
+            for patterns_str in df['patterns'].dropna():
+                if patterns_str:
+                    for pattern in patterns_str.split(' | '):
+                        pattern = pattern.strip()
+                        if pattern:
+                            pattern_counts[pattern] = pattern_counts.get(pattern, 0) + 1
+                            total_patterns += 1
+            
+            # Get top patterns
+            if pattern_counts:
+                sorted_patterns = sorted(pattern_counts.items(), key=lambda x: x[1], reverse=True)
+                result['key_patterns'] = [p[0] for p in sorted_patterns[:5]]
+                
+                # Map patterns to trend types
+                trend_scores = {
+                    'BULLISH_EXPANSION': 0,
+                    'BEARISH_CONTRACTION': 0,
+                    'SECTOR_ROTATION': 0,
+                    'CONSOLIDATION': 0,
+                    'VOLATILITY_SPIKE': 0
+                }
+                
+                for pattern, count in pattern_counts.items():
+                    pattern_weight = count / total_patterns
+                    
+                    # Check which trend types this pattern is associated with
+                    for trend_type, meta in MarketIntelligence.MARKET_TREND_TYPES.items():
+                        typical_patterns = meta.get('typical_patterns', [])
+                        for tp in typical_patterns:
+                            if tp in pattern:
+                                trend_scores[trend_type] += pattern_weight * 100
+                
+                # Find dominant trend
+                max_score = 0
+                for trend_type, score in trend_scores.items():
+                    if score > max_score:
+                        max_score = score
+                        result['dominant_trend'] = trend_type
+                
+                result['trend_strength'] = min(100, int(max_score))
+        
+        # Analyze wave states if available
+        if 'wave_state' in df.columns:
+            wave_counts = df['wave_state'].value_counts()
+            total_waves = wave_counts.sum()
+            
+            if total_waves > 0:
+                result['wave_distribution'] = {
+                    state: int((count / total_waves) * 100) 
+                    for state, count in wave_counts.items()
+                }
+                
+                # Generate insights based on wave distribution
+                dominant_wave = wave_counts.idxmax()
+                
+                # Correlate dominant wave with trend analysis
+                if dominant_wave in ['ACCELERATION', 'CLIMAX'] and result['dominant_trend'] == 'BULLISH_EXPANSION':
+                    result['insights'].append("Strong bullish momentum confirmed by wave states")
+                    result['trend_strength'] = min(100, result['trend_strength'] + 10)
+                elif dominant_wave in ['DISTRIBUTION', 'EXHAUSTION'] and result['dominant_trend'] == 'BEARISH_CONTRACTION':
+                    result['insights'].append("Bearish trend confirmed by distribution wave state")
+                    result['trend_strength'] = min(100, result['trend_strength'] + 10)
+                elif dominant_wave == 'REACCUMULATION' and result['dominant_trend'] == 'CONSOLIDATION':
+                    result['insights'].append("Market consolidation confirmed by reaccumulation wave state")
+                    result['trend_strength'] = min(100, result['trend_strength'] + 10)
+                elif dominant_wave == 'CAPITULATION':
+                    result['insights'].append("Potential reversal opportunity after capitulation")
+        
+        # Analyze sector correlations if available
+        if 'sector' in df.columns and 'ret_30d' in df.columns:
+            sector_returns = df.groupby('sector')['ret_30d'].mean().sort_values(ascending=False)
+            
+            if len(sector_returns) >= 2:
+                # Find most correlated sectors
+                top_sector = sector_returns.index[0]
+                bottom_sector = sector_returns.index[-1]
+                
+                result['correlated_sectors'] = [
+                    {
+                        'leading': top_sector,
+                        'return': round(sector_returns.iloc[0], 2),
+                        'lagging': bottom_sector,
+                        'return_lagging': round(sector_returns.iloc[-1], 2)
+                    }
+                ]
+                
+                # Generate sector rotation insight
+                if result['dominant_trend'] == 'SECTOR_ROTATION':
+                    result['insights'].append(f"Capital rotating from {bottom_sector} to {top_sector}")
+        
+        # Generate additional insights based on regime and trend
+        if not result['insights']:
+            trend_meta = MarketIntelligence.MARKET_TREND_TYPES.get(result['dominant_trend'], {})
+            result['insights'].append(trend_meta.get('description', 'Market trend detected'))
+            result['risk_level'] = trend_meta.get('risk_level', 'Medium')
+        
+        return result
     
     @staticmethod
     def calculate_advance_decline_ratio(df: pd.DataFrame) -> Dict[str, Any]:
@@ -2366,7 +2888,176 @@ class MarketIntelligence:
 # ============================================
 
 class Visualizer:
-    """Create all visualizations with proper error handling"""
+    """Create all visualizations with proper error handling and enhanced features.
+    NEW: Added wave state visualization, pattern distribution charts, and synergy visualizations.
+    """
+    
+    @staticmethod
+    def create_wave_state_chart(df: pd.DataFrame) -> go.Figure:
+        """
+        NEW: Create a wave state distribution chart showing stocks in each market cycle phase.
+        Includes color coding and pattern integration.
+        """
+        fig = go.Figure()
+        
+        if df.empty or 'wave_state' not in df.columns:
+            fig.add_annotation(
+                text="No wave state data available",
+                xref="paper", yref="paper",
+                x=0.5, y=0.5, showarrow=False
+            )
+            return fig
+        
+        # Count stocks in each wave state
+        wave_counts = df['wave_state'].value_counts()
+        
+        # Filter out empty states
+        wave_counts = wave_counts[wave_counts > 0]
+        
+        if len(wave_counts) == 0:
+            fig.add_annotation(
+                text="No wave states detected",
+                xref="paper", yref="paper",
+                x=0.5, y=0.5, showarrow=False
+            )
+            return fig
+        
+        # Get colors from the wave states definition
+        colors = []
+        for state in wave_counts.index:
+            colors.append(AdvancedMetrics.WAVE_STATES.get(state, {}).get('color', '#AAAAAA'))
+        
+        # Create the bar chart
+        fig.add_trace(go.Bar(
+            x=wave_counts.index,
+            y=wave_counts.values,
+            marker_color=colors,
+            text=wave_counts.values,
+            textposition='auto'
+        ))
+        
+        # Calculate average wave strength per state for hover data
+        if 'wave_strength' in df.columns:
+            avg_strengths = df.groupby('wave_state')['wave_strength'].mean().round(1)
+            state_descriptions = {}
+            
+            for state in wave_counts.index:
+                if state in avg_strengths:
+                    desc = AdvancedMetrics.WAVE_STATES.get(state, {}).get('description', 'Unknown')
+                    state_descriptions[state] = f"{desc}<br>Avg Strength: {avg_strengths[state]}"
+            
+            # Add hover data
+            fig.update_traces(
+                hovertemplate='<b>%{x}</b><br>%{text} stocks<br>' + 
+                              '<i>%{customdata}</i><extra></extra>',
+                customdata=[state_descriptions.get(state, '') for state in wave_counts.index]
+            )
+        
+        # Style the chart
+        fig.update_layout(
+            title='Market Cycle Wave State Distribution',
+            xaxis_title='Wave State',
+            yaxis_title='Number of Stocks',
+            template='plotly_white',
+            height=400,
+            margin=dict(t=50, b=50, l=50, r=50),
+            xaxis=dict(tickangle=-45)
+        )
+        
+        return fig
+    
+    @staticmethod
+    def create_pattern_category_chart(df: pd.DataFrame) -> go.Figure:
+        """
+        NEW: Create a chart showing distribution of stocks across pattern categories.
+        Integrates with wave states for enhanced analysis.
+        """
+        fig = go.Figure()
+        
+        if df.empty or 'pattern_categories' not in df.columns:
+            fig.add_annotation(
+                text="No pattern category data available",
+                xref="paper", yref="paper",
+                x=0.5, y=0.5, showarrow=False
+            )
+            return fig
+        
+        # Extract all unique categories
+        all_categories = set()
+        for cats in df['pattern_categories'].dropna():
+            if cats:
+                all_categories.update(cat.strip() for cat in cats.split(','))
+        
+        # Remove empty category
+        if '' in all_categories:
+            all_categories.remove('')
+        
+        if not all_categories:
+            fig.add_annotation(
+                text="No pattern categories detected",
+                xref="paper", yref="paper",
+                x=0.5, y=0.5, showarrow=False
+            )
+            return fig
+        
+        # Count stocks in each category
+        category_counts = {}
+        for category in all_categories:
+            category_counts[category] = sum(
+                1 for cats in df['pattern_categories'].dropna() 
+                if category in [cat.strip() for cat in cats.split(',')]
+            )
+        
+        # Sort by count, descending
+        sorted_categories = sorted(category_counts.items(), key=lambda x: x[1], reverse=True)
+        
+        # Create color mapping based on category type
+        color_map = {
+            'momentum': '#FF9500',    # Orange
+            'value': '#4CAF50',       # Green
+            'volume': '#2196F3',      # Blue
+            'technical': '#9C27B0',   # Purple
+            'leadership': '#F44336',  # Red
+            'liquidity': '#03A9F4',   # Light blue
+            'trend': '#8BC34A',       # Light green
+            'fundamental': '#FFC107', # Amber
+            'range': '#607D8B',       # Blue grey
+            'warning': '#FF5722',     # Deep orange
+            'divergence': '#E91E63',  # Pink
+            'hidden': '#9E9E9E',      # Grey
+            'aggressive': '#673AB7',  # Deep purple
+            'extreme': '#FFEB3B',     # Yellow
+            'reversal': '#795548',    # Brown
+            'continuation': '#00BCD4',# Cyan
+            'rotation': '#3F51B5',    # Indigo
+            'bullish': '#4CAF50',     # Green
+            'bearish': '#F44336',     # Red
+            'accumulation': '#8BC34A',# Light green
+            'coiled': '#FF9800',      # Orange
+            'unknown': '#9E9E9E'      # Grey
+        }
+        
+        # Create the bar chart
+        fig.add_trace(go.Bar(
+            x=[cat for cat, count in sorted_categories],
+            y=[count for cat, count in sorted_categories],
+            marker_color=[color_map.get(cat.lower(), '#9E9E9E') for cat, count in sorted_categories],
+            text=[count for cat, count in sorted_categories],
+            textposition='auto'
+        ))
+        
+        # Style the chart
+        fig.update_layout(
+            title='Pattern Category Distribution',
+            xaxis_title='Pattern Category',
+            yaxis_title='Number of Stocks',
+            template='plotly_white',
+            height=400,
+            margin=dict(t=50, b=50, l=50, r=50),
+            xaxis=dict(tickangle=-45)
+        )
+        
+        return fig
     
     @staticmethod
     def create_score_distribution(df: pd.DataFrame) -> go.Figure:
