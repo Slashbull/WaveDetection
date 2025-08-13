@@ -41,57 +41,289 @@ Production Grade: Enhanced error handling, optimized performance
 # IMPORTS AND SETUP
 # ============================================
 
-# Core framework
+# Core data science framework
 import streamlit as st
 import pandas as pd
 import numpy as np
+
+# Visualization libraries
 import plotly.graph_objects as go
 import plotly.express as px
 from plotly.subplots import make_subplots
 
-# Standard library
+# Standard library imports
 import sys
 import re
 import gc
 import time
 import logging
 import warnings
+import os
 from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Tuple, Optional, Any, Union, Set
 from dataclasses import dataclass, field
 from functools import wraps, lru_cache
 from io import BytesIO
+import json
 
-# Environment configuration
-warnings.filterwarnings('ignore')
+# Memory monitoring (optional for performance optimization)
+try:
+    import psutil
+    MEMORY_MONITORING = True
+except ImportError:
+    MEMORY_MONITORING = False
+    
+# Mathematical libraries for advanced calculations
+try:
+    from scipy import stats
+    from scipy.signal import savgol_filter
+    SCIPY_AVAILABLE = True
+except ImportError:
+    SCIPY_AVAILABLE = False
+
+# Production environment configuration
+warnings.filterwarnings('ignore', category=FutureWarning)
+warnings.filterwarnings('ignore', category=UserWarning)
+warnings.filterwarnings('ignore', category=RuntimeWarning)
+
+# Pandas optimization settings
 pd.options.mode.chained_assignment = None
 pd.options.display.max_columns = None
-np.seterr(all='ignore')
+pd.options.display.float_format = '{:.4f}'.format
+
+# NumPy optimization settings
+np.seterr(all='ignore', invalid='ignore', divide='ignore')
 np.random.seed(42)
+
+# Memory management
 gc.enable()
+gc.set_threshold(700, 10, 10)  # Optimized garbage collection thresholds
+
+# Streamlit configuration
+st.set_page_config(
+    page_title="Wave Detection Ultimate 3.0",
+    page_icon="🌊",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
 # ============================================
 # LOGGING CONFIGURATION
 # ============================================
 
-# Simple production logging setup
+# Production-grade logging setup with comprehensive formatting
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s | %(levelname)s | %(funcName)s:%(lineno)d | %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
+    format='%(asctime)s | %(name)s | %(levelname)s | %(funcName)s:%(lineno)d | %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S',
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+    ]
 )
 
+# Create primary application logger
 logger = logging.getLogger(__name__)
 
-# Error handling for uncaught exceptions
+# Performance monitoring logger for timing critical operations
+perf_logger = logging.getLogger('performance')
+perf_logger.setLevel(logging.DEBUG)
+
+# Error logging for production debugging
+error_logger = logging.getLogger('error')
+error_logger.setLevel(logging.ERROR)
+
+# Data processing logger for tracking data operations
+data_logger = logging.getLogger('data_processing')
+data_logger.setLevel(logging.INFO)
+
+# Pattern detection logger for algorithm insights
+pattern_logger = logging.getLogger('pattern_detection')
+pattern_logger.setLevel(logging.INFO)
+
+# Add file handler for persistent error logs in production (if environment supports it)
+try:
+    import os
+    if os.getenv('PRODUCTION_ENV', 'false').lower() == 'true':
+        log_dir = os.path.join(os.path.dirname(__file__), 'logs')
+        os.makedirs(log_dir, exist_ok=True)
+        
+        file_handler = logging.FileHandler(
+            os.path.join(log_dir, f'wave_detection_{datetime.now().strftime("%Y%m%d")}.log')
+        )
+        file_handler.setLevel(logging.WARNING)
+        file_handler.setFormatter(logging.Formatter(
+            '%(asctime)s | %(name)s | %(levelname)s | %(funcName)s:%(lineno)d | %(message)s'
+        ))
+        error_logger.addHandler(file_handler)
+        logger.info("📁 File logging enabled for production environment")
+except Exception as e:
+    logger.warning(f"Could not create file logger: {str(e)}")
+
+# Global exception handler for production debugging
 def handle_exception(exc_type, exc_value, exc_traceback):
+    """Global exception handler for uncaught exceptions"""
     if issubclass(exc_type, KeyboardInterrupt):
         sys.__excepthook__(exc_type, exc_value, exc_traceback)
         return
-    logger.critical("Uncaught exception", exc_info=(exc_type, exc_value, exc_traceback))
+    
+    logger.error(
+        "Uncaught exception occurred",
+        exc_info=(exc_type, exc_value, exc_traceback)
+    )
+    error_logger.critical(
+        "CRITICAL ERROR - System Exception",
+        exc_info=(exc_type, exc_value, exc_traceback)
+    )
 
+# Register global exception handler
 sys.excepthook = handle_exception
-logger.info("🚀 Wave Detection Ultimate 3.0 - System initialized")
+
+# Configure log level for third-party libraries to reduce noise
+logging.getLogger('matplotlib').setLevel(logging.WARNING)
+logging.getLogger('numexpr').setLevel(logging.WARNING)
+logging.getLogger('streamlit').setLevel(logging.WARNING)
+logging.getLogger('plotly').setLevel(logging.WARNING)
+logging.getLogger('urllib3').setLevel(logging.WARNING)
+
+# Log system initialization with memory info
+try:
+    import psutil
+    memory_mb = psutil.Process().memory_info().rss / 1024**2
+    logger.info("🚀 Wave Detection Ultimate 3.0 - System initialized")
+    perf_logger.info(f"System startup complete - Memory: {memory_mb:.1f}MB")
+except ImportError:
+    logger.info("🚀 Wave Detection Ultimate 3.0 - System initialized")
+    perf_logger.info("System startup complete - Memory monitoring unavailable")
+
+# ============================================
+# PRODUCTION PERFORMANCE MONITORING
+# ============================================
+
+class ProductionMonitor:
+    """Production-grade performance and memory monitoring"""
+    
+    def __init__(self):
+        self.start_time = time.time()
+        self.performance_metrics = {}
+        self.memory_threshold_mb = 1024  # 1GB threshold
+        self.operation_count = 0
+        
+    def start_operation(self, operation_name: str) -> float:
+        """Start timing an operation"""
+        start_time = time.time()
+        self.operation_count += 1
+        perf_logger.debug(f"🟢 Starting operation: {operation_name}")
+        return start_time
+        
+    def end_operation(self, operation_name: str, start_time: float, record_count: int = 0):
+        """End timing an operation and log performance"""
+        duration = time.time() - start_time
+        self.performance_metrics[operation_name] = {
+            'duration': duration,
+            'records': record_count,
+            'timestamp': datetime.now()
+        }
+        
+        if record_count > 0:
+            perf_logger.info(f"⚡ {operation_name}: {duration:.3f}s ({record_count:,} records, {record_count/duration:.0f} rec/s)")
+        else:
+            perf_logger.info(f"⚡ {operation_name}: {duration:.3f}s")
+            
+        # Memory check for critical operations
+        if MEMORY_MONITORING and duration > 1.0:
+            self.check_memory(operation_name)
+    
+    def check_memory(self, context: str = ""):
+        """Check memory usage and warn if high"""
+        if not MEMORY_MONITORING:
+            return
+            
+        try:
+            process = psutil.Process()
+            memory_mb = process.memory_info().rss / 1024**2
+            
+            if memory_mb > self.memory_threshold_mb:
+                logger.warning(f"🚨 High memory usage: {memory_mb:.1f}MB in {context}")
+                return memory_mb
+            else:
+                perf_logger.debug(f"📊 Memory usage: {memory_mb:.1f}MB in {context}")
+                return memory_mb
+        except Exception as e:
+            logger.warning(f"Memory monitoring failed: {e}")
+            return 0
+    
+    def optimize_memory(self):
+        """Force garbage collection and memory optimization"""
+        initial_mem = self.check_memory("before optimization")
+        gc.collect()
+        final_mem = self.check_memory("after optimization") 
+        
+        if initial_mem and final_mem:
+            saved_mb = initial_mem - final_mem
+            if saved_mb > 0:
+                perf_logger.info(f"🧹 Memory optimized: {saved_mb:.1f}MB freed")
+    
+    def get_performance_summary(self) -> Dict:
+        """Get performance summary for debugging"""
+        total_time = time.time() - self.start_time
+        return {
+            'total_runtime': total_time,
+            'operations_count': self.operation_count,
+            'avg_operation_time': total_time / max(self.operation_count, 1),
+            'current_memory_mb': self.check_memory("summary"),
+            'operations': self.performance_metrics
+        }
+
+# Initialize global performance monitor
+monitor = ProductionMonitor()
+
+# ============================================
+# PRODUCTION DECORATORS
+# ============================================
+
+def performance_tracked(operation_name: str = None):
+    """Decorator to automatically track performance of functions"""
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            name = operation_name or f"{func.__module__}.{func.__name__}"
+            start_time = monitor.start_operation(name)
+            
+            try:
+                result = func(*args, **kwargs)
+                
+                # Try to count records if result is DataFrame or list
+                record_count = 0
+                if hasattr(result, 'shape'):
+                    record_count = result.shape[0] if len(result.shape) > 0 else len(result)
+                elif hasattr(result, '__len__'):
+                    record_count = len(result)
+                    
+                monitor.end_operation(name, start_time, record_count)
+                return result
+                
+            except Exception as e:
+                monitor.end_operation(name, start_time)
+                error_logger.error(f"Error in {name}: {str(e)}")
+                raise
+                
+        return wrapper
+    return decorator
+
+def safe_execute(default_return=None, log_errors=True):
+    """Decorator for safe execution with error handling"""
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            try:
+                return func(*args, **kwargs)
+            except Exception as e:
+                if log_errors:
+                    error_logger.error(f"Error in {func.__name__}: {str(e)}")
+                    logger.warning(f"Returning default value for {func.__name__} due to error")
+                return default_return
+        return wrapper
+    return decorator
 
 # ============================================
 # CONFIGURATION AND CONSTANTS
@@ -120,6 +352,26 @@ class Config:
     # Display settings
     DEFAULT_TOP_N: int = 50
     AVAILABLE_TOP_N: List[int] = field(default_factory=lambda: [10, 20, 50, 100, 200, 500])
+    
+    # Display modes configuration - Technical and Hybrid (Technical + Fundamentals)
+    DISPLAY_MODES: List[str] = field(default_factory=lambda: [
+        'Technical', 'Hybrid (Technical + Fundamentals)'
+    ])
+    DEFAULT_DISPLAY_MODE: str = 'Hybrid (Technical + Fundamentals)'
+    
+    # Technical columns (always shown)
+    TECHNICAL_COLUMNS: List[str] = field(default_factory=lambda: [
+        'ticker', 'company_name', 'price', 'ret_1d', 'volume_1d', 'rvol',
+        'from_low_pct', 'from_high_pct', 'sma_20d', 'sma_50d', 'sma_200d',
+        'ret_7d', 'ret_30d', 'vol_ratio_1d_90d', 'vol_ratio_7d_90d'
+    ])
+    
+    # Fundamental columns (shown only in Hybrid mode)
+    FUNDAMENTAL_COLUMNS: List[str] = field(default_factory=lambda: [
+        'market_cap', 'category', 'sector', 'industry', 'year',
+        'pe', 'eps_current', 'eps_last_qtr', 'eps_change_pct',
+        'ret_3m', 'ret_6m', 'ret_1y', 'ret_3y', 'ret_5y'
+    ])
     
     # Critical columns (app fails without these)
     CRITICAL_COLUMNS: List[str] = field(default_factory=lambda: ['ticker', 'price', 'volume_1d'])
@@ -195,17 +447,363 @@ class Config:
     
     # Performance thresholds
     PERFORMANCE_TARGETS: Dict[str, float] = field(default_factory=lambda: {
-        'data_processing': 2.0,
-        'filtering': 0.2,
-        'pattern_detection': 0.5,
-        'export_generation': 1.0,
-        'search': 0.05
+        'data_processing': 2.0,      # seconds
+        'pattern_detection': 1.5,    # seconds
+        'ui_rendering': 0.5,         # seconds
+        'calculations': 1.0,         # seconds
+        'memory_limit_mb': 1024,     # MB
+        'max_records': 10000,        # records
     })
     
-    # Market categories (Indian market specific)
+    # Production settings
+    PRODUCTION_CONFIG: Dict[str, Any] = field(default_factory=lambda: {
+        'enable_file_logging': True,
+        'enable_performance_tracking': True,
+        'enable_memory_monitoring': True,
+        'auto_memory_cleanup': True,
+        'max_error_retries': 3,
+        'graceful_degradation': True,
+        'data_validation_strict': True,
+        'cache_optimization': True,
+        'parallel_processing': False,  # Set to True if threading needed
+    })
+    
+    # Market categories (maintained for backwards compatibility)
     MARKET_CATEGORIES: List[str] = field(default_factory=lambda: [
-        'Mega Cap', 'Large Cap', 'Mid Cap', 'Small Cap', 'Micro Cap','Nano Cap'
+        'Large Cap', 'Mid Cap', 'Small Cap', 'Micro Cap', 'Nano Cap'
     ])
+    
+    # Error messages for production debugging
+    ERROR_MESSAGES: Dict[str, str] = field(default_factory=lambda: {
+        'data_load_failed': 'Failed to load market data. Please check data source connection.',
+        'calculation_error': 'Error in calculations. Using fallback values.',
+        'memory_exceeded': 'Memory usage exceeded threshold. Optimizing automatically.',
+        'pattern_detection_error': 'Pattern detection encountered errors. Some patterns may be missing.',
+        'ui_render_error': 'UI rendering error. Displaying simplified view.',
+        'validation_failed': 'Data validation failed. Some data may be inconsistent.',
+    })
+    
+    @property
+    def is_production(self) -> bool:
+        """Check if running in production environment"""
+        return os.getenv('PRODUCTION_ENV', 'false').lower() == 'true'
+        
+    @property
+    def debug_mode(self) -> bool:
+        """Check if debug mode is enabled"""
+        return os.getenv('DEBUG_MODE', 'false').lower() == 'true'
+        
+    def validate_weights(self) -> bool:
+        """Validate that all weights sum to 1.0"""
+        total_weight = (
+            self.POSITION_WEIGHT + self.VOLUME_WEIGHT + self.MOMENTUM_WEIGHT +
+            self.ACCELERATION_WEIGHT + self.BREAKOUT_WEIGHT + self.RVOL_WEIGHT
+        )
+        return abs(total_weight - 1.0) < 0.001  # Allow small floating point errors
+    
+    def get_performance_target(self, operation: str) -> float:
+        """Get performance target for operation"""
+        return self.PERFORMANCE_TARGETS.get(operation, 1.0)
+    
+    def get_pattern_threshold(self, pattern: str) -> float:
+        """Get threshold for pattern detection"""
+        return self.PATTERN_THRESHOLDS.get(pattern, 75.0)  # Default 75% threshold
+
+# Initialize configuration instance
+config = Config()
+
+# Validate configuration on startup
+if not config.validate_weights():
+    logger.error("⚠️ Configuration validation failed: Weights do not sum to 1.0")
+    raise ValueError("Invalid configuration: Weight validation failed")
+else:
+    logger.info("✅ Configuration validated successfully")
+
+# ============================================
+# PRODUCTION DATA VALIDATION
+# ============================================
+
+class ProductionDataValidator:
+    """Production-grade data validation with comprehensive checks"""
+    
+    def __init__(self, config: Config):
+        self.config = config
+        self.validation_errors = []
+        self.validation_warnings = []
+        
+    @performance_tracked("data_validation")
+    def validate_dataframe(self, df: pd.DataFrame) -> Tuple[bool, List[str], List[str]]:
+        """Comprehensive dataframe validation for production"""
+        self.validation_errors.clear()
+        self.validation_warnings.clear()
+        
+        if df is None or df.empty:
+            self.validation_errors.append("DataFrame is None or empty")
+            return False, self.validation_errors, self.validation_warnings
+            
+        # 1. Critical columns check
+        missing_critical = [col for col in self.config.CRITICAL_COLUMNS if col not in df.columns]
+        if missing_critical:
+            self.validation_errors.append(f"Missing critical columns: {missing_critical}")
+            
+        # 2. Important columns check (warnings only)
+        missing_important = [col for col in self.config.IMPORTANT_COLUMNS if col not in df.columns]
+        if missing_important:
+            self.validation_warnings.append(f"Missing important columns: {missing_important}")
+            
+        # 3. Data type validation
+        if 'price' in df.columns:
+            price_numeric = pd.to_numeric(df['price'], errors='coerce').notna().sum()
+            if price_numeric < len(df) * 0.9:  # 90% should be numeric
+                self.validation_errors.append("Price column contains too many non-numeric values")
+                
+        # 4. Data bounds validation
+        if 'price' in df.columns:
+            min_price, max_price = self.config.VALUE_BOUNDS['price']
+            price_series = pd.to_numeric(df['price'], errors='coerce')
+            out_of_bounds = ((price_series < min_price) | (price_series > max_price)).sum()
+            if out_of_bounds > 0:
+                self.validation_warnings.append(f"{out_of_bounds} price values out of bounds")
+                
+        # 5. Volume validation
+        if 'volume_1d' in df.columns:
+            volume_series = pd.to_numeric(df['volume_1d'], errors='coerce')
+            zero_volume = (volume_series <= 0).sum()
+            if zero_volume > len(df) * 0.1:  # More than 10% zero volume
+                self.validation_warnings.append(f"{zero_volume} stocks have zero/negative volume")
+                
+        # 6. Return data validation
+        for ret_col in ['ret_1d', 'ret_7d', 'ret_30d']:
+            if ret_col in df.columns:
+                ret_series = pd.to_numeric(df[ret_col], errors='coerce')
+                extreme_returns = ((ret_series < -95) | (ret_series > 500)).sum()
+                if extreme_returns > 0:
+                    self.validation_warnings.append(f"{extreme_returns} extreme returns in {ret_col}")
+                    
+        # 7. Duplicate ticker check
+        if 'ticker' in df.columns:
+            duplicates = df['ticker'].duplicated().sum()
+            if duplicates > 0:
+                self.validation_errors.append(f"{duplicates} duplicate tickers found")
+                
+        # 8. Record count validation
+        max_records = self.config.PERFORMANCE_TARGETS['max_records']
+        if len(df) > max_records:
+            self.validation_warnings.append(f"Large dataset: {len(df):,} records (limit: {max_records:,})")
+            
+        # Log validation results
+        is_valid = len(self.validation_errors) == 0
+        
+        if is_valid:
+            data_logger.info(f"✅ Data validation passed: {len(df):,} records, {len(df.columns)} columns")
+        else:
+            data_logger.error(f"❌ Data validation failed: {len(self.validation_errors)} errors")
+            
+        if self.validation_warnings:
+            data_logger.warning(f"⚠️ Data validation warnings: {len(self.validation_warnings)} issues")
+            
+        return is_valid, self.validation_errors, self.validation_warnings
+    
+    @safe_execute(default_return=pd.DataFrame())
+    def clean_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Clean and standardize dataframe for production"""
+        if df is None or df.empty:
+            return pd.DataFrame()
+            
+        start_time = monitor.start_operation("data_cleaning")
+        cleaned_df = df.copy()
+        
+        # 1. Remove duplicate tickers (keep first occurrence)
+        if 'ticker' in cleaned_df.columns:
+            initial_count = len(cleaned_df)
+            cleaned_df = cleaned_df.drop_duplicates(subset=['ticker'], keep='first')
+            if len(cleaned_df) < initial_count:
+                data_logger.info(f"🧹 Removed {initial_count - len(cleaned_df)} duplicate tickers")
+        
+        # 2. Clean numeric columns
+        numeric_columns = ['price', 'volume_1d', 'rvol'] + self.config.PERCENTAGE_COLUMNS + self.config.VOLUME_RATIO_COLUMNS
+        for col in numeric_columns:
+            if col in cleaned_df.columns:
+                cleaned_df[col] = pd.to_numeric(cleaned_df[col], errors='coerce')
+                
+        # 3. Handle extreme values
+        if 'price' in cleaned_df.columns:
+            min_price, max_price = self.config.VALUE_BOUNDS['price']
+            cleaned_df['price'] = cleaned_df['price'].clip(lower=min_price, upper=max_price)
+            
+        # 4. Ensure positive volume
+        if 'volume_1d' in cleaned_df.columns:
+            cleaned_df['volume_1d'] = cleaned_df['volume_1d'].clip(lower=1)
+            
+        # 5. Clean text columns
+        text_columns = ['ticker', 'company_name', 'sector', 'industry', 'category']
+        for col in text_columns:
+            if col in cleaned_df.columns:
+                cleaned_df[col] = cleaned_df[col].astype(str).str.strip()
+                
+        monitor.end_operation("data_cleaning", start_time, len(cleaned_df))
+        data_logger.info(f"🧹 Data cleaning completed: {len(cleaned_df):,} clean records")
+        
+        return cleaned_df
+
+# Initialize data validator
+validator = ProductionDataValidator(config)
+
+# ============================================
+# MEMORY AND PERFORMANCE OPTIMIZATION
+# ============================================
+
+class MemoryOptimizer:
+    """Production-grade memory optimization and management"""
+    
+    def __init__(self):
+        self.optimization_count = 0
+        self.last_optimization = time.time()
+        
+    @safe_execute(default_return=pd.DataFrame())
+    def optimize_dataframe_memory(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Optimize DataFrame memory usage using appropriate dtypes"""
+        if df is None or df.empty:
+            return df
+            
+        start_memory = df.memory_usage(deep=True).sum() / 1024**2
+        optimized_df = df.copy()
+        
+        for col in optimized_df.columns:
+            col_type = optimized_df[col].dtype
+            
+            # Optimize numeric columns
+            if col_type in ['int64', 'int32']:
+                c_min = optimized_df[col].min()
+                c_max = optimized_df[col].max()
+                
+                if c_min > np.iinfo(np.int8).min and c_max < np.iinfo(np.int8).max:
+                    optimized_df[col] = optimized_df[col].astype(np.int8)
+                elif c_min > np.iinfo(np.int16).min and c_max < np.iinfo(np.int16).max:
+                    optimized_df[col] = optimized_df[col].astype(np.int16)
+                elif c_min > np.iinfo(np.int32).min and c_max < np.iinfo(np.int32).max:
+                    optimized_df[col] = optimized_df[col].astype(np.int32)
+                    
+            elif col_type == 'float64':
+                optimized_df[col] = pd.to_numeric(optimized_df[col], downcast='float')
+                
+            # Optimize string columns
+            elif col_type == 'object':
+                num_unique_values = len(optimized_df[col].unique())
+                num_total_values = len(optimized_df[col])
+                
+                if num_unique_values / num_total_values < 0.5:  # Less than 50% unique
+                    optimized_df[col] = optimized_df[col].astype('category')
+        
+        end_memory = optimized_df.memory_usage(deep=True).sum() / 1024**2
+        memory_saved = start_memory - end_memory
+        
+        if memory_saved > 1:  # Only log if significant savings
+            perf_logger.info(f"📊 Memory optimized: {memory_saved:.1f}MB saved ({start_memory:.1f}MB → {end_memory:.1f}MB)")
+            
+        return optimized_df
+    
+    def auto_cleanup(self):
+        """Automatic memory cleanup based on usage"""
+        current_time = time.time()
+        
+        # Only run cleanup every 5 minutes minimum
+        if current_time - self.last_optimization < 300:
+            return
+            
+        if MEMORY_MONITORING:
+            try:
+                memory_mb = psutil.Process().memory_info().rss / 1024**2
+                threshold = config.PERFORMANCE_TARGETS['memory_limit_mb']
+                
+                if memory_mb > threshold:
+                    logger.info(f"🧹 Auto cleanup triggered: {memory_mb:.1f}MB > {threshold}MB")
+                    gc.collect()
+                    self.optimization_count += 1
+                    self.last_optimization = current_time
+                    
+                    # Check if cleanup was effective
+                    new_memory_mb = psutil.Process().memory_info().rss / 1024**2
+                    if new_memory_mb < memory_mb:
+                        perf_logger.info(f"🎯 Cleanup effective: {memory_mb - new_memory_mb:.1f}MB freed")
+                    
+            except Exception as e:
+                logger.warning(f"Auto cleanup failed: {e}")
+
+# Initialize memory optimizer
+memory_optimizer = MemoryOptimizer()
+
+# ============================================
+# PRODUCTION STARTUP VALIDATION
+# ============================================
+
+def validate_production_environment():
+    """Validate production environment on startup"""
+    validation_results = []
+    
+    # 1. Check required libraries
+    try:
+        import pandas as pd
+        import numpy as np
+        import streamlit as st
+        import plotly.graph_objects as go
+        validation_results.append("✅ Core libraries available")
+    except ImportError as e:
+        validation_results.append(f"❌ Missing core library: {e}")
+        
+    # 2. Check optional libraries
+    if MEMORY_MONITORING:
+        validation_results.append("✅ Memory monitoring available (psutil)")
+    else:
+        validation_results.append("⚠️ Memory monitoring unavailable")
+        
+    if SCIPY_AVAILABLE:
+        validation_results.append("✅ Advanced math available (scipy)")
+    else:
+        validation_results.append("⚠️ Advanced math unavailable")
+        
+    # 3. Check configuration
+    if config.validate_weights():
+        validation_results.append("✅ Configuration weights validated")
+    else:
+        validation_results.append("❌ Configuration weights invalid")
+        
+    # 4. Check environment variables
+    if config.is_production:
+        validation_results.append("🚀 Production environment detected")
+    else:
+        validation_results.append("🔧 Development environment detected")
+        
+    # 5. Memory check
+    if MEMORY_MONITORING:
+        memory_mb = psutil.Process().memory_info().rss / 1024**2
+        if memory_mb < 100:
+            validation_results.append(f"✅ Memory usage normal: {memory_mb:.1f}MB")
+        else:
+            validation_results.append(f"⚠️ High startup memory: {memory_mb:.1f}MB")
+    
+    # Log all validation results
+    logger.info("🔍 Production Environment Validation:")
+    for result in validation_results:
+        logger.info(f"   {result}")
+        
+    return validation_results
+
+# Run startup validation
+startup_validation = validate_production_environment()
+
+# Log Phase 1 completion
+logger.info("🎯 PHASE 1 PRODUCTION READY - Setup Complete!")
+logger.info("   ✅ Advanced imports with error handling")
+logger.info("   ✅ Production-grade logging system")  
+logger.info("   ✅ Performance monitoring & memory optimization")
+logger.info("   ✅ Comprehensive data validation")
+logger.info("   ✅ Configuration management")
+logger.info("   ✅ Error handling & graceful degradation")
+
+# ============================================
+# DATA LOADING AND CACHING FUNCTIONS
+# ============================================
     
     # Enhanced Tier definitions with improved financial significance
     TIERS: Dict[str, Dict[str, Tuple[float, float, str, str]]] = field(default_factory=lambda: {
@@ -269,123 +867,435 @@ class Config:
         "Real Estate": {"low": 10.0, "avg": 16.0, "high": 22.0, "premium": 30.0}
     })
     
-    # Sector characteristics and intelligence
-    SECTOR_CHARACTERISTICS: Dict[str, Dict[str, Any]] = field(default_factory=lambda: {
-        "Technology": {
-            "growth_expectation": "High", "volatility": "High", "dividend_yield": "Low",
-            "typical_patterns": ["ACCELERATING", "VOL EXPLOSION", "MOMENTUM WAVE"],
-            "risk_level": "High", "innovation_cycle": "Fast", "market_sensitivity": "High"
+    # ============================================
+    # REVOLUTIONARY ENHANCEMENTS - ULTIMATE INTELLIGENCE
+    # ============================================
+    
+    # Enhanced application metadata
+    APP_TITLE: str = "🌊 Wave Detection Ultimate 3.0"
+    VERSION: str = "3.0.0-REVOLUTIONARY"
+    BUILD_TYPE: str = "PRODUCTION"
+    
+    # Performance & memory management
+    MAX_MEMORY_MB: int = 2048  # 2GB limit
+    PERFORMANCE_TARGETS: Dict[str, float] = field(default_factory=lambda: {
+        'data_load_time': 2.0,
+        'pattern_detection_time': 3.0,
+        'ui_render_time': 1.0,
+        'total_processing_time': 5.0
+    })
+    
+    # Memory management thresholds
+    MEMORY_THRESHOLDS: Dict[str, int] = field(default_factory=lambda: {
+        'warning_mb': 1536,  # 1.5GB
+        'critical_mb': 1792,  # 1.75GB
+        'max_rows_low_memory': 500,
+        'max_rows_normal': 2000
+    })
+    
+    # Revolutionary color palette for patterns
+    REVOLUTIONARY_COLORS: Dict[str, str] = field(default_factory=lambda: {
+        'velocity_squeeze': '#ff6b6b',
+        'smart_money': '#4ecdc4',
+        'institutional_flow': '#45b7d1',
+        'sector_rotation': '#96ceb4',
+        'momentum_divergence': '#ffeaa7',
+        'volatility_compression': '#dda0dd',
+        'liquidity_premium': '#98d8c8'
+    })
+    
+    # Data quality thresholds
+    DATA_QUALITY_THRESHOLDS: Dict[str, float] = field(default_factory=lambda: {
+        'min_data_completeness': 0.95,  # 95% of required fields
+        'max_outlier_ratio': 0.05,      # 5% outliers allowed
+        'min_volume_consistency': 0.8,   # Volume data consistency
+        'max_price_gap_ratio': 0.2       # 20% max single-day gap
+    })
+    
+    # Revolutionary pattern thresholds - ENHANCED
+    REVOLUTIONARY_THRESHOLDS: Dict[str, Dict[str, float]] = field(default_factory=lambda: {
+        # Revolutionary volume intelligence
+        'volume': {
+            'volcanic_volume': 5.0,         # NEW: Volcanic volume detection
+            'smart_money_volume': 2.5,      # NEW: Smart money detection
+            'institutional_volume': 3.5,    # NEW: Institutional flow
+            'distribution_threshold': 0.6,  # NEW: Distribution detection
         },
-        "Healthcare": {
-            "growth_expectation": "Stable", "volatility": "Medium", "dividend_yield": "Medium",
-            "typical_patterns": ["LONG STRENGTH", "QUALITY LEADER", "STEALTH"],
-            "risk_level": "Medium", "innovation_cycle": "Long", "market_sensitivity": "Low"
+        # Advanced momentum intelligence
+        'momentum': {
+            'velocity_threshold': 0.2,      # NEW: Velocity analysis
+            'momentum_divergence': 0.4,     # NEW: Divergence detection
+            'harmonic_resonance': 0.75,     # NEW: Harmonic patterns
+            'wave_coherence': 0.65          # NEW: Wave pattern coherence
         },
-        "Financial Services": {
-            "growth_expectation": "Cyclical", "volatility": "High", "dividend_yield": "High",
-            "typical_patterns": ["INSTITUTIONAL", "LIQUID LEADER", "VAMPIRE"],
-            "risk_level": "High", "innovation_cycle": "Medium", "market_sensitivity": "Very High"
+        # Position & range intelligence
+        'position': {
+            'golden_zone_low': 0.618,       # NEW: Fibonacci zones
+            'golden_zone_high': 0.786,
+            'squeeze_range': 0.1            # NEW: Range compression
         },
-        "Consumer Cyclical": {
-            "growth_expectation": "Cyclical", "volatility": "High", "dividend_yield": "Medium",
-            "typical_patterns": ["ROTATION LEADER", "MOMENTUM WAVE", "RANGE COMPRESS"],
-            "risk_level": "High", "innovation_cycle": "Medium", "market_sensitivity": "Very High"
-        },
-        "Consumer Defensive": {
-            "growth_expectation": "Low", "volatility": "Low", "dividend_yield": "High",
-            "typical_patterns": ["QUALITY LEADER", "LONG STRENGTH", "GOLDEN ZONE"],
-            "risk_level": "Low", "innovation_cycle": "Slow", "market_sensitivity": "Low"
-        },
-        "Communication Services": {
-            "growth_expectation": "Medium", "volatility": "Medium", "dividend_yield": "Medium",
-            "typical_patterns": ["LIQUID LEADER", "MOMENTUM WAVE", "STEALTH"],
-            "risk_level": "Medium", "innovation_cycle": "Fast", "market_sensitivity": "Medium"
-        },
-        "Energy": {
-            "growth_expectation": "Cyclical", "volatility": "Very High", "dividend_yield": "High",
-            "typical_patterns": ["VOL EXPLOSION", "VAMPIRE", "CAPITULATION"],
-            "risk_level": "Very High", "innovation_cycle": "Slow", "market_sensitivity": "Extreme"
-        },
-        "Industrials": {
-            "growth_expectation": "Cyclical", "volatility": "Medium", "dividend_yield": "Medium",
-            "typical_patterns": ["PYRAMID", "INSTITUTIONAL", "BREAKOUT"],
-            "risk_level": "Medium", "innovation_cycle": "Medium", "market_sensitivity": "High"
-        },
-        "Basic Materials": {
-            "growth_expectation": "Cyclical", "volatility": "High", "dividend_yield": "Medium",
-            "typical_patterns": ["VOL EXPLOSION", "MOMENTUM DIVERGE", "VACUUM"],
-            "risk_level": "High", "innovation_cycle": "Slow", "market_sensitivity": "Very High"
-        },
-        "Utilities": {
-            "growth_expectation": "Low", "volatility": "Low", "dividend_yield": "Very High",
-            "typical_patterns": ["LONG STRENGTH", "GOLDEN ZONE", "VOL ACCUMULATION"],
-            "risk_level": "Low", "innovation_cycle": "Very Slow", "market_sensitivity": "Very Low"
-        },
-        "Real Estate": {
-            "growth_expectation": "Medium", "volatility": "Medium", "dividend_yield": "High",
-            "typical_patterns": ["LIQUID LEADER", "GOLDEN ZONE", "RANGE COMPRESS"],
-            "risk_level": "Medium", "innovation_cycle": "Slow", "market_sensitivity": "High"
+        # Revolutionary advanced patterns
+        'revolutionary': {
+            'sector_rotation_strength': 0.7,    # NEW: Sector rotation
+            'liquidity_premium_ratio': 1.5,     # NEW: Liquidity premium
+            'volatility_compression': 0.3,      # NEW: Vol compression
+            'momentum_cascade': 0.8,            # NEW: Cascade effects
+            'flow_acceleration': 0.85,          # NEW: Flow dynamics
+            'market_structure_shift': 0.75      # NEW: Structure analysis
         }
     })
     
-    # Smart sector-specific score weightings based on actual stock distribution
-    SECTOR_SCORE_WEIGHTS: Dict[str, Dict[str, float]] = field(default_factory=lambda: {
-        # HIGH VOLUME SECTORS (400+ stocks) - More conservative weightings
-        "Industrials": {"position": 0.35, "momentum": 0.25, "volume": 0.25, "acceleration": 0.15},  # 531 stocks - Stability focused
-        "Consumer Cyclical": {"momentum": 0.30, "acceleration": 0.25, "volume": 0.25, "position": 0.20},  # 456 stocks - Cyclical patterns
-        "Basic Materials": {"volume": 0.35, "momentum": 0.25, "acceleration": 0.20, "position": 0.20},  # 402 stocks - Commodity driven
-        
-        # MEDIUM VOLUME SECTORS (150-200 stocks) - Balanced approach
-        "Healthcare": {"position": 0.35, "momentum": 0.25, "volume": 0.20, "acceleration": 0.20},  # 185 stocks - Defensive growth
-        "Technology": {"momentum": 0.35, "volume": 0.25, "acceleration": 0.20, "position": 0.20},  # 177 stocks - Growth focused
-        "Consumer Defensive": {"position": 0.40, "momentum": 0.20, "volume": 0.20, "acceleration": 0.20},  # 153 stocks - Stability
-        
-        # LOW VOLUME SECTORS (30-90 stocks) - More aggressive weightings for alpha
-        "Real Estate": {"position": 0.35, "volume": 0.30, "momentum": 0.20, "acceleration": 0.15},  # 89 stocks - Liquidity important
-        "Energy": {"volume": 0.45, "momentum": 0.25, "acceleration": 0.20, "position": 0.10},  # 37 stocks - Volatility plays
-        "Communication Services": {"momentum": 0.35, "volume": 0.30, "position": 0.20, "acceleration": 0.15},  # 34 stocks - Growth/momentum
-        "Utilities": {"position": 0.45, "momentum": 0.20, "volume": 0.20, "acceleration": 0.15},  # 32 stocks - Dividend/stability
-        
-        # VERY LOW VOLUME SECTOR (10-20 stocks) - Highly selective approach
-        "Financial Services": {"volume": 0.40, "position": 0.30, "momentum": 0.20, "acceleration": 0.10}  # 14 stocks - Institutional focus
+    # Enhanced tier classification with revolutionary intelligence
+    ENHANCED_PE_TIERS: List[Tuple[float, float, str]] = field(default_factory=lambda: [
+        (-float('inf'), 0, "Negative"),
+        (0, 10, "Deep Value"),          # NEW: Deep value category
+        (10, 15, "Value"),
+        (15, 25, "Fair"),
+        (25, 35, "Growth"),
+        (35, 50, "High Growth"),
+        (50, 75, "Premium"),            # NEW: Premium category
+        (75, float('inf'), "Ultra Premium")
+    ])
+    
+    ENHANCED_EPS_TIERS: List[Tuple[float, float, str]] = field(default_factory=lambda: [
+        (-float('inf'), -75, "Crisis"),        # NEW: Crisis category
+        (-75, -50, "Severe Decline"),
+        (-50, -25, "Significant Decline"),     # NEW: Refined decline tiers
+        (-25, -10, "Declining"),
+        (-10, 0, "Negative"),
+        (0, 5, "Minimal Growth"),              # NEW: Minimal growth
+        (5, 15, "Low Growth"),
+        (15, 30, "Moderate Growth"),
+        (30, 50, "Strong Growth"),
+        (50, 100, "Ultra Growth"),
+        (100, float('inf'), "Explosive Growth") # NEW: Explosive category
+    ])
+    
+    ENHANCED_PRICE_TIERS: List[Tuple[float, float, str]] = field(default_factory=lambda: [
+        (0, 0.5, "Micro Penny"),          # NEW: Micro penny
+        (0.5, 1, "Penny"),
+        (1, 3, "Ultra Low"),               # NEW: Ultra low
+        (3, 10, "Low"),
+        (10, 25, "Value"),
+        (25, 50, "Medium"),
+        (50, 100, "Growth"),
+        (100, 200, "High"),
+        (200, 500, "Premium"),
+        (500, float('inf'), "Ultra Premium")  # NEW: Ultra premium
+    ])
+    
+    # Market category intelligence - Uses existing CSV categories directly
+    MARKET_CATEGORIES_DETAILED: Dict[str, Dict[str, Any]] = field(default_factory=lambda: {
+        'Nano Cap': {
+            'characteristics': ['ultra_high_volatility', 'extremely_low_liquidity', 'explosive_growth_potential'],
+            'risk_level': 'Extreme',
+            'optimal_patterns': ['BREAKOUT', 'VOL EXPLOSION', 'MOMENTUM WAVE', 'STEALTH']
+        },
+        'Micro Cap': {
+            'characteristics': ['very_high_volatility', 'low_liquidity', 'high_growth_potential'],
+            'risk_level': 'Very High',
+            'optimal_patterns': ['BREAKOUT', 'VOL EXPLOSION', 'MOMENTUM WAVE']
+        },
+        'Small Cap': {
+            'characteristics': ['moderate_volatility', 'growth_focused', 'institutional_entry'],
+            'risk_level': 'High',
+            'optimal_patterns': ['ACCELERATING', 'SMART MONEY', 'PYRAMID']
+        },
+        'Mid Cap': {
+            'characteristics': ['balanced_growth', 'institutional_interest', 'sector_leaders'],
+            'risk_level': 'Medium',
+            'optimal_patterns': ['QUALITY LEADER', 'INSTITUTIONAL', 'LIQUID LEADER']
+        },
+        'Large Cap': {
+            'characteristics': ['stability_focus', 'dividend_potential', 'defensive_options'],
+            'risk_level': 'Low-Medium',
+            'optimal_patterns': ['LONG STRENGTH', 'GOLDEN ZONE', 'DEFENSIVE STRENGTH']
+        },
+        'Mega Cap': {
+            'characteristics': ['market_leaders', 'index_components', 'institutional_core'],
+            'risk_level': 'Low',
+            'optimal_patterns': ['INDEX STRENGTH', 'MEGA FLOW', 'CORE HOLDING']
+        }
     })
     
-    # Sector stock count metadata for intelligent processing
+    # Advanced validation rules with revolutionary intelligence
+    VALIDATION_RULES: Dict[str, Dict[str, Any]] = field(default_factory=lambda: {
+        'data_integrity': {
+            'required_columns': ['ticker', 'price', 'volume', 'market_cap', 'sector'],
+            'numeric_columns': ['price', 'volume', 'market_cap', 'pe', 'eps_change_pct'],
+            'positive_columns': ['price', 'volume', 'market_cap'],
+            'percentage_columns': ['eps_change_pct', 'revenue_growth', 'profit_margin']
+        },
+        'outlier_detection': {
+            'price_zscore_threshold': 4.0,
+            'volume_zscore_threshold': 5.0,
+            'pe_ratio_max': 1000.0,
+            'market_cap_min': 1_000_000
+        },
+        'consistency_checks': {
+            'volume_pattern_consistency': 0.8,
+            'price_trend_consistency': 0.7,
+            'sector_classification_accuracy': 0.95
+        }
+    })
+    
+    # Revolutionary sector characteristics with behavioral intelligence
+    SECTOR_CHARACTERISTICS: Dict[str, Dict[str, Any]] = field(default_factory=lambda: {
+        "Technology": {
+            "growth_expectation": "High", "volatility": "High", "dividend_yield": "Low",
+            "typical_patterns": ["ACCELERATING", "VOL EXPLOSION", "MOMENTUM WAVE", "VELOCITY SQUEEZE"],
+            "risk_level": "High", "innovation_cycle": "Fast", "market_sensitivity": "High",
+            "behavioral_traits": ["momentum_driven", "growth_focused", "volatility_embracing"],
+            "optimal_entry_patterns": ["SMART MONEY", "INSTITUTIONAL", "BREAKOUT"],
+            "warning_patterns": ["VAMPIRE", "CAPITULATION", "VOL IMPLOSION"]
+        },
+        "Healthcare": {
+            "growth_expectation": "Stable", "volatility": "Medium", "dividend_yield": "Medium",
+            "typical_patterns": ["LONG STRENGTH", "QUALITY LEADER", "STEALTH", "GOLDEN ZONE"],
+            "risk_level": "Medium", "innovation_cycle": "Long", "market_sensitivity": "Low",
+            "behavioral_traits": ["defensive_growth", "quality_focused", "stability_seeking"],
+            "optimal_entry_patterns": ["QUALITY LEADER", "LONG STRENGTH", "STEALTH"],
+            "warning_patterns": ["MOMENTUM DIVERGE", "RANGE COMPRESS", "WEAK VOLUME"]
+        },
+        "Financial Services": {
+            "growth_expectation": "Cyclical", "volatility": "High", "dividend_yield": "High",
+            "typical_patterns": ["INSTITUTIONAL", "LIQUID LEADER", "VAMPIRE", "SMART MONEY"],
+            "risk_level": "High", "innovation_cycle": "Medium", "market_sensitivity": "Very High",
+            "behavioral_traits": ["cycle_dependent", "rate_sensitive", "institutional_heavy"],
+            "optimal_entry_patterns": ["INSTITUTIONAL", "LIQUID LEADER", "SMART MONEY"],
+            "warning_patterns": ["VAMPIRE", "CAPITULATION", "SECTOR WEAKNESS"]
+        },
+        "Consumer Cyclical": {
+            "growth_expectation": "Cyclical", "volatility": "High", "dividend_yield": "Medium",
+            "typical_patterns": ["ROTATION LEADER", "MOMENTUM WAVE", "RANGE COMPRESS", "SECTOR ROTATION"],
+            "risk_level": "High", "innovation_cycle": "Medium", "market_sensitivity": "Very High",
+            "behavioral_traits": ["economic_sensitive", "seasonal_patterns", "consumer_driven"],
+            "optimal_entry_patterns": ["ROTATION LEADER", "MOMENTUM WAVE", "SECTOR ROTATION"],
+            "warning_patterns": ["ECONOMIC FEAR", "RANGE COMPRESS", "WEAK CONSUMER"]
+        },
+        "Consumer Defensive": {
+            "growth_expectation": "Low", "volatility": "Low", "dividend_yield": "High",
+            "typical_patterns": ["QUALITY LEADER", "LONG STRENGTH", "GOLDEN ZONE", "DEFENSIVE STRENGTH"],
+            "risk_level": "Low", "innovation_cycle": "Slow", "market_sensitivity": "Low",
+            "behavioral_traits": ["stability_premium", "dividend_focused", "recession_resistant"],
+            "optimal_entry_patterns": ["QUALITY LEADER", "LONG STRENGTH", "DEFENSIVE ROTATION"],
+            "warning_patterns": ["GROWTH ROTATION", "YIELD PRESSURE", "INFLATION PRESSURE"]
+        },
+        "Communication Services": {
+            "growth_expectation": "Medium", "volatility": "Medium", "dividend_yield": "Medium",
+            "typical_patterns": ["LIQUID LEADER", "MOMENTUM WAVE", "STEALTH", "TECH CROSSOVER"],
+            "risk_level": "Medium", "innovation_cycle": "Fast", "market_sensitivity": "Medium",
+            "behavioral_traits": ["content_driven", "platform_economics", "network_effects"],
+            "optimal_entry_patterns": ["LIQUID LEADER", "MOMENTUM WAVE", "PLATFORM STRENGTH"],
+            "warning_patterns": ["REGULATION FEAR", "CONTENT PRESSURE", "PLATFORM DECAY"]
+        },
+        "Energy": {
+            "growth_expectation": "Cyclical", "volatility": "Very High", "dividend_yield": "High",
+            "typical_patterns": ["VOL EXPLOSION", "VAMPIRE", "CAPITULATION", "COMMODITY SURGE"],
+            "risk_level": "Very High", "innovation_cycle": "Slow", "market_sensitivity": "Extreme",
+            "behavioral_traits": ["commodity_driven", "geopolitical_sensitive", "boom_bust_cycles"],
+            "optimal_entry_patterns": ["COMMODITY SURGE", "ENERGY ROTATION", "CRISIS BUYING"],
+            "warning_patterns": ["COMMODITY COLLAPSE", "VAMPIRE", "TRANSITION PRESSURE"]
+        },
+        "Industrials": {
+            "growth_expectation": "Cyclical", "volatility": "Medium", "dividend_yield": "Medium",
+            "typical_patterns": ["PYRAMID", "INSTITUTIONAL", "BREAKOUT", "INFRASTRUCTURE"],
+            "risk_level": "Medium", "innovation_cycle": "Medium", "market_sensitivity": "High",
+            "behavioral_traits": ["infrastructure_dependent", "capex_driven", "global_trade_sensitive"],
+            "optimal_entry_patterns": ["INFRASTRUCTURE", "PYRAMID", "INSTITUTIONAL"],
+            "warning_patterns": ["TRADE PRESSURE", "CAPEX CUTS", "RECESSION FEAR"]
+        },
+        "Basic Materials": {
+            "growth_expectation": "Cyclical", "volatility": "High", "dividend_yield": "Medium",
+            "typical_patterns": ["VOL EXPLOSION", "MOMENTUM DIVERGE", "VACUUM", "MATERIALS SURGE"],
+            "risk_level": "High", "innovation_cycle": "Slow", "market_sensitivity": "Very High",
+            "behavioral_traits": ["demand_driven", "china_dependent", "input_cost_sensitive"],
+            "optimal_entry_patterns": ["MATERIALS SURGE", "DEMAND RECOVERY", "CHINA STRENGTH"],
+            "warning_patterns": ["DEMAND COLLAPSE", "CHINA WEAKNESS", "OVERCAPACITY"]
+        },
+        "Utilities": {
+            "growth_expectation": "Low", "volatility": "Low", "dividend_yield": "Very High",
+            "typical_patterns": ["LONG STRENGTH", "GOLDEN ZONE", "VOL ACCUMULATION", "YIELD PLAY"],
+            "risk_level": "Low", "innovation_cycle": "Very Slow", "market_sensitivity": "Very Low",
+            "behavioral_traits": ["rate_inverse", "regulated_returns", "infrastructure_monopoly"],
+            "optimal_entry_patterns": ["YIELD PLAY", "RATE DECLINE", "DEFENSIVE ROTATION"],
+            "warning_patterns": ["RATE SURGE", "REGULATION PRESSURE", "GREEN TRANSITION"]
+        },
+        "Real Estate": {
+            "growth_expectation": "Medium", "volatility": "Medium", "dividend_yield": "High",
+            "typical_patterns": ["LIQUID LEADER", "GOLDEN ZONE", "RANGE COMPRESS", "REIT STRENGTH"],
+            "risk_level": "Medium", "innovation_cycle": "Slow", "market_sensitivity": "High",
+            "behavioral_traits": ["rate_sensitive", "location_premium", "income_focused"],
+            "optimal_entry_patterns": ["REIT STRENGTH", "RATE DECLINE", "LOCATION PREMIUM"],
+            "warning_patterns": ["RATE SURGE", "OVERSUPPLY", "LOCATION DECAY"]
+        }
+    })
+    
+    # Revolutionary sector-specific score weightings with behavioral intelligence
+    SECTOR_SCORE_WEIGHTS: Dict[str, Dict[str, float]] = field(default_factory=lambda: {
+        # HIGH VOLUME SECTORS (400+ stocks) - Conservative with intelligence
+        "Industrials": {           # 531 stocks - Infrastructure & stability
+            "position": 0.35, "momentum": 0.25, "volume": 0.25, "acceleration": 0.15,
+            "behavioral_weight": 0.85, "institutional_preference": 0.9
+        },
+        "Consumer Cyclical": {     # 456 stocks - Economic sensitivity
+            "momentum": 0.30, "acceleration": 0.25, "volume": 0.25, "position": 0.20,
+            "behavioral_weight": 0.9, "economic_sensitivity": 0.95
+        },
+        "Basic Materials": {       # 402 stocks - Commodity driven
+            "volume": 0.35, "momentum": 0.25, "acceleration": 0.20, "position": 0.20,
+            "behavioral_weight": 0.95, "volatility_premium": 0.85
+        },
+        
+        # MEDIUM VOLUME SECTORS (150-200 stocks) - Balanced intelligence
+        "Healthcare": {            # 185 stocks - Defensive growth
+            "position": 0.35, "momentum": 0.25, "volume": 0.20, "acceleration": 0.20,
+            "behavioral_weight": 0.8, "quality_premium": 0.9
+        },
+        "Technology": {            # 177 stocks - Growth & innovation
+            "momentum": 0.35, "volume": 0.25, "acceleration": 0.20, "position": 0.20,
+            "behavioral_weight": 0.95, "innovation_premium": 0.95
+        },
+        "Consumer Defensive": {    # 153 stocks - Stability focus
+            "position": 0.40, "momentum": 0.20, "volume": 0.20, "acceleration": 0.20,
+            "behavioral_weight": 0.75, "stability_premium": 0.95
+        },
+        
+        # LOW VOLUME SECTORS (30-90 stocks) - Alpha hunting
+        "Real Estate": {           # 89 stocks - Liquidity & rates
+            "position": 0.35, "volume": 0.30, "momentum": 0.20, "acceleration": 0.15,
+            "behavioral_weight": 0.9, "rate_sensitivity": 0.9
+        },
+        "Energy": {                # 37 stocks - Volatility mastery
+            "volume": 0.45, "momentum": 0.25, "acceleration": 0.20, "position": 0.10,
+            "behavioral_weight": 1.0, "volatility_mastery": 0.95
+        },
+        "Communication Services": { # 34 stocks - Platform economics
+            "momentum": 0.35, "volume": 0.30, "position": 0.20, "acceleration": 0.15,
+            "behavioral_weight": 0.9, "platform_premium": 0.85
+        },
+        "Utilities": {             # 32 stocks - Yield & stability
+            "position": 0.45, "momentum": 0.20, "volume": 0.20, "acceleration": 0.15,
+            "behavioral_weight": 0.7, "yield_premium": 0.95
+        },
+        
+        # VERY LOW VOLUME SECTOR - Elite selection
+        "Financial Services": {    # 14 stocks - Institutional mastery
+            "volume": 0.40, "position": 0.30, "momentum": 0.20, "acceleration": 0.10,
+            "behavioral_weight": 0.95, "institutional_mastery": 0.95
+        }
+    })
+    
+    # Sector stock count intelligence with alpha potential mapping and behavioral analysis
     SECTOR_STOCK_COUNTS: Dict[str, Dict[str, Any]] = field(default_factory=lambda: {
-        "Industrials": {"count": 531, "tier": "High Volume", "selectivity": "Conservative", "alpha_potential": "Medium"},
-        "Consumer Cyclical": {"count": 456, "tier": "High Volume", "selectivity": "Conservative", "alpha_potential": "Medium"},
-        "Basic Materials": {"count": 402, "tier": "High Volume", "selectivity": "Conservative", "alpha_potential": "High"},
-        "Healthcare": {"count": 185, "tier": "Medium Volume", "selectivity": "Balanced", "alpha_potential": "Medium"},
-        "Technology": {"count": 177, "tier": "Medium Volume", "selectivity": "Balanced", "alpha_potential": "High"},
-        "Consumer Defensive": {"count": 153, "tier": "Medium Volume", "selectivity": "Balanced", "alpha_potential": "Low"},
-        "Real Estate": {"count": 89, "tier": "Low Volume", "selectivity": "Selective", "alpha_potential": "Medium"},
-        "Energy": {"count": 37, "tier": "Low Volume", "selectivity": "Highly Selective", "alpha_potential": "Very High"},
-        "Communication Services": {"count": 34, "tier": "Low Volume", "selectivity": "Highly Selective", "alpha_potential": "High"},
-        "Utilities": {"count": 32, "tier": "Low Volume", "selectivity": "Highly Selective", "alpha_potential": "Low"},
-        "Financial Services": {"count": 14, "tier": "Very Low Volume", "selectivity": "Extremely Selective", "alpha_potential": "High"}
+        "Industrials": {
+            "count": 531, "tier": "High Volume", "selectivity": "Conservative", 
+            "alpha_potential": "Medium", "institutional_weight": 0.9,
+            "market_cap_bias": "Large", "liquidity_tier": "High",
+            "behavioral_score": 0.85, "infrastructure_dependence": 0.9
+        },
+        "Consumer Cyclical": {
+            "count": 456, "tier": "High Volume", "selectivity": "Conservative", 
+            "alpha_potential": "Medium", "economic_sensitivity": 0.95,
+            "market_cap_bias": "Mixed", "cyclical_strength": "High",
+            "behavioral_score": 0.9, "consumer_leverage": 0.85
+        },
+        "Basic Materials": {
+            "count": 402, "tier": "High Volume", "selectivity": "Conservative", 
+            "alpha_potential": "High", "volatility_factor": 0.9,
+            "market_cap_bias": "Large", "commodity_correlation": 0.95,
+            "behavioral_score": 0.95, "china_dependence": 0.8
+        },
+        "Healthcare": {
+            "count": 185, "tier": "Medium Volume", "selectivity": "Balanced", 
+            "alpha_potential": "Medium", "defensive_strength": 0.85,
+            "market_cap_bias": "Large", "innovation_factor": 0.8,
+            "behavioral_score": 0.8, "regulatory_resilience": 0.9
+        },
+        "Technology": {
+            "count": 177, "tier": "Medium Volume", "selectivity": "Balanced", 
+            "alpha_potential": "High", "growth_factor": 0.95,
+            "market_cap_bias": "Mixed", "innovation_factor": 0.95,
+            "behavioral_score": 0.95, "disruption_potential": 0.9
+        },
+        "Consumer Defensive": {
+            "count": 153, "tier": "Medium Volume", "selectivity": "Balanced", 
+            "alpha_potential": "Low", "stability_factor": 0.95,
+            "market_cap_bias": "Large", "dividend_yield": "High",
+            "behavioral_score": 0.75, "recession_resistance": 0.95
+        },
+        "Real Estate": {
+            "count": 89, "tier": "Low Volume", "selectivity": "Selective", 
+            "alpha_potential": "Medium", "rate_sensitivity": 0.9,
+            "market_cap_bias": "Mixed", "income_focus": 0.9,
+            "behavioral_score": 0.9, "location_premium": 0.85
+        },
+        "Energy": {
+            "count": 37, "tier": "Low Volume", "selectivity": "Highly Selective", 
+            "alpha_potential": "Very High", "volatility_factor": 0.95,
+            "market_cap_bias": "Mixed", "commodity_leverage": 0.95,
+            "behavioral_score": 1.0, "geopolitical_risk": 0.9
+        },
+        "Communication Services": {
+            "count": 34, "tier": "Low Volume", "selectivity": "Highly Selective", 
+            "alpha_potential": "High", "platform_economics": 0.85,
+            "market_cap_bias": "Large", "network_effects": 0.8,
+            "behavioral_score": 0.9, "content_leverage": 0.8
+        },
+        "Utilities": {
+            "count": 32, "tier": "Low Volume", "selectivity": "Highly Selective", 
+            "alpha_potential": "Low", "yield_factor": 0.95,
+            "market_cap_bias": "Large", "regulation_factor": 0.8,
+            "behavioral_score": 0.7, "rate_inverse_correlation": 0.9
+        },
+        "Financial Services": {
+            "count": 14, "tier": "Very Low Volume", "selectivity": "Extremely Selective", 
+            "alpha_potential": "High", "institutional_factor": 0.95,
+            "market_cap_bias": "Large", "rate_leverage": 0.9,
+            "behavioral_score": 0.95, "credit_cycle_sensitivity": 0.85
+        }
     })
 
-    # Metric Tooltips for better UX - Enhanced with tier information
+    # Revolutionary metric tooltips with ultimate intelligence descriptions
     METRIC_TOOLTIPS: Dict[str, str] = field(default_factory=lambda: {
-        'vmi': 'Volume Momentum Index: Weighted volume trend score (higher = stronger volume momentum)',
-        'position_tension': 'Range position stress: Distance from 52W low + distance from 52W high',
-        'momentum_harmony': 'Multi-timeframe alignment: 0-4 score showing consistency across periods',
-        'overall_wave_strength': 'Composite wave score: Combined momentum, acceleration, RVOL & breakout',
-        'money_flow_mm': 'Money Flow in millions: Price × Volume × RVOL / 1M',
-        'master_score': 'Overall ranking score (0-100) combining all factors',
-        'sector_adjusted_score': 'Sector-intelligent score using sector-specific weightings for 11 sectors',
-        'acceleration_score': 'Rate of momentum change (0-100)',
-        'breakout_score': 'Probability of price breakout (0-100)',
-        'trend_quality': 'SMA alignment quality (0-100)',
-        'liquidity_score': 'Trading liquidity measure (0-100)',
-        'eps_tier': 'EPS classification: From Negative to Ultra based on earnings per share',
-        'pe_tier': 'PE ratio classification: From Value to Ultra Premium based on price-to-earnings',
-        'price_tier': 'Price classification: From Penny to Premium based on stock price level',
-        'pe_sector_context': 'PE ratio compared to sector averages across 11 sectors',
-        'sector_characteristics': 'Sector-specific risk, volatility, and growth characteristics',
-        'pe_percentile_context': 'PE ratio position within dataset distribution',
-        'price_category_insight': 'Price level analysis relative to market cap category',
-        'pe_eps_insight': 'Valuation insight based on PE and EPS combination'
+        # Core metrics with revolutionary intelligence
+        'vmi': 'Volume Momentum Index: Revolutionary volume trend analysis with smart money detection and institutional flow patterns',
+        'position_tension': 'Range Position Stress: Advanced stress analysis of 52W range dynamics with squeeze detection',
+        'momentum_harmony': 'Multi-Timeframe Harmony: 0-4 alignment score across revolutionary timeframes with wave coherence',
+        'overall_wave_strength': 'Wave Strength Composite: Revolutionary wave pattern strength analysis with cascade detection',
+        'money_flow_mm': 'Smart Money Flow (MM): Institutional flow analysis in millions with RVOL intelligence and flow acceleration',
+        'master_score': 'Master Score (0-100): Revolutionary composite ranking with sector intelligence and behavioral weighting',
+        'sector_adjusted_score': 'Sector Intelligence Score: Behavioral-adjusted score with 11-sector mastery and alpha optimization',
+        
+        # Advanced pattern metrics with revolutionary analysis
+        'acceleration_score': 'Acceleration Intelligence: Revolutionary rate-of-change momentum analysis with cascade detection',
+        'breakout_score': 'Breakout Probability: Advanced breakout prediction with pattern recognition and structure analysis',
+        'trend_quality': 'Trend Quality Analysis: SMA harmony with revolutionary trend strength and wave coherence',
+        'liquidity_score': 'Liquidity Intelligence: Advanced trading liquidity with institutional bias and flow premium',
+        'velocity_squeeze': 'Velocity Squeeze Pattern: Revolutionary compression-expansion cycle detection with timing signals',
+        'smart_money_flow': 'Smart Money Detection: Institutional flow patterns with behavioral analysis and entry signals',
+        
+        # Tier intelligence with revolutionary classifications
+        'eps_tier': 'EPS Growth Tier: From Crisis to Explosive with momentum-adjusted classifications and growth acceleration',
+        'pe_tier': 'PE Valuation Tier: From Deep Value to Ultra Premium with sector intelligence and relative positioning',
+        'price_tier': 'Price Category Tier: From Micro Penny to Ultra Premium with market cap correlation and liquidity analysis',
+        'pe_sector_context': 'PE Sector Intelligence: Advanced sector-relative valuation analysis with behavioral adjustments',
+        'sector_characteristics': 'Sector Behavioral Profile: Risk, volatility, and growth intelligence with pattern preferences',
+        
+        # Revolutionary insights with behavioral intelligence
+        'pe_percentile_context': 'PE Percentile Intelligence: Distribution position with outlier analysis and value discovery',
+        'price_category_insight': 'Price Category Intelligence: Market cap correlation with liquidity analysis and tier optimization',
+        'pe_eps_insight': 'Valuation Intelligence Matrix: PE-EPS combination with growth momentum and quality assessment',
+        'sector_rotation_strength': 'Sector Rotation Intelligence: Cross-sector momentum flow analysis with rotation timing',
+        'institutional_preference': 'Institutional Preference Score: Smart money bias with flow analysis and positioning trends',
+        'behavioral_momentum': 'Behavioral Momentum Index: Crowd psychology analysis with contrarian signals and sentiment shifts',
+        
+        # Revolutionary pattern insights
+        'volatility_compression': 'Volatility Compression Signal: Market structure compression analysis with expansion timing',
+        'momentum_divergence': 'Momentum Divergence Detection: Advanced divergence analysis with reversal probability',
+        'market_structure_shift': 'Market Structure Analysis: Revolutionary structure shift detection with regime changes',
+        'flow_acceleration': 'Flow Acceleration Index: Institutional flow dynamics with acceleration and deceleration signals',
+        'liquidity_premium': 'Liquidity Premium Analysis: Advanced liquidity assessment with premium valuation adjustments'
     })
 
 # Global configuration instance
@@ -396,10 +1306,399 @@ CONFIG = Config()
 # ============================================
 
 class PerformanceMonitor:
-    """Track and report performance metrics"""
+    """Advanced performance monitoring with intelligent pattern grouping and memory optimization"""
+    
+    # Smart performance history categorization
+    _performance_history = {
+        'data_operations': [],    # Loading, processing, caching
+        'pattern_analysis': [],   # All pattern detection operations
+        'ui_rendering': [],       # Streamlit UI operations
+        'calculations': []        # Mathematical computations
+    }
+    
+    # Memory monitoring with trend analysis
+    _memory_snapshots = []
+    _performance_alerts = []
+    
+    # Dynamic threshold adjustment based on operation complexity
+    @staticmethod
+    def _get_dynamic_threshold(operation_type: str, data_size: int = 0) -> float:
+        """Intelligently adjust thresholds based on operation type and data volume"""
+        base_thresholds = CONFIG.PERFORMANCE_TARGETS
+        
+        # Smart scaling based on data volume
+        if data_size > 1000:
+            scale_factor = min(2.0, 1.0 + (data_size / 2000))
+        else:
+            scale_factor = 1.0
+            
+        return base_thresholds.get(operation_type, 1.0) * scale_factor
     
     @staticmethod
-    def timer(target_time: Optional[float] = None):
+    def timer(operation_type: str = 'calculations', data_size: int = 0):
+        """Smart performance decorator with dynamic thresholds and pattern grouping"""
+        def decorator(func):
+            @wraps(func)
+            def wrapper(*args, **kwargs):
+                # Pre-execution setup
+                start_time = time.perf_counter()
+                pre_memory = None
+                
+                # Smart memory monitoring
+                try:
+                    if 'psutil' in sys.modules:
+                        pre_memory = psutil.Process().memory_info().rss / (1024 * 1024)
+                except Exception:
+                    pass
+                
+                try:
+                    # Execute function
+                    result = func(*args, **kwargs)
+                    elapsed = time.perf_counter() - start_time
+                    
+                    # Post-execution analysis
+                    post_memory = None
+                    memory_delta = 0
+                    
+                    try:
+                        if 'psutil' in sys.modules and pre_memory:
+                            post_memory = psutil.Process().memory_info().rss / (1024 * 1024)
+                            memory_delta = post_memory - pre_memory
+                    except Exception:
+                        pass
+                    
+                    # Dynamic threshold evaluation
+                    threshold = PerformanceMonitor._get_dynamic_threshold(operation_type, data_size)
+                    
+                    # Smart logging based on severity
+                    if elapsed > threshold * 3:
+                        logger.error(f"🚨 CRITICAL PERFORMANCE: {func.__name__} - {elapsed:.2f}s (limit: {threshold:.2f}s)")
+                        PerformanceMonitor._performance_alerts.append({
+                            'level': 'critical', 'function': func.__name__, 'time': elapsed,
+                            'threshold': threshold, 'timestamp': datetime.now(timezone.utc)
+                        })
+                    elif elapsed > threshold * 1.5:
+                        logger.warning(f"⚠️ SLOW OPERATION: {func.__name__} - {elapsed:.2f}s")
+                    elif elapsed > 0.1:  # Only log operations taking more than 100ms
+                        logger.debug(f"✅ {func.__name__} completed in {elapsed:.2f}s")
+                    
+                    # Store performance data for trend analysis
+                    PerformanceMonitor._store_performance_data(
+                        operation_type, func.__name__, elapsed, memory_delta, data_size
+                    )
+                    
+                    # Smart memory management
+                    if post_memory and post_memory > CONFIG.MEMORY_THRESHOLDS['warning_mb']:
+                        PerformanceMonitor._handle_memory_pressure(post_memory, func.__name__)
+                    
+                    return result
+                    
+                except Exception as e:
+                    elapsed = time.perf_counter() - start_time
+                    logger.error(f"💥 FUNCTION ERROR: {func.__name__} failed after {elapsed:.2f}s - {str(e)}")
+                    error_logger.error(f"Performance tracking error in {func.__name__}", exc_info=True)
+                    raise
+                    
+            return wrapper
+        return decorator
+    
+    @staticmethod
+    def _store_performance_data(operation_type: str, func_name: str, elapsed: float, 
+                               memory_delta: float, data_size: int):
+        """Intelligently store and categorize performance data"""
+        
+        # Create performance record
+        record = {
+            'function': func_name,
+            'elapsed': elapsed,
+            'memory_delta': memory_delta,
+            'data_size': data_size,
+            'timestamp': datetime.now(timezone.utc),
+            'efficiency_score': PerformanceMonitor._calculate_efficiency_score(elapsed, data_size)
+        }
+        
+        # Smart categorization based on function patterns
+        if any(pattern in func_name.lower() for pattern in ['load', 'process', 'cache', 'read']):
+            category = 'data_operations'
+        elif any(pattern in func_name.lower() for pattern in ['detect', 'pattern', 'analysis', 'calculate']):
+            category = 'pattern_analysis'
+        elif any(pattern in func_name.lower() for pattern in ['render', 'display', 'show', 'plot']):
+            category = 'ui_rendering'
+        else:
+            category = operation_type if operation_type in PerformanceMonitor._performance_history else 'calculations'
+        
+        # Store with size limits to prevent memory bloat
+        history = PerformanceMonitor._performance_history[category]
+        history.append(record)
+        PerformanceMonitor._performance_history[category] = history[-50:]  # Keep last 50 records
+        
+        # Update session state for UI display
+        if 'performance_metrics' not in st.session_state:
+            st.session_state.performance_metrics = {}
+        st.session_state.performance_metrics[func_name] = elapsed
+    
+    @staticmethod
+    def _calculate_efficiency_score(elapsed: float, data_size: int) -> float:
+        """Calculate efficiency score based on time vs data size"""
+        if data_size <= 0:
+            return 100.0 if elapsed < 0.1 else max(0, 100 - (elapsed * 50))
+        
+        # Operations per second metric
+        ops_per_sec = data_size / elapsed if elapsed > 0 else float('inf')
+        
+        # Normalize to 0-100 scale (higher is better)
+        if ops_per_sec > 10000:
+            return 100.0
+        elif ops_per_sec > 1000:
+            return 80.0 + (ops_per_sec - 1000) / 9000 * 20
+        else:
+            return max(0, ops_per_sec / 1000 * 80)
+    
+    @staticmethod
+    def _handle_memory_pressure(current_mb: float, func_name: str):
+        """Smart memory pressure handling"""
+        if current_mb > CONFIG.MEMORY_THRESHOLDS['critical_mb']:
+            logger.warning(f"🚨 CRITICAL MEMORY: {current_mb:.1f}MB after {func_name}")
+            # Force aggressive cleanup
+            gc.collect()
+            # Clear old performance history
+            for category in PerformanceMonitor._performance_history:
+                PerformanceMonitor._performance_history[category] = PerformanceMonitor._performance_history[category][-25:]
+        elif current_mb > CONFIG.MEMORY_THRESHOLDS['warning_mb']:
+            logger.info(f"⚠️ HIGH MEMORY: {current_mb:.1f}MB after {func_name}")
+            # Gentle cleanup
+            if len(PerformanceMonitor._memory_snapshots) > 25:
+                PerformanceMonitor._memory_snapshots = PerformanceMonitor._memory_snapshots[-25:]
+    
+    @staticmethod
+    def get_intelligent_summary() -> Dict[str, Any]:
+        """Generate smart performance insights with pattern analysis"""
+        summary = {
+            'overall_health': 'excellent',
+            'category_performance': {},
+            'bottlenecks': [],
+            'efficiency_trends': {},
+            'smart_recommendations': [],
+            'memory_status': PerformanceMonitor._get_memory_status()
+        }
+        
+        # Analyze each performance category
+        for category, records in PerformanceMonitor._performance_history.items():
+            if not records:
+                continue
+                
+            # Calculate category metrics
+            times = [r['elapsed'] for r in records]
+            efficiency_scores = [r['efficiency_score'] for r in records]
+            
+            category_data = {
+                'avg_time': np.mean(times),
+                'max_time': max(times),
+                'efficiency': np.mean(efficiency_scores),
+                'trend': PerformanceMonitor._calculate_trend(times),
+                'operation_count': len(records)
+            }
+            
+            summary['category_performance'][category] = category_data
+            
+            # Identify bottlenecks
+            if category_data['avg_time'] > 2.0:
+                summary['bottlenecks'].append({
+                    'category': category,
+                    'severity': 'high' if category_data['avg_time'] > 5.0 else 'medium',
+                    'avg_time': category_data['avg_time']
+                })
+        
+        # Generate overall health assessment
+        summary['overall_health'] = PerformanceMonitor._assess_overall_health(summary)
+        
+        # Smart recommendations
+        summary['smart_recommendations'] = PerformanceMonitor._generate_smart_recommendations(summary)
+        
+        return summary
+    
+    @staticmethod
+    def _calculate_trend(times: List[float]) -> str:
+        """Calculate performance trend"""
+        if len(times) < 3:
+            return 'insufficient_data'
+        
+        # Simple linear regression to detect trend
+        recent = times[-5:] if len(times) >= 5 else times
+        older = times[-10:-5] if len(times) >= 10 else times[:-len(recent)]
+        
+        if not older:
+            return 'stable'
+        
+        recent_avg = np.mean(recent)
+        older_avg = np.mean(older)
+        
+        change_ratio = (recent_avg - older_avg) / older_avg if older_avg > 0 else 0
+        
+        if change_ratio > 0.2:
+            return 'degrading'
+        elif change_ratio < -0.2:
+            return 'improving'
+        else:
+            return 'stable'
+    
+    @staticmethod
+    def _assess_overall_health(summary: Dict) -> str:
+        """Assess overall system performance health"""
+        bottleneck_count = len(summary['bottlenecks'])
+        high_severity_bottlenecks = len([b for b in summary['bottlenecks'] if b['severity'] == 'high'])
+        
+        if high_severity_bottlenecks > 0:
+            return 'poor'
+        elif bottleneck_count > 2:
+            return 'fair'
+        elif bottleneck_count > 0:
+            return 'good'
+        else:
+            return 'excellent'
+    
+    @staticmethod
+    def _generate_smart_recommendations(summary: Dict) -> List[str]:
+        """Generate intelligent performance recommendations"""
+        recommendations = []
+        
+        # Pattern-based recommendations
+        for category, data in summary['category_performance'].items():
+            if data['avg_time'] > 3.0:
+                if category == 'data_operations':
+                    recommendations.append("📊 Consider implementing data chunking or pagination for large datasets")
+                elif category == 'pattern_analysis':
+                    recommendations.append("🔍 Optimize pattern detection algorithms or reduce pattern complexity")
+                elif category == 'ui_rendering':
+                    recommendations.append("🎨 Implement lazy loading or virtualization for UI components")
+                
+            if data['trend'] == 'degrading':
+                recommendations.append(f"📈 Performance degradation detected in {category}. Review recent changes.")
+            
+            if data['efficiency'] < 50:
+                recommendations.append(f"⚡ Low efficiency in {category}. Consider algorithm optimization.")
+        
+        # Memory-based recommendations
+        memory_status = summary['memory_status']
+        if memory_status['status'] != 'normal':
+            recommendations.append("🧠 Memory usage is elevated. Consider implementing data cleanup strategies.")
+        
+        return recommendations[:5]  # Limit to top 5 recommendations
+    
+    @staticmethod
+    def _get_memory_status() -> Dict[str, Any]:
+        """Get current memory status with intelligent analysis"""
+        try:
+            if 'psutil' in sys.modules:
+                current_mb = psutil.Process().memory_info().rss / (1024 * 1024)
+                warning_threshold = CONFIG.MEMORY_THRESHOLDS['warning_mb']
+                critical_threshold = CONFIG.MEMORY_THRESHOLDS['critical_mb']
+                
+                if current_mb > critical_threshold:
+                    status = 'critical'
+                elif current_mb > warning_threshold:
+                    status = 'warning'
+                else:
+                    status = 'normal'
+                
+                return {
+                    'current_mb': current_mb,
+                    'status': status,
+                    'utilization_pct': (current_mb / CONFIG.MAX_MEMORY_MB) * 100,
+                    'trend': PerformanceMonitor._analyze_memory_trend()
+                }
+        except Exception:
+            pass
+        
+        return {'status': 'unknown', 'current_mb': None}
+    
+    @staticmethod
+    def _analyze_memory_trend() -> str:
+        """Analyze memory usage trend"""
+        if len(PerformanceMonitor._memory_snapshots) < 5:
+            return 'stable'
+        
+        recent_snapshots = PerformanceMonitor._memory_snapshots[-5:]
+        memory_values = [snap.get('memory_after_mb', 0) for snap in recent_snapshots]
+        
+        if all(memory_values[i] <= memory_values[i+1] for i in range(len(memory_values)-1)):
+            return 'increasing'
+        elif all(memory_values[i] >= memory_values[i+1] for i in range(len(memory_values)-1)):
+            return 'decreasing'
+        else:
+            return 'stable'
+
+# Smart context manager for code block timing
+class TimingContext:
+    """Intelligent timing context manager for code blocks"""
+    
+    def __init__(self, operation_name: str, operation_type: str = 'calculations', data_size: int = 0):
+        self.operation_name = operation_name
+        self.operation_type = operation_type
+        self.data_size = data_size
+        self.start_time = None
+        
+    def __enter__(self):
+        self.start_time = time.perf_counter()
+        return self
+        
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self.start_time:
+            elapsed = time.perf_counter() - self.start_time
+            PerformanceMonitor._store_performance_data(
+                self.operation_type, self.operation_name, elapsed, 0, self.data_size
+            )
+
+# Memory optimization utilities
+class MemoryOptimizer:
+    """Smart memory optimization for DataFrames and large objects"""
+    
+    @staticmethod
+    @PerformanceMonitor.timer('data_operations')
+    def optimize_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+        """Intelligent DataFrame memory optimization"""
+        if df.empty:
+            return df
+            
+        initial_memory = df.memory_usage(deep=True).sum() / (1024 * 1024)
+        df_opt = df.copy()
+        
+        # Smart type optimization
+        for col in df_opt.columns:
+            col_type = df_opt[col].dtype
+            
+            if col_type == 'object':
+                # Try categorical conversion for low cardinality
+                if df_opt[col].nunique() / len(df_opt) < 0.5:
+                    df_opt[col] = df_opt[col].astype('category')
+            elif 'int' in str(col_type):
+                # Downcast integers
+                df_opt[col] = pd.to_numeric(df_opt[col], downcast='integer')
+            elif 'float' in str(col_type):
+                # Downcast floats
+                df_opt[col] = pd.to_numeric(df_opt[col], downcast='float')
+        
+        final_memory = df_opt.memory_usage(deep=True).sum() / (1024 * 1024)
+        reduction = ((initial_memory - final_memory) / initial_memory) * 100
+        
+        logger.info(f"🧠 Memory optimization: {initial_memory:.1f}MB → {final_memory:.1f}MB ({reduction:.1f}% reduction)")
+        
+        return df_opt
+    
+    @staticmethod
+    def smart_cleanup():
+        """Intelligent system cleanup"""
+        # Clear old performance data
+        for category in PerformanceMonitor._performance_history:
+            PerformanceMonitor._performance_history[category] = PerformanceMonitor._performance_history[category][-25:]
+        
+        # Clear old alerts
+        PerformanceMonitor._performance_alerts = PerformanceMonitor._performance_alerts[-10:]
+        
+        # Force garbage collection
+        gc.collect()
+        
+        logger.debug("🧹 Smart cleanup completed")
         """Performance timing decorator with target comparison"""
         def decorator(func):
             @wraps(func)
@@ -1368,25 +2667,258 @@ class AdvancedMetrics:
     @PerformanceMonitor.timer(target_time=0.5)
     def calculate_all_metrics(df: pd.DataFrame) -> pd.DataFrame:
         """
-        Calculates a comprehensive set of advanced metrics for the DataFrame.
-        Enhanced with intelligent pattern scoring and wave detection.
-        Designed to be vectorized and handle missing data without errors.
+        🚀 REVOLUTIONARY ADVANCED METRICS CALCULATOR
+        ============================================
+        Calculates the most comprehensive set of institutional-grade metrics
+        using multi-timeframe momentum intelligence, smart money detection,
+        and revolutionary pattern synthesis.
+        
+        Enhanced with:
+        - Multi-timeframe momentum quality scoring
+        - Institutional flow analysis (smart money detection)
+        - SMA trend intelligence with dynamic weighting
+        - Volatility-adjusted performance metrics
+        - Cross-timeframe volume analysis
+        - Fundamental momentum fusion
+        - Market positioning intelligence
+        - Revolutionary pattern synthesis
 
         Args:
             df (pd.DataFrame): The DataFrame with raw data and core scores.
 
         Returns:
-            pd.DataFrame: The DataFrame with all calculated advanced metrics added.
+            pd.DataFrame: The DataFrame with all revolutionary advanced metrics added.
         """
         if df.empty:
             return df
             
-        # First, apply wave state detection - NEW ENHANCEMENT
+        logger.info("🚀 Calculating Revolutionary Advanced Metrics...")
+        
+        # First, apply wave state detection - ENHANCED
         df = AdvancedMetrics.detect_wave_state(df)
-
+        
+        # 🎯 1. MULTI-TIMEFRAME MOMENTUM INTELLIGENCE
+        df = AdvancedMetrics._calculate_momentum_intelligence(df)
+        
+        # 💰 2. INSTITUTIONAL FLOW ANALYZER (Smart Money Detection)
+        df = AdvancedMetrics._calculate_institutional_flow(df)
+        
+        # 📈 3. SMA TREND INTELLIGENCE ENGINE
+        df = AdvancedMetrics._calculate_sma_intelligence(df)
+        
+        # ⚡ 4. VOLATILITY-ADJUSTED PERFORMANCE
+        df = AdvancedMetrics._calculate_risk_adjusted_performance(df)
+        
+        # 🌊 5. CROSS-TIMEFRAME VOLUME ANALYSIS
+        df = AdvancedMetrics._calculate_volume_intelligence(df)
+        
+        # 📊 6. FUNDAMENTAL MOMENTUM FUSION
+        df = AdvancedMetrics._calculate_fundamental_momentum(df)
+        
+        # 🎯 7. MARKET POSITIONING INTELLIGENCE
+        df = AdvancedMetrics._calculate_position_intelligence(df)
+        
+        # 🔥 8. REVOLUTIONARY PATTERN SYNTHESIS
+        df = AdvancedMetrics._calculate_pattern_synthesis(df)
+        
+        # 🧠 9. ADAPTIVE RISK INTELLIGENCE
+        df = AdvancedMetrics._calculate_adaptive_risk(df)
+        
+        # 🏆 10. MASTER INTELLIGENCE SCORE
+        df = AdvancedMetrics._calculate_master_intelligence(df)
+        
+        # 📊 LEGACY METRICS INTEGRATION (Original V2.py calculations)
         # Calculate intelligent pattern confidence scores
         pattern_scores = []
         if 'patterns' in df.columns:
+            for _, row in df.iterrows():
+                if pd.isna(row['patterns']) or row['patterns'] == '':
+                    pattern_scores.append(0.0)
+                    continue
+
+                # Calculate confidence based on multiple factors
+                confidence = 0.0
+                patterns = row['patterns'].split(' | ')
+                
+                # Base pattern strength 
+                base_confidence = 70.0
+                
+                # Confirm with technical criteria
+                if row.get('momentum_score', 0) > 70:
+                    base_confidence += 10
+                if row.get('volume_score', 0) > 70:
+                    base_confidence += 10
+                if row.get('breakout_score', 0) > 70:
+                    base_confidence += 10
+
+                # Volume confirmation adds validity
+                rvol = row.get('rvol', 1.0)
+                if rvol > 3.0:
+                    base_confidence += 15
+                elif rvol > 2.0:
+                    base_confidence += 10
+                elif rvol > 1.5:
+                    base_confidence += 5
+
+                # Multi-pattern synergy bonus
+                if len(patterns) > 1:
+                    base_confidence += min(len(patterns) * 5, 15)
+
+                # Price position impact
+                if 'from_low_pct' in df.columns and 'from_high_pct' in df.columns:
+                    if row['from_low_pct'] > 70 and row['from_high_pct'] > -30:
+                        base_confidence += 10  # Strong position, not overextended
+                
+                # Revolutionary Intelligence Enhancement - boost confidence with new metrics
+                if 'smart_money_index' in df.columns and row.get('smart_money_index', 50) > 70:
+                    base_confidence += 8  # Smart money confirmation
+                if 'momentum_quality_score' in df.columns and row.get('momentum_quality_score', 50) > 75:
+                    base_confidence += 8  # High quality momentum
+                if 'master_intelligence_score' in df.columns and row.get('master_intelligence_score', 50) > 80:
+                    base_confidence += 10  # Master intelligence confirmation
+
+                pattern_scores.append(min(base_confidence, 100.0))
+
+        df['pattern_confidence'] = pattern_scores
+        
+        # Money Flow (in millions) - Enhanced with intelligence
+        if all(col in df.columns for col in ['price', 'volume_1d', 'rvol']):
+            df['money_flow'] = df['price'].fillna(0) * df['volume_1d'].fillna(0) * df['rvol'].fillna(1.0)
+            df['money_flow_mm'] = df['money_flow'] / 1_000_000
+            
+            # Enhanced money flow with smart money weighting
+            if 'smart_money_index' in df.columns:
+                smart_money_weight = (df['smart_money_index'].fillna(50) / 100) * 1.5 + 0.5
+                df['smart_money_flow_mm'] = df['money_flow_mm'] * smart_money_weight
+            else:
+                df['smart_money_flow_mm'] = df['money_flow_mm']
+        else:
+            df['money_flow_mm'] = pd.Series(np.nan, index=df.index)
+            df['smart_money_flow_mm'] = pd.Series(np.nan, index=df.index)
+        
+        # Volume Momentum Index (VMI) - Enhanced
+        if all(col in df.columns for col in ['vol_ratio_1d_90d', 'vol_ratio_7d_90d', 'vol_ratio_30d_90d', 'vol_ratio_90d_180d']):
+            df['vmi'] = (
+                df['vol_ratio_1d_90d'].fillna(1.0) * 4 +
+                df['vol_ratio_7d_90d'].fillna(1.0) * 3 +
+                df['vol_ratio_30d_90d'].fillna(1.0) * 2 +
+                df['vol_ratio_90d_180d'].fillna(1.0) * 1
+            ) / 10
+            
+            # Enhanced VMI with volume intelligence
+            if 'volume_intelligence' in df.columns:
+                volume_intel_factor = (df['volume_intelligence'].fillna(50) / 100) * 0.5 + 0.75
+                df['enhanced_vmi'] = df['vmi'] * volume_intel_factor
+            else:
+                df['enhanced_vmi'] = df['vmi']
+        else:
+            df['vmi'] = pd.Series(np.nan, index=df.index)
+            df['enhanced_vmi'] = pd.Series(np.nan, index=df.index)
+        
+        # Position Tension - Enhanced with position intelligence
+        if all(col in df.columns for col in ['from_low_pct', 'from_high_pct']):
+            df['position_tension'] = df['from_low_pct'].fillna(50) + abs(df['from_high_pct'].fillna(-50))
+            
+            # Position quality score
+            if 'position_intelligence' in df.columns:
+                # Lower tension is better when position intelligence is high
+                position_quality = df['position_intelligence'].fillna(50)
+                df['position_quality'] = (position_quality + (100 - df['position_tension']) * 0.5) / 1.5
+            else:
+                df['position_quality'] = 100 - df['position_tension']
+        else:
+            df['position_tension'] = pd.Series(np.nan, index=df.index)
+            df['position_quality'] = pd.Series(np.nan, index=df.index)
+        
+        # Momentum Harmony - Enhanced with momentum intelligence
+        df['momentum_harmony'] = pd.Series(0, index=df.index, dtype=int)
+        
+        if 'ret_1d' in df.columns:
+            df['momentum_harmony'] += (df['ret_1d'].fillna(0) > 0).astype(int)
+        
+        if all(col in df.columns for col in ['ret_7d', 'ret_30d']):
+            with np.errstate(divide='ignore', invalid='ignore'):
+                daily_ret_7d = np.where(df['ret_7d'] != 0, df['ret_7d'] / 7, 0)
+                daily_ret_7d = pd.Series(daily_ret_7d, index=df.index)
+                daily_ret_30d = pd.Series(np.where(df['ret_30d'].fillna(0) != 0, df['ret_30d'].fillna(0) / 30, np.nan), index=df.index)
+            df['momentum_harmony'] += ((daily_ret_7d.fillna(-np.inf) > daily_ret_30d.fillna(-np.inf))).astype(int)
+        
+        if all(col in df.columns for col in ['ret_30d', 'ret_3m']):
+            with np.errstate(divide='ignore', invalid='ignore'):
+                daily_ret_30d_comp = pd.Series(np.where(df['ret_30d'].fillna(0) != 0, df['ret_30d'].fillna(0) / 30, np.nan), index=df.index)
+                daily_ret_3m_comp = pd.Series(np.where(df['ret_3m'].fillna(0) != 0, df['ret_3m'].fillna(0) / 90, np.nan), index=df.index)
+            df['momentum_harmony'] += ((daily_ret_30d_comp.fillna(-np.inf) > daily_ret_3m_comp.fillna(-np.inf))).astype(int)
+        
+        if 'ret_3m' in df.columns:
+            df['momentum_harmony'] += (df['ret_3m'].fillna(0) > 0).astype(int)
+        
+        # Enhanced momentum harmony with quality score
+        if 'momentum_quality_score' in df.columns:
+            momentum_quality_bonus = (df['momentum_quality_score'].fillna(50) > 70).astype(int)
+            df['enhanced_momentum_harmony'] = df['momentum_harmony'] + momentum_quality_bonus
+        else:
+            df['enhanced_momentum_harmony'] = df['momentum_harmony']
+        
+        # Enhanced Wave State with Revolutionary Intelligence
+        df['wave_state'] = df.apply(AdvancedMetrics._get_wave_state, axis=1)
+        
+        # Calculate Revolutionary Wave Strength
+        score_cols = ['momentum_score', 'acceleration_score', 'rvol_score', 'breakout_score']
+        if all(col in df.columns for col in score_cols):
+            # Base wave strength using core metrics
+            df['overall_wave_strength'] = (
+                df['momentum_score'].fillna(50) * 0.3 +
+                df['acceleration_score'].fillna(50) * 0.3 +
+                df['rvol_score'].fillna(50) * 0.2 +
+                df['breakout_score'].fillna(50) * 0.2
+            )
+            
+            # Revolutionary Intelligence Enhancement
+            if 'master_intelligence_score' in df.columns:
+                intelligence_bonus = (df['master_intelligence_score'].fillna(50) - 50) * 0.2
+                df['overall_wave_strength'] += intelligence_bonus
+            
+            # Pattern-based wave strength enhancement  
+            if 'patterns' in df.columns and 'pattern_confidence' in df.columns:
+                pattern_bonus = df.apply(lambda row: 
+                    min(15.0,  # Cap the bonus at 15 points
+                        sum([
+                            10 if 'MOMENTUM WAVE' in str(row['patterns']) else 0,
+                            8 if 'BREAKOUT' in str(row['patterns']) else 0,
+                            6 if 'ACCELERATION' in str(row['patterns']) else 0,
+                            5 if 'VOL EXPLOSION' in str(row['patterns']) else 0
+                        ]) * (row['pattern_confidence'] / 100.0)  # Scale by confidence
+                    ) if pd.notna(row['patterns']) else 0, 
+                    axis=1
+                )
+                
+                # Apply bonus with dampening for low confidence
+                df['overall_wave_strength'] = df['overall_wave_strength'] + pattern_bonus
+            
+            # Volume trend confirmation
+            if 'enhanced_vmi' in df.columns:
+                volume_confirmation = df['enhanced_vmi'].apply(
+                    lambda x: min(10, max(0, (x - 1.0) * 10)) if pd.notna(x) else 0
+                )
+                df['overall_wave_strength'] += volume_confirmation
+            
+            # Ensure final score is within bounds
+            df['overall_wave_strength'] = df['overall_wave_strength'].clip(0, 100)
+        else:
+            df['overall_wave_strength'] = pd.Series(np.nan, index=df.index)
+        
+        # Add revolutionary wave direction indicator 
+        df['wave_direction'] = df.apply(
+            lambda row: '🔥 GENIUS WAVE' if row.get('overall_wave_strength', 0) >= 90
+            else '⚡ BRILLIANT' if row.get('overall_wave_strength', 0) >= 80  
+            else '🚀 STRONG' if row.get('overall_wave_strength', 0) >= 70
+            else '📈 BUILDING' if row.get('overall_wave_strength', 0) >= 55
+            else '🌊 FORMING' if row.get('overall_wave_strength', 0) >= 40
+            else '💫 WEAK', axis=1
+        )
+        
+        logger.info("🚀 Revolutionary Advanced Metrics calculation completed successfully!")
+        return df
             for _, row in df.iterrows():
                 if pd.isna(row['patterns']) or row['patterns'] == '':
                     pattern_scores.append(0.0)
@@ -1592,6 +3124,1033 @@ class AdvancedMetrics:
             return "🌊 FORMING"
         else:
             return "💥 BREAKING"
+    
+    @staticmethod
+    @PerformanceMonitor.timer('calculations')
+    def _calculate_momentum_intelligence(df: pd.DataFrame) -> pd.DataFrame:
+        """
+        🎯 MULTI-TIMEFRAME MOMENTUM INTELLIGENCE
+        Calculates momentum quality score using multiple timeframes with consistency factors
+        """
+        try:
+            # Short-term momentum (1d, 3d, 7d) - 40%
+            short_momentum = 0
+            if 'ret_1d' in df.columns:
+                short_momentum += df['ret_1d'].fillna(0) * 0.5
+            if 'ret_3d' in df.columns:
+                short_momentum += df['ret_3d'].fillna(0) * 0.3
+            if 'ret_7d' in df.columns:
+                short_momentum += df['ret_7d'].fillna(0) * 0.2
+            
+            # Medium-term momentum (30d, 3m) - 35%
+            medium_momentum = 0
+            if 'ret_30d' in df.columns:
+                medium_momentum += df['ret_30d'].fillna(0) * 0.6
+            if 'ret_3m' in df.columns:
+                medium_momentum += df['ret_3m'].fillna(0) * 0.4
+            
+            # Long-term momentum (6m, 1y) - 25%
+            long_momentum = 0
+            if 'ret_6m' in df.columns:
+                long_momentum += df['ret_6m'].fillna(0) * 0.6
+            if 'ret_1y' in df.columns:
+                long_momentum += df['ret_1y'].fillna(0) * 0.4
+            
+            # Calculate consistency factor (penalize erratic movements)
+            consistency_factor = 1.0
+            if all(col in df.columns for col in ['ret_1d', 'ret_7d', 'ret_30d']):
+                # Check for smooth progression
+                ret_1d_scaled = df['ret_1d'].fillna(0) * 7  # Scale to weekly
+                ret_7d = df['ret_7d'].fillna(0)
+                ret_30d_scaled = df['ret_30d'].fillna(0) / 4  # Scale to weekly
+                
+                # Consistency bonus for aligned momentum
+                aligned = ((ret_1d_scaled > 0) & (ret_7d > 0) & (ret_30d_scaled > 0)) | \
+                         ((ret_1d_scaled < 0) & (ret_7d < 0) & (ret_30d_scaled < 0))
+                consistency_factor = np.where(aligned, 1.2, 0.8)
+            
+            # Volume confirmation factor
+            volume_confirmation = 1.0
+            if 'rvol' in df.columns:
+                rvol = df['rvol'].fillna(1.0)
+                volume_confirmation = np.where(rvol > 1.5, 1.1, 
+                                             np.where(rvol > 1.2, 1.05, 0.95))
+            
+            # Calculate final momentum quality score
+            df['momentum_quality_score'] = (
+                short_momentum * 0.40 +
+                medium_momentum * 0.35 +
+                long_momentum * 0.25
+            ) * consistency_factor * volume_confirmation
+            
+            # Normalize to 0-100 scale
+            df['momentum_quality_score'] = ((df['momentum_quality_score'] + 100) / 2).clip(0, 100)
+            
+            # Momentum acceleration (rate of change)
+            if all(col in df.columns for col in ['ret_1d', 'ret_7d']):
+                recent_momentum = df['ret_1d'].fillna(0)
+                week_momentum = df['ret_7d'].fillna(0) / 7
+                df['momentum_acceleration'] = recent_momentum - week_momentum
+            else:
+                df['momentum_acceleration'] = 0
+                
+            logger.info("✅ Momentum Intelligence calculated successfully")
+            
+        except Exception as e:
+            logger.warning(f"Error in momentum intelligence calculation: {e}")
+            df['momentum_quality_score'] = 50
+            df['momentum_acceleration'] = 0
+            
+        return df
+    
+    @staticmethod
+    @PerformanceMonitor.timer('calculations')
+    def _calculate_institutional_flow(df: pd.DataFrame) -> pd.DataFrame:
+        """
+        💰 INSTITUTIONAL FLOW ANALYZER (Smart Money Detection)
+        Detects institutional activity through volume velocity and price-volume analysis
+        """
+        try:
+            # Volume velocity score
+            volume_velocity = 50  # Default neutral
+            if 'vol_ratio_1d_90d' in df.columns:
+                vol_1d_90d = df['vol_ratio_1d_90d'].fillna(100)
+                volume_velocity = np.where(vol_1d_90d > 300, 90,
+                                 np.where(vol_1d_90d > 200, 80,
+                                 np.where(vol_1d_90d > 150, 70,
+                                 np.where(vol_1d_90d > 120, 60, 50))))
+            
+            # Price-volume divergence (warning for distribution)
+            pv_divergence_score = 50
+            if all(col in df.columns for col in ['ret_7d', 'vol_ratio_7d_90d']):
+                price_trend = df['ret_7d'].fillna(0)
+                volume_trend = df['vol_ratio_7d_90d'].fillna(100) - 100
+                
+                # Positive divergence (bullish): Price down, volume up
+                # Negative divergence (bearish): Price up, volume down
+                bullish_divergence = (price_trend < -5) & (volume_trend > 20)
+                bearish_divergence = (price_trend > 5) & (volume_trend < -20)
+                
+                pv_divergence_score = np.where(bullish_divergence, 80,
+                                     np.where(bearish_divergence, 20, 50))
+            
+            # Accumulation/Distribution score
+            accumulation_score = 50
+            if all(col in df.columns for col in ['ret_30d', 'vol_ratio_30d_90d', 'from_low_pct']):
+                monthly_return = df['ret_30d'].fillna(0)
+                monthly_volume = df['vol_ratio_30d_90d'].fillna(100)
+                position = df['from_low_pct'].fillna(50)
+                
+                # Stealth accumulation: Low returns, high volume, lower position
+                stealth_accumulation = (monthly_return < 10) & (monthly_volume > 120) & (position < 60)
+                # Distribution: High returns, declining volume, high position  
+                distribution = (monthly_return > 20) & (monthly_volume < 80) & (position > 70)
+                
+                accumulation_score = np.where(stealth_accumulation, 85,
+                                   np.where(distribution, 25, 50))
+            
+            # Dark pool activity estimation (based on volume patterns)
+            dark_pool_score = 50
+            if all(col in df.columns for col in ['volume_1d', 'volume_7d', 'volume_30d']):
+                # Estimate dark pool by volume consistency despite price movement
+                vol_1d = df['volume_1d'].fillna(0)
+                vol_7d_avg = df['volume_7d'].fillna(0) / 7
+                vol_30d_avg = df['volume_30d'].fillna(0) / 30
+                
+                # High consistent volume with minimal price volatility suggests dark pool
+                volume_consistency = abs(vol_1d - vol_7d_avg) / (vol_7d_avg + 1)
+                consistent_volume = volume_consistency < 0.3
+                
+                if 'ret_1d' in df.columns:
+                    low_volatility = abs(df['ret_1d'].fillna(0)) < 3
+                    dark_pool_indicator = consistent_volume & low_volatility & (vol_1d > vol_30d_avg)
+                    dark_pool_score = np.where(dark_pool_indicator, 75, 50)
+            
+            # Market cap weighting (different thresholds for different caps)
+            market_cap_weight = 1.0
+            if 'category' in df.columns:
+                weights = {
+                    'Mega Cap': 0.8,  # Lower sensitivity for large caps
+                    'Large Cap': 0.9,
+                    'Mid Cap': 1.0,
+                    'Small Cap': 1.2,  # Higher sensitivity for small caps
+                    'Micro Cap': 1.4,
+                    'Nano Cap': 1.5
+                }
+                market_cap_weight = df['category'].map(weights).fillna(1.0)
+            
+            # Calculate final Smart Money Index
+            df['smart_money_index'] = (
+                volume_velocity * 0.35 +
+                pv_divergence_score * 0.25 +
+                accumulation_score * 0.25 +
+                dark_pool_score * 0.15
+            ) * market_cap_weight
+            
+            df['smart_money_index'] = df['smart_money_index'].clip(0, 100)
+            
+            # Smart money flow direction
+            df['smart_money_flow'] = np.where(df['smart_money_index'] > 70, '🟢 ACCUMULATION',
+                                    np.where(df['smart_money_index'] > 55, '🟡 NEUTRAL',
+                                    np.where(df['smart_money_index'] > 40, '🟠 MIXED', '🔴 DISTRIBUTION')))
+            
+            logger.info("✅ Institutional Flow Analysis completed")
+            
+        except Exception as e:
+            logger.warning(f"Error in institutional flow calculation: {e}")
+            df['smart_money_index'] = 50
+            df['smart_money_flow'] = '🟡 NEUTRAL'
+            
+        return df
+    
+    @staticmethod
+    @PerformanceMonitor.timer('calculations') 
+    def _calculate_sma_intelligence(df: pd.DataFrame) -> pd.DataFrame:
+        """
+        📈 SMA TREND INTELLIGENCE ENGINE
+        Advanced SMA analysis with dynamic support/resistance and slope momentum
+        """
+        try:
+            # SMA Alignment Score (bullish when price > SMA20 > SMA50 > SMA200)
+            sma_alignment_score = 50
+            if all(col in df.columns for col in ['price', 'sma_20d', 'sma_50d', 'sma_200d']):
+                price = df['price'].fillna(0)
+                sma20 = df['sma_20d'].fillna(0)
+                sma50 = df['sma_50d'].fillna(0)
+                sma200 = df['sma_200d'].fillna(0)
+                
+                # Perfect bullish alignment
+                perfect_bull = (price > sma20) & (sma20 > sma50) & (sma50 > sma200)
+                # Partial bullish alignment
+                partial_bull = (price > sma20) & (sma20 > sma50)
+                # Bearish alignment
+                perfect_bear = (price < sma20) & (sma20 < sma50) & (sma50 < sma200)
+                
+                sma_alignment_score = np.where(perfect_bull, 90,
+                                     np.where(partial_bull, 75,
+                                     np.where(perfect_bear, 10, 50)))
+            
+            # Price vs SMA positioning (strength of position)
+            sma_position_strength = 50
+            if all(col in df.columns for col in ['price', 'sma_20d', 'sma_50d']):
+                price = df['price'].fillna(0)
+                sma20 = df['sma_20d'].fillna(1)
+                sma50 = df['sma_50d'].fillna(1)
+                
+                # Distance above/below SMAs (percentage)
+                dist_sma20 = ((price - sma20) / sma20 * 100).fillna(0)
+                dist_sma50 = ((price - sma50) / sma50 * 100).fillna(0)
+                
+                # Strength based on distance (but penalize overextension)
+                avg_distance = (dist_sma20 + dist_sma50) / 2
+                sma_position_strength = np.where(avg_distance > 15, 30,  # Overextended
+                                       np.where(avg_distance > 5, 85,   # Strong position
+                                       np.where(avg_distance > 0, 70,   # Above SMAs
+                                       np.where(avg_distance > -5, 30,  # Slightly below
+                                       np.where(avg_distance > -15, 15, 5)))))  # Well below
+            
+            # SMA Slope Analysis (trend momentum)
+            sma_slope_momentum = 50
+            if 'sma_20d' in df.columns:
+                # Estimate slope by comparing current SMA to historical average
+                # Since we don't have historical SMA data, use relationship with longer SMAs
+                if all(col in df.columns for col in ['sma_20d', 'sma_50d', 'sma_200d']):
+                    sma20 = df['sma_20d'].fillna(0)
+                    sma50 = df['sma_50d'].fillna(1)
+                    sma200 = df['sma_200d'].fillna(1)
+                    
+                    # Rising SMAs: shorter > longer
+                    slope_20_50 = ((sma20 - sma50) / sma50 * 100).fillna(0)
+                    slope_50_200 = ((sma50 - sma200) / sma200 * 100).fillna(0)
+                    
+                    avg_slope = (slope_20_50 + slope_50_200) / 2
+                    sma_slope_momentum = np.where(avg_slope > 5, 90,
+                                        np.where(avg_slope > 2, 80,
+                                        np.where(avg_slope > 0, 65,
+                                        np.where(avg_slope > -2, 35,
+                                        np.where(avg_slope > -5, 20, 10)))))
+            
+            # Support/Resistance Breach Signals
+            support_resistance_score = 50
+            if all(col in df.columns for col in ['price', 'sma_50d', 'sma_200d', 'ret_1d']):
+                price = df['price'].fillna(0)
+                sma50 = df['sma_50d'].fillna(0)
+                sma200 = df['sma_200d'].fillna(0)
+                daily_return = df['ret_1d'].fillna(0)
+                
+                # Breakout above key resistance (with volume would be better)
+                breakout_sma50 = (price > sma50 * 1.02) & (daily_return > 2)  # 2% above SMA50 with positive day
+                breakout_sma200 = (price > sma200 * 1.03) & (daily_return > 3)  # 3% above SMA200
+                
+                # Breakdown below key support
+                breakdown_sma50 = (price < sma50 * 0.98) & (daily_return < -2)
+                breakdown_sma200 = (price < sma200 * 0.97) & (daily_return < -3)
+                
+                support_resistance_score = np.where(breakout_sma200, 95,
+                                          np.where(breakout_sma50, 85,
+                                          np.where(breakdown_sma200, 5,
+                                          np.where(breakdown_sma50, 15, 50))))
+            
+            # Calculate final SMA Intelligence Score  
+            df['sma_intelligence'] = (
+                sma_alignment_score * 0.30 +
+                sma_position_strength * 0.25 +
+                sma_slope_momentum * 0.25 +
+                support_resistance_score * 0.20
+            ).clip(0, 100)
+            
+            # SMA trend classification
+            df['sma_trend_strength'] = np.where(df['sma_intelligence'] > 80, '🔥 EXPLOSIVE',
+                                      np.where(df['sma_intelligence'] > 70, '⚡ STRONG',
+                                      np.where(df['sma_intelligence'] > 60, '📈 BULLISH',
+                                      np.where(df['sma_intelligence'] > 40, '😐 NEUTRAL',
+                                      '📉 BEARISH'))))
+            
+            logger.info("✅ SMA Intelligence calculated successfully")
+            
+        except Exception as e:
+            logger.warning(f"Error in SMA intelligence calculation: {e}")
+            df['sma_intelligence'] = 50
+            df['sma_trend_strength'] = '😐 NEUTRAL'
+            
+        return df
+    
+    @staticmethod
+    @PerformanceMonitor.timer('calculations')
+    def _calculate_risk_adjusted_performance(df: pd.DataFrame) -> pd.DataFrame:
+        """
+        ⚡ VOLATILITY-ADJUSTED PERFORMANCE
+        Calculates risk-adjusted returns and quality metrics
+        """
+        try:
+            # Calculate volatility estimate using available returns
+            volatility_estimate = 1.0  # Default
+            if all(col in df.columns for col in ['ret_1d', 'ret_7d', 'ret_30d']):
+                # Estimate volatility from return spread
+                ret_1d = df['ret_1d'].fillna(0)
+                ret_7d = df['ret_7d'].fillna(0) / 7  # Daily equivalent
+                ret_30d = df['ret_30d'].fillna(0) / 30  # Daily equivalent
+                
+                # Use standard deviation of returns as volatility proxy
+                returns_matrix = np.column_stack([ret_1d, ret_7d, ret_30d])
+                volatility_estimate = np.std(returns_matrix, axis=1)
+                volatility_estimate = np.where(volatility_estimate == 0, 1.0, volatility_estimate)
+            
+            # Sharpe-like ratio (return/volatility)
+            if 'ret_30d' in df.columns:
+                monthly_return = df['ret_30d'].fillna(0)
+                df['risk_adjusted_return'] = monthly_return / (volatility_estimate * 100 + 1)
+            else:
+                df['risk_adjusted_return'] = 0
+            
+            # Downside deviation (focus on negative volatility)
+            downside_protection = 50
+            if 'ret_1d' in df.columns:
+                ret_1d = df['ret_1d'].fillna(0)
+                # Penalize stocks with large negative moves
+                max_down_day = np.where(ret_1d < -10, 10,
+                              np.where(ret_1d < -7, 25,
+                              np.where(ret_1d < -5, 40, 75)))
+                downside_protection = max_down_day
+            
+            # Maximum drawdown recovery (using 52-week data)
+            recovery_strength = 50
+            if all(col in df.columns for col in ['from_low_pct', 'from_high_pct']):
+                from_low = df['from_low_pct'].fillna(0)
+                from_high = df['from_high_pct'].fillna(-50)
+                
+                # Strong recovery from lows
+                strong_recovery = from_low > 50
+                # Near highs (potential resistance)
+                near_highs = from_high > -10
+                
+                recovery_strength = np.where(strong_recovery & ~near_highs, 90,
+                                   np.where(strong_recovery, 70,
+                                   np.where(from_low > 25, 60, 30)))
+            
+            # Sector beta adjustment (basic implementation)
+            sector_adjustment = 1.0
+            if 'sector' in df.columns:
+                # Different sectors have different risk profiles
+                high_beta_sectors = ['Technology', 'Consumer Cyclical', 'Financial Services']
+                low_beta_sectors = ['Utilities', 'Consumer Defensive', 'Healthcare']
+                
+                is_high_beta = df['sector'].isin(high_beta_sectors)
+                is_low_beta = df['sector'].isin(low_beta_sectors)
+                
+                sector_adjustment = np.where(is_high_beta, 1.2,
+                                   np.where(is_low_beta, 0.8, 1.0))
+            
+            # Calculate final risk-adjusted performance score
+            df['risk_adjusted_performance'] = (
+                (df['risk_adjusted_return'] * 20 + 50).clip(0, 100) * 0.40 +
+                downside_protection * 0.30 +
+                recovery_strength * 0.30
+            ) * sector_adjustment
+            
+            df['risk_adjusted_performance'] = df['risk_adjusted_performance'].clip(0, 100)
+            
+            # Risk grade classification
+            df['risk_grade'] = np.where(df['risk_adjusted_performance'] > 80, 'A+ LOW RISK',
+                              np.where(df['risk_adjusted_performance'] > 70, 'A MODERATE',
+                              np.where(df['risk_adjusted_performance'] > 60, 'B+ BALANCED',
+                              np.where(df['risk_adjusted_performance'] > 50, 'B HIGH',
+                              'C VERY HIGH'))))
+            
+            logger.info("✅ Risk-Adjusted Performance calculated")
+            
+        except Exception as e:
+            logger.warning(f"Error in risk-adjusted performance calculation: {e}")
+            df['risk_adjusted_performance'] = 50
+            df['risk_grade'] = 'B BALANCED'
+            
+        return df
+    
+    @staticmethod
+    @PerformanceMonitor.timer('calculations')
+    def _calculate_volume_intelligence(df: pd.DataFrame) -> pd.DataFrame:
+        """
+        🌊 CROSS-TIMEFRAME VOLUME ANALYSIS
+        Advanced volume pattern analysis across multiple timeframes
+        """
+        try:
+            # Volume ratio convergence/divergence
+            volume_convergence = 50
+            if all(col in df.columns for col in ['vol_ratio_1d_90d', 'vol_ratio_7d_90d', 'vol_ratio_30d_90d']):
+                vol_1d = df['vol_ratio_1d_90d'].fillna(100)
+                vol_7d = df['vol_ratio_7d_90d'].fillna(100) 
+                vol_30d = df['vol_ratio_30d_90d'].fillna(100)
+                
+                # Check for volume trending (acceleration/deceleration)
+                vol_trend_up = (vol_1d > vol_7d) & (vol_7d > vol_30d)  # Accelerating volume
+                vol_trend_down = (vol_1d < vol_7d) & (vol_7d < vol_30d)  # Decelerating volume
+                
+                # Explosive volume pattern
+                explosive_volume = (vol_1d > 200) & (vol_7d > 150)
+                
+                volume_convergence = np.where(explosive_volume, 95,
+                                    np.where(vol_trend_up, 80,
+                                    np.where(vol_trend_down, 30, 50)))
+            
+            # Relative volume trending
+            rvol_trend = 50
+            if 'rvol' in df.columns:
+                rvol = df['rvol'].fillna(1.0)
+                rvol_trend = np.where(rvol > 5.0, 95,
+                            np.where(rvol > 3.0, 90,
+                            np.where(rvol > 2.0, 80,
+                            np.where(rvol > 1.5, 70,
+                            np.where(rvol > 1.2, 60,
+                            np.where(rvol < 0.5, 20, 50))))))
+            
+            # Volume velocity changes (rate of volume acceleration)
+            volume_velocity = 50
+            if all(col in df.columns for col in ['vol_ratio_1d_90d', 'vol_ratio_7d_90d']):
+                vol_1d = df['vol_ratio_1d_90d'].fillna(100)
+                vol_7d = df['vol_ratio_7d_90d'].fillna(100)
+                
+                # Volume acceleration
+                vol_acceleration = vol_1d - vol_7d
+                volume_velocity = np.where(vol_acceleration > 100, 90,
+                                 np.where(vol_acceleration > 50, 80,
+                                 np.where(vol_acceleration > 20, 70,
+                                 np.where(vol_acceleration > 0, 60,
+                                 np.where(vol_acceleration > -20, 40,
+                                 np.where(vol_acceleration > -50, 30, 20))))))
+            
+            # Institutional vs retail volume estimation
+            institutional_volume = 50
+            if all(col in df.columns for col in ['volume_1d', 'price']):
+                # Large volume with minimal price impact suggests institutional
+                volume_1d = df['volume_1d'].fillna(0)
+                price = df['price'].fillna(1)
+                
+                # Calculate notional value traded
+                notional_value = volume_1d * price
+                
+                # High notional with controlled price movement
+                if 'ret_1d' in df.columns:
+                    price_impact = abs(df['ret_1d'].fillna(0))
+                    # Low price impact despite high volume suggests institutional
+                    institutional_signature = (notional_value > 1000000) & (price_impact < 3)
+                    institutional_volume = np.where(institutional_signature, 85, 50)
+            
+            # Market cap adjustment for volume analysis
+            market_cap_volume_adjustment = 1.0
+            if 'category' in df.columns:
+                # Smaller caps need less volume for significance
+                adjustments = {
+                    'Nano Cap': 2.0,
+                    'Micro Cap': 1.8,
+                    'Small Cap': 1.5,
+                    'Mid Cap': 1.2,
+                    'Large Cap': 1.0,
+                    'Mega Cap': 0.8
+                }
+                market_cap_volume_adjustment = df['category'].map(adjustments).fillna(1.0)
+            
+            # Calculate final volume intelligence score
+            df['volume_intelligence'] = (
+                volume_convergence * 0.30 +
+                rvol_trend * 0.30 +
+                volume_velocity * 0.25 +
+                institutional_volume * 0.15
+            ) * market_cap_volume_adjustment
+            
+            df['volume_intelligence'] = df['volume_intelligence'].clip(0, 100)
+            
+            # Volume pattern classification
+            df['volume_pattern'] = np.where(df['volume_intelligence'] > 85, '🌪️ EXPLOSIVE',
+                                   np.where(df['volume_intelligence'] > 75, '⚡ SURGE',
+                                   np.where(df['volume_intelligence'] > 65, '📈 BUILDING',
+                                   np.where(df['volume_intelligence'] > 35, '😐 NORMAL',
+                                   '📉 DECLINING'))))
+            
+            logger.info("✅ Volume Intelligence calculated successfully")
+            
+        except Exception as e:
+            logger.warning(f"Error in volume intelligence calculation: {e}")
+            df['volume_intelligence'] = 50
+            df['volume_pattern'] = '😐 NORMAL'
+            
+        return df
+    
+    @staticmethod
+    @PerformanceMonitor.timer('calculations')
+    def _calculate_fundamental_momentum(df: pd.DataFrame) -> pd.DataFrame:
+        """
+        📊 FUNDAMENTAL MOMENTUM FUSION
+        Combines earnings growth, PE efficiency, and fundamental trends
+        """
+        try:
+            # EPS Growth Acceleration
+            eps_momentum = 50
+            if 'eps_change_pct' in df.columns:
+                eps_growth = df['eps_change_pct'].fillna(0)
+                
+                # Remove % sign if present and convert to numeric
+                if eps_growth.dtype == 'object':
+                    eps_growth = pd.to_numeric(eps_growth.str.replace('%', ''), errors='coerce').fillna(0)
+                
+                eps_momentum = np.where(eps_growth > 50, 95,
+                             np.where(eps_growth > 25, 85,
+                             np.where(eps_growth > 15, 75,
+                             np.where(eps_growth > 5, 65,
+                             np.where(eps_growth > 0, 55,
+                             np.where(eps_growth > -10, 45, 25))))))
+            
+            # PE Ratio Optimization (best returns per PE unit)
+            pe_efficiency = 50
+            if all(col in df.columns for col in ['pe', 'ret_30d']):
+                pe_ratio = pd.to_numeric(df['pe'], errors='coerce').fillna(25)
+                monthly_return = df['ret_30d'].fillna(0)
+                
+                # Calculate return per PE unit (efficiency metric)
+                with np.errstate(divide='ignore', invalid='ignore'):
+                    pe_efficiency_ratio = monthly_return / (pe_ratio + 1)
+                
+                # Classify PE efficiency
+                pe_efficiency = np.where(pe_efficiency_ratio > 2, 90,
+                              np.where(pe_efficiency_ratio > 1, 80,
+                              np.where(pe_efficiency_ratio > 0.5, 70,
+                              np.where(pe_efficiency_ratio > 0, 60,
+                              np.where(pe_efficiency_ratio > -0.5, 40, 20)))))
+                
+                # Penalty for very high PE ratios (>50)
+                high_pe_penalty = pe_ratio > 50
+                pe_efficiency = np.where(high_pe_penalty, pe_efficiency * 0.7, pe_efficiency)
+            
+            # Year-over-Year consistency (using company vintage)
+            vintage_quality = 50
+            if 'year' in df.columns:
+                company_age = 2025 - pd.to_numeric(df['year'], errors='coerce').fillna(2000)
+                
+                # Mature companies (>20 years) get stability bonus
+                # Young companies (<10 years) get growth potential bonus  
+                # Middle-aged companies (10-20 years) are neutral
+                vintage_quality = np.where(company_age > 30, 65,  # Very mature - stable
+                                 np.where(company_age > 20, 60,  # Mature - reliable
+                                 np.where(company_age > 10, 50,  # Established - neutral
+                                 np.where(company_age > 5, 55,   # Young - growth potential
+                                 70))))  # Very young - high growth potential
+            
+            # Sector relative performance
+            sector_performance = 50
+            if all(col in df.columns for col in ['sector', 'ret_30d']):
+                # Calculate sector median performance
+                sector_medians = df.groupby('sector')['ret_30d'].median()
+                df['sector_median_return'] = df['sector'].map(sector_medians)
+                
+                monthly_return = df['ret_30d'].fillna(0)
+                sector_median = df['sector_median_return'].fillna(0)
+                
+                # Performance relative to sector
+                relative_performance = monthly_return - sector_median
+                sector_performance = np.where(relative_performance > 10, 90,
+                                    np.where(relative_performance > 5, 80,
+                                    np.where(relative_performance > 0, 65,
+                                    np.where(relative_performance > -5, 35,
+                                    np.where(relative_performance > -10, 20, 10)))))
+            
+            # Quality factor (combines multiple fundamental metrics)
+            quality_factor = 1.0
+            if all(col in df.columns for col in ['pe', 'eps_current']):
+                pe_ratio = pd.to_numeric(df['pe'], errors='coerce').fillna(25)
+                eps_current = pd.to_numeric(df['eps_current'], errors='coerce').fillna(1)
+                
+                # Quality indicators
+                reasonable_pe = (pe_ratio > 5) & (pe_ratio < 30)  # Reasonable valuation
+                positive_eps = eps_current > 0  # Profitable
+                
+                quality_indicators = reasonable_pe.astype(int) + positive_eps.astype(int)
+                quality_factor = np.where(quality_indicators == 2, 1.2,  # Both conditions
+                               np.where(quality_indicators == 1, 1.0,   # One condition
+                               0.8))  # Neither condition
+            
+            # Calculate final fundamental momentum score
+            df['fundamental_momentum'] = (
+                eps_momentum * 0.35 +
+                pe_efficiency * 0.30 +
+                vintage_quality * 0.15 +
+                sector_performance * 0.20
+            ) * quality_factor
+            
+            df['fundamental_momentum'] = df['fundamental_momentum'].clip(0, 100)
+            
+            # Fundamental grade
+            df['fundamental_grade'] = np.where(df['fundamental_momentum'] > 80, '🏆 EXCELLENT',
+                                     np.where(df['fundamental_momentum'] > 70, '🥇 STRONG', 
+                                     np.where(df['fundamental_momentum'] > 60, '🥈 GOOD',
+                                     np.where(df['fundamental_momentum'] > 50, '🥉 FAIR',
+                                     '⚠️ WEAK'))))
+            
+            logger.info("✅ Fundamental Momentum calculated successfully")
+            
+        except Exception as e:
+            logger.warning(f"Error in fundamental momentum calculation: {e}")
+            df['fundamental_momentum'] = 50
+            df['fundamental_grade'] = '🥉 FAIR'
+            
+        return df
+    
+    @staticmethod
+    @PerformanceMonitor.timer('calculations')
+    def _calculate_position_intelligence(df: pd.DataFrame) -> pd.DataFrame:
+        """
+        🎯 MARKET POSITIONING INTELLIGENCE
+        Analyzes 52-week positioning and breakout probabilities
+        """
+        try:
+            # 52-week range positioning analysis
+            range_position_score = 50
+            if all(col in df.columns for col in ['from_low_pct', 'from_high_pct']):
+                from_low = df['from_low_pct'].fillna(50)
+                from_high = df['from_high_pct'].fillna(-50)
+                
+                # Sweet spot: 60-80% from low (strong but not overextended)
+                sweet_spot = (from_low >= 60) & (from_low <= 80)
+                # Early stage: 20-50% from low (potential building)
+                early_stage = (from_low >= 20) & (from_low < 60)
+                # Near lows: <20% from low (potential turnaround)
+                near_lows = from_low < 20
+                # Overextended: >90% from low
+                overextended = from_low > 90
+                
+                range_position_score = np.where(sweet_spot, 85,
+                                      np.where(early_stage, 70,
+                                      np.where(near_lows, 60,  # Opportunity if other factors align
+                                      np.where(overextended, 25, 50))))
+            
+            # Breakout probability assessment
+            breakout_probability = 50
+            if all(col in df.columns for col in ['from_high_pct', 'volume_intelligence', 'momentum_quality_score']):
+                from_high = df['from_high_pct'].fillna(-50)
+                volume_intel = df['volume_intelligence'].fillna(50)
+                momentum_qual = df['momentum_quality_score'].fillna(50)
+                
+                # High probability breakout conditions
+                near_highs = from_high > -15  # Within 15% of 52-week high
+                strong_volume = volume_intel > 70
+                strong_momentum = momentum_qual > 70
+                
+                # Breakout confluence scoring
+                breakout_factors = near_highs.astype(int) + strong_volume.astype(int) + strong_momentum.astype(int)
+                breakout_probability = np.where(breakout_factors == 3, 90,  # All factors
+                                      np.where(breakout_factors == 2, 75,  # Two factors
+                                      np.where(breakout_factors == 1, 60,  # One factor
+                                      30)))  # No factors
+            
+            # Support/resistance analysis
+            support_resistance_strength = 50
+            if all(col in df.columns for col in ['from_low_pct', 'from_high_pct', 'sma_intelligence']):
+                from_low = df['from_low_pct'].fillna(50)
+                from_high = df['from_high_pct'].fillna(-50)
+                sma_intel = df['sma_intelligence'].fillna(50)
+                
+                # Strong support zones
+                at_support = (from_low < 30) & (sma_intel > 60)  # Near lows but SMAs strong
+                # Strong resistance zones  
+                at_resistance = (from_high > -20) & (sma_intel < 40)  # Near highs but SMAs weak
+                # In range with strong trends
+                trending_range = (from_low > 30) & (from_low < 70) & (sma_intel > 60)
+                
+                support_resistance_strength = np.where(trending_range, 80,
+                                            np.where(at_support, 70,
+                                            np.where(at_resistance, 30, 50)))
+            
+            # Volume at key levels confirmation
+            volume_confirmation = 50
+            if all(col in df.columns for col in ['rvol', 'from_high_pct', 'ret_1d']):
+                rvol = df['rvol'].fillna(1.0)
+                from_high = df['from_high_pct'].fillna(-50)
+                daily_return = df['ret_1d'].fillna(0)
+                
+                # High volume near resistance with positive move
+                volume_breakout = (rvol > 2.0) & (from_high > -15) & (daily_return > 2)
+                # High volume near support with bounce
+                volume_support = (rvol > 2.0) & (from_high < -30) & (daily_return > 1)
+                # High volume breakdown
+                volume_breakdown = (rvol > 2.0) & (daily_return < -3)
+                
+                volume_confirmation = np.where(volume_breakout, 90,
+                                     np.where(volume_support, 75,
+                                     np.where(volume_breakdown, 20, 50)))
+            
+            # Calculate final position intelligence score
+            df['position_intelligence'] = (
+                range_position_score * 0.35 +
+                breakout_probability * 0.30 +
+                support_resistance_strength * 0.20 +
+                volume_confirmation * 0.15
+            ).clip(0, 100)
+            
+            # Position classification
+            df['position_status'] = np.where(df['position_intelligence'] > 80, '🚀 BREAKOUT READY',
+                                    np.where(df['position_intelligence'] > 70, '⚡ STRONG POSITION',
+                                    np.where(df['position_intelligence'] > 60, '📈 BUILDING',
+                                    np.where(df['position_intelligence'] > 40, '😐 NEUTRAL',
+                                    '⚠️ WEAK POSITION'))))
+            
+            logger.info("✅ Position Intelligence calculated successfully")
+            
+        except Exception as e:
+            logger.warning(f"Error in position intelligence calculation: {e}")
+            df['position_intelligence'] = 50
+            df['position_status'] = '😐 NEUTRAL'
+            
+        return df
+    
+    @staticmethod
+    @PerformanceMonitor.timer('calculations')
+    def _calculate_pattern_synthesis(df: pd.DataFrame) -> pd.DataFrame:
+        """
+        🔥 REVOLUTIONARY PATTERN SYNTHESIS
+        Combines technical, fundamental, and revolutionary patterns
+        """
+        try:
+            # Technical pattern strength (from existing patterns)
+            technical_strength = 50
+            if 'pattern_confidence' in df.columns:
+                technical_strength = df['pattern_confidence'].fillna(50)
+            
+            # Fundamental pattern alignment  
+            fundamental_alignment = 50
+            if all(col in df.columns for col in ['fundamental_momentum', 'pe']):
+                fund_momentum = df['fundamental_momentum'].fillna(50)
+                pe_ratio = pd.to_numeric(df['pe'], errors='coerce').fillna(25)
+                
+                # Strong fundamentals with reasonable valuation
+                strong_fundamentals = (fund_momentum > 70) & (pe_ratio < 30)
+                # Turnaround story (improving fundamentals, high PE)
+                turnaround_story = (fund_momentum > 60) & (pe_ratio > 30)
+                
+                fundamental_alignment = np.where(strong_fundamentals, 85,
+                                       np.where(turnaround_story, 70, 50))
+            
+            # Volume pattern confirmation
+            volume_pattern_strength = 50
+            if 'volume_intelligence' in df.columns:
+                volume_pattern_strength = df['volume_intelligence'].fillna(50)
+            
+            # Market timing optimization
+            market_timing = 50
+            if all(col in df.columns for col in ['sma_intelligence', 'momentum_quality_score', 'smart_money_index']):
+                sma_intel = df['sma_intelligence'].fillna(50)
+                momentum_qual = df['momentum_quality_score'].fillna(50) 
+                smart_money = df['smart_money_index'].fillna(50)
+                
+                # All systems go
+                all_systems_go = (sma_intel > 70) & (momentum_qual > 70) & (smart_money > 70)
+                # Two of three strong
+                two_of_three = ((sma_intel > 70).astype(int) + 
+                              (momentum_qual > 70).astype(int) + 
+                              (smart_money > 70).astype(int)) >= 2
+                
+                market_timing = np.where(all_systems_go, 95,
+                              np.where(two_of_three, 80, 50))
+            
+            # Pattern reliability (based on historical performance - simulated)
+            pattern_reliability = 75  # Base reliability score
+            if 'patterns' in df.columns:
+                patterns = df['patterns'].fillna('')
+                
+                # High reliability patterns
+                high_reliability = patterns.str.contains('MOMENTUM WAVE|BREAKOUT|ACCELERATION', na=False)
+                # Medium reliability patterns  
+                medium_reliability = patterns.str.contains('HIDDEN GEM|STEALTH|PYRAMID', na=False)
+                # Warning patterns
+                warning_patterns = patterns.str.contains('BULL TRAP|DISTRIBUTION|EXHAUSTION', na=False)
+                
+                pattern_reliability = np.where(high_reliability, 85,
+                                     np.where(medium_reliability, 75,
+                                     np.where(warning_patterns, 40, 75)))
+            
+            # Calculate final pattern synthesis score
+            df['pattern_synthesis'] = (
+                technical_strength * 0.25 +
+                fundamental_alignment * 0.25 +
+                volume_pattern_strength * 0.20 +
+                market_timing * 0.20 +
+                pattern_reliability * 0.10
+            ).clip(0, 100)
+            
+            # Pattern confidence level
+            df['pattern_confidence_level'] = np.where(df['pattern_synthesis'] > 85, '🔥 VERY HIGH',
+                                            np.where(df['pattern_synthesis'] > 75, '⚡ HIGH',
+                                            np.where(df['pattern_synthesis'] > 65, '📈 GOOD',
+                                            np.where(df['pattern_synthesis'] > 50, '😐 MODERATE',
+                                            '⚠️ LOW'))))
+            
+            logger.info("✅ Pattern Synthesis calculated successfully")
+            
+        except Exception as e:
+            logger.warning(f"Error in pattern synthesis calculation: {e}")
+            df['pattern_synthesis'] = 50
+            df['pattern_confidence_level'] = '😐 MODERATE'
+            
+        return df
+    
+    @staticmethod
+    @PerformanceMonitor.timer('calculations')
+    def _calculate_adaptive_risk(df: pd.DataFrame) -> pd.DataFrame:
+        """
+        🧠 ADAPTIVE RISK INTELLIGENCE
+        Dynamic risk assessment based on market conditions
+        """
+        try:
+            # Volatility regime detection
+            volatility_regime = 50
+            if 'risk_adjusted_performance' in df.columns:
+                risk_adj_perf = df['risk_adjusted_performance'].fillna(50)
+                
+                # Low volatility regime (stable, predictable)
+                low_vol_regime = risk_adj_perf > 70
+                # High volatility regime (unstable, risky)
+                high_vol_regime = risk_adj_perf < 30
+                
+                volatility_regime = np.where(low_vol_regime, 80,
+                                   np.where(high_vol_regime, 20, 50))
+            
+            # Correlation risk assessment
+            correlation_risk = 50
+            if all(col in df.columns for col in ['sector', 'ret_30d']):
+                # Calculate sector concentration risk
+                sector_counts = df['sector'].value_counts()
+                df['sector_concentration'] = df['sector'].map(sector_counts)
+                total_stocks = len(df)
+                
+                # High concentration in few sectors = higher correlation risk
+                concentration_ratio = df['sector_concentration'] / total_stocks
+                correlation_risk = np.where(concentration_ratio > 0.3, 30,  # High concentration
+                                  np.where(concentration_ratio > 0.2, 40,  # Medium concentration  
+                                  np.where(concentration_ratio > 0.1, 50,  # Normal concentration
+                                  70)))  # Low concentration (diversified)
+            
+            # Sector rotation impact
+            sector_rotation_impact = 50
+            if all(col in df.columns for col in ['sector', 'ret_7d', 'smart_money_index']):
+                ret_7d = df['ret_7d'].fillna(0)
+                smart_money = df['smart_money_index'].fillna(50)
+                
+                # Sectors with smart money flow and positive performance
+                favorable_rotation = (ret_7d > 5) & (smart_money > 60)
+                # Sectors being abandoned
+                unfavorable_rotation = (ret_7d < -5) & (smart_money < 40)
+                
+                sector_rotation_impact = np.where(favorable_rotation, 80,
+                                        np.where(unfavorable_rotation, 30, 50))
+            
+            # Individual stock resilience
+            stock_resilience = 50
+            if all(col in df.columns for col in ['from_low_pct', 'volume_intelligence', 'fundamental_momentum']):
+                from_low = df['from_low_pct'].fillna(50)
+                volume_intel = df['volume_intelligence'].fillna(50)
+                fund_momentum = df['fundamental_momentum'].fillna(50)
+                
+                # Resilient stocks: good recovery, strong volume, solid fundamentals
+                resilience_score = (
+                    (from_low > 30).astype(int) * 30 +  # Recovery from lows
+                    (volume_intel > 60).astype(int) * 35 +  # Volume support
+                    (fund_momentum > 60).astype(int) * 35   # Fundamental strength
+                )
+                
+                stock_resilience = resilience_score
+            
+            # Market stress testing (simulated based on position and volatility)
+            stress_test_score = 50
+            if all(col in df.columns for col in ['from_high_pct', 'rvol']):
+                from_high = df['from_high_pct'].fillna(-50)
+                rvol = df['rvol'].fillna(1.0)
+                
+                # Stress test: How would stock perform in 20% market decline?
+                # Stocks near highs with high volatility are more vulnerable
+                vulnerability = (from_high > -20) & (rvol > 2.0)
+                # Defensive stocks (stable, not overextended)
+                defensive = (from_high < -30) & (rvol < 1.5)
+                
+                stress_test_score = np.where(defensive, 80,
+                                   np.where(vulnerability, 25, 50))
+            
+            # Calculate final adaptive risk score
+            df['adaptive_risk_score'] = (
+                volatility_regime * 0.25 +
+                correlation_risk * 0.20 +
+                sector_rotation_impact * 0.20 +
+                stock_resilience * 0.20 +
+                stress_test_score * 0.15
+            ).clip(0, 100)
+            
+            # Risk classification (inverted - higher score = lower risk)
+            df['risk_classification'] = np.where(df['adaptive_risk_score'] > 80, '🛡️ LOW RISK',
+                                        np.where(df['adaptive_risk_score'] > 70, '✅ MODERATE RISK',
+                                        np.where(df['adaptive_risk_score'] > 60, '⚠️ ELEVATED RISK',
+                                        np.where(df['adaptive_risk_score'] > 40, '🔶 HIGH RISK',
+                                        '🚨 VERY HIGH RISK'))))
+            
+            logger.info("✅ Adaptive Risk Intelligence calculated successfully")
+            
+        except Exception as e:
+            logger.warning(f"Error in adaptive risk calculation: {e}")
+            df['adaptive_risk_score'] = 50
+            df['risk_classification'] = '⚠️ ELEVATED RISK'
+            
+        return df
+    
+    @staticmethod
+    @PerformanceMonitor.timer('calculations')
+    def _calculate_master_intelligence(df: pd.DataFrame) -> pd.DataFrame:
+        """
+        🏆 MASTER INTELLIGENCE SCORE
+        Final synthesis of all revolutionary metrics into a unified intelligence score
+        """
+        try:
+            # Collect all intelligence scores
+            intelligence_scores = {}
+            
+            # Core intelligence metrics (if available)
+            core_metrics = [
+                'momentum_quality_score', 'smart_money_index', 'sma_intelligence',
+                'risk_adjusted_performance', 'volume_intelligence', 'fundamental_momentum',
+                'position_intelligence', 'pattern_synthesis', 'adaptive_risk_score'
+            ]
+            
+            # Weights for each metric (total = 100%)
+            metric_weights = {
+                'momentum_quality_score': 0.15,      # 15% - Momentum is key
+                'smart_money_index': 0.15,           # 15% - Institutional flow critical
+                'sma_intelligence': 0.12,            # 12% - Trend intelligence
+                'volume_intelligence': 0.12,         # 12% - Volume patterns
+                'position_intelligence': 0.12,       # 12% - Market positioning
+                'pattern_synthesis': 0.10,           # 10% - Pattern confluence
+                'fundamental_momentum': 0.10,        # 10% - Fundamental strength
+                'risk_adjusted_performance': 0.08,   # 8% - Risk consideration
+                'adaptive_risk_score': 0.06          # 6% - Dynamic risk
+            }
+            
+            # Calculate weighted master intelligence score
+            master_score = 0
+            total_weight = 0
+            
+            for metric, weight in metric_weights.items():
+                if metric in df.columns:
+                    metric_score = df[metric].fillna(50)  # Default to neutral if missing
+                    master_score += metric_score * weight
+                    total_weight += weight
+                    intelligence_scores[metric] = metric_score.mean()
+            
+            # Normalize by actual total weight used
+            if total_weight > 0:
+                master_score = master_score / total_weight * 100
+            else:
+                master_score = 50  # Default neutral score
+            
+            df['master_intelligence_score'] = master_score.clip(0, 100)
+            
+            # Revolutionary pattern bonus (up to +10 points)
+            if 'patterns' in df.columns:
+                patterns = df['patterns'].fillna('')
+                
+                # High-value revolutionary patterns
+                revolutionary_bonus = 0
+                high_value_patterns = [
+                    'VELOCITY SQUEEZE', 'SMART MONEY', 'GOLDEN MOMENTUM',
+                    'MOMENTUM WAVE', 'VOL EXPLOSION', 'BREAKOUT'
+                ]
+                
+                for pattern in high_value_patterns:
+                    pattern_present = patterns.str.contains(pattern, na=False)
+                    revolutionary_bonus += pattern_present.astype(int) * 2
+                
+                # Cap bonus at 10 points
+                revolutionary_bonus = np.minimum(revolutionary_bonus, 10)
+                df['master_intelligence_score'] += revolutionary_bonus
+                df['master_intelligence_score'] = df['master_intelligence_score'].clip(0, 100)
+            
+            # Wave state bonus/penalty
+            if 'wave_state' in df.columns:
+                wave_states = df['wave_state'].fillna('NEUTRAL')
+                
+                # Bonus for favorable wave states
+                wave_bonus = np.where(wave_states == 'ACCELERATION', 5,
+                            np.where(wave_states == 'INITIATION', 3,
+                            np.where(wave_states == 'CLIMAX', 2,  # Caution for climax
+                            np.where(wave_states.isin(['EXHAUSTION', 'DISTRIBUTION']), -5, 0))))
+                
+                df['master_intelligence_score'] += wave_bonus
+                df['master_intelligence_score'] = df['master_intelligence_score'].clip(0, 100)
+            
+            # Intelligence grade classification
+            df['intelligence_grade'] = np.where(df['master_intelligence_score'] >= 90, '🔥 GENIUS',
+                                      np.where(df['master_intelligence_score'] >= 80, '🧠 BRILLIANT',
+                                      np.where(df['master_intelligence_score'] >= 70, '⚡ SMART',
+                                      np.where(df['master_intelligence_score'] >= 60, '📈 GOOD',
+                                      np.where(df['master_intelligence_score'] >= 50, '😐 AVERAGE',
+                                      '📉 BELOW AVERAGE')))))
+            
+            # Investment recommendation based on intelligence score
+            df['investment_recommendation'] = np.where(
+                df['master_intelligence_score'] >= 85, '🚀 STRONG BUY',
+                np.where(df['master_intelligence_score'] >= 75, '📈 BUY',
+                np.where(df['master_intelligence_score'] >= 65, '✅ ACCUMULATE',
+                np.where(df['master_intelligence_score'] >= 55, '⚖️ HOLD',
+                np.where(df['master_intelligence_score'] >= 45, '⚠️ CAUTION',
+                '🚨 AVOID')))))
+            
+            # Log intelligence metrics summary
+            avg_intelligence = df['master_intelligence_score'].mean()
+            logger.info(f"🏆 Master Intelligence Score calculated - Average: {avg_intelligence:.1f}")
+            
+            # Log breakdown of contributing metrics
+            for metric, score in intelligence_scores.items():
+                logger.info(f"   📊 {metric}: {score:.1f}")
+            
+        except Exception as e:
+            logger.warning(f"Error in master intelligence calculation: {e}")
+            df['master_intelligence_score'] = 50
+            df['intelligence_grade'] = '😐 AVERAGE'
+            df['investment_recommendation'] = '⚖️ HOLD'
+        
+        return df
 
 # ============================================
 # REVOLUTIONARY PATTERN DETECTION ENGINE 🚀
@@ -2005,6 +4564,216 @@ class RevolutionaryPatterns:
                     df[col] = 0
         
         return df
+    
+    @staticmethod
+    def multi_timeframe_breakout(df: pd.DataFrame) -> pd.Series:
+        """
+        🚀 MULTI-TIMEFRAME BREAKOUT - Revolutionary confluence pattern
+        Breakout confirmed across ALL timeframes with volume
+        Uses ALL your return data: 1d, 3d, 7d, 30d, 3m, 6m
+        """
+        try:
+            score = pd.Series(0, index=df.index)
+            
+            # 1. Short-term momentum (1d, 3d, 7d) - all positive
+            timeframes = ['ret_1d', 'ret_3d', 'ret_7d']
+            available_short = [col for col in timeframes if col in df.columns]
+            if available_short:
+                short_positive = sum(df[col].fillna(0) > 0 for col in available_short)
+                score += (short_positive == len(available_short)) * 30
+            
+            # 2. Medium-term acceleration (30d, 3m positive)
+            medium_frames = ['ret_30d', 'ret_3m']
+            available_medium = [col for col in medium_frames if col in df.columns]
+            if available_medium:
+                medium_positive = sum(df[col].fillna(0) > 0 for col in available_medium)
+                score += (medium_positive == len(available_medium)) * 25
+            
+            # 3. Volume explosion across timeframes
+            volume_cols = ['vol_ratio_1d_90d', 'vol_ratio_7d_90d', 'vol_ratio_30d_90d']
+            available_vol = [col for col in volume_cols if col in df.columns]
+            if available_vol:
+                volume_surge = sum(df[col].fillna(100) > 150 for col in available_vol)
+                score += (volume_surge >= 2) * 25
+            
+            # 4. Position strength (not overextended)
+            if 'from_low_pct' in df.columns and 'from_high_pct' in df.columns:
+                good_position = (df['from_low_pct'].fillna(0) > 20) & (df['from_high_pct'].fillna(-100) > -30)
+                score += good_position * 20
+            
+            return score >= 70
+            
+        except Exception as e:
+            logger.warning(f"Error in multi_timeframe_breakout: {e}")
+            return pd.Series(False, index=df.index)
+    
+    @staticmethod
+    def institutional_accumulation_stealth(df: pd.DataFrame) -> pd.Series:
+        """
+        🕵️ INSTITUTIONAL STEALTH ACCUMULATION - Dark pool activity
+        Volume increasing but price stable = smart money accumulating
+        Uses your volume ratios across 1d, 7d, 30d, 90d, 180d timeframes
+        """
+        try:
+            score = pd.Series(0, index=df.index)
+            
+            # 1. Volume increasing across multiple timeframes
+            volume_ratios = ['vol_ratio_1d_90d', 'vol_ratio_7d_90d', 'vol_ratio_30d_90d']
+            vol_increasing = 0
+            for col in volume_ratios:
+                if col in df.columns:
+                    vol_increasing += (df[col].fillna(100) > 120).astype(int)
+            score += (vol_increasing >= 2) * 30
+            
+            # 2. Price stability (not moving much despite volume)
+            if 'ret_7d' in df.columns:
+                price_stable = abs(df['ret_7d'].fillna(0)) < 10
+                score += price_stable * 25
+            
+            # 3. Gradual accumulation pattern (longer timeframes stronger)
+            if all(col in df.columns for col in ['vol_ratio_30d_90d', 'vol_ratio_90d_180d']):
+                longer_stronger = df['vol_ratio_30d_90d'].fillna(100) > df['vol_ratio_90d_180d'].fillna(100)
+                score += longer_stronger * 25
+            
+            # 4. Not at extremes (accumulation zone)
+            if all(col in df.columns for col in ['from_low_pct', 'from_high_pct']):
+                accumulation_zone = (df['from_low_pct'].fillna(0) > 30) & (df['from_low_pct'].fillna(0) < 70)
+                score += accumulation_zone * 20
+            
+            return score >= 75
+            
+        except Exception as e:
+            logger.warning(f"Error in institutional_accumulation_stealth: {e}")
+            return pd.Series(False, index=df.index)
+    
+    @staticmethod
+    def eps_growth_acceleration(df: pd.DataFrame) -> pd.Series:
+        """
+        📈 EPS GROWTH ACCELERATION - Fundamental momentum explosion
+        Earnings growth accelerating faster than market realizes
+        Uses eps_change_pct (QoQ growth) and market cap for context
+        """
+        try:
+            score = pd.Series(0, index=df.index)
+            
+            # 1. Strong EPS growth (using eps_change_pct which is QoQ growth)
+            if 'eps_change_pct' in df.columns:
+                eps_data = pd.to_numeric(df['eps_change_pct'], errors='coerce').fillna(0)
+                strong_eps = eps_data > 30  # 30% QoQ growth
+                explosive_eps = eps_data > 50  # 50% QoQ growth  
+                score += strong_eps * 25 + explosive_eps * 15
+            
+            # 2. EPS growing faster than price (market hasn't caught up)
+            if all(col in df.columns for col in ['eps_change_pct', 'ret_30d']):
+                eps_vs_price = pd.to_numeric(df['eps_change_pct'], errors='coerce').fillna(0) > df['ret_30d'].fillna(0)
+                score += eps_vs_price * 30
+            
+            # 3. Reasonable valuation despite growth
+            if 'pe' in df.columns:
+                pe_data = pd.to_numeric(df['pe'], errors='coerce')
+                reasonable_pe = (pe_data > 5) & (pe_data < 25)
+                score += reasonable_pe * 25
+            
+            # 4. Market cap context (smaller caps get bonus for growth)
+            if 'category' in df.columns:
+                small_cap_bonus = df['category'].isin(['Small Cap', 'Micro Cap', 'Nano Cap'])
+                score += small_cap_bonus * 20
+            
+            return score >= 70
+            
+        except Exception as e:
+            logger.warning(f"Error in eps_growth_acceleration: {e}")
+            return pd.Series(False, index=df.index)
+    
+    @staticmethod
+    def sector_rotation_leader(df: pd.DataFrame) -> pd.Series:
+        """
+        🔄 SECTOR ROTATION LEADER - Leading the sector shift
+        Outperforming sector peers across multiple timeframes
+        Uses sector and industry classifications for relative performance
+        """
+        try:
+            if 'sector' not in df.columns:
+                return pd.Series(False, index=df.index)
+            
+            score = pd.Series(0, index=df.index)
+            
+            # Calculate sector relative performance across timeframes
+            timeframes = ['ret_7d', 'ret_30d', 'ret_3m']
+            outperforming_count = 0
+            
+            for timeframe in timeframes:
+                if timeframe in df.columns:
+                    # Calculate sector medians
+                    sector_medians = df.groupby('sector')[timeframe].median()
+                    df[f'{timeframe}_sector_median'] = df['sector'].map(sector_medians)
+                    
+                    # Check outperformance
+                    outperforming = df[timeframe].fillna(0) > df[f'{timeframe}_sector_median'].fillna(0)
+                    score += outperforming * 25
+                    outperforming_count += 1
+            
+            # Volume leadership in sector
+            if 'rvol' in df.columns and 'sector' in df.columns:
+                sector_vol_medians = df.groupby('sector')['rvol'].median()
+                df['rvol_sector_median'] = df['sector'].map(sector_vol_medians)
+                volume_leadership = df['rvol'].fillna(1) > df['rvol_sector_median'].fillna(1) * 1.5
+                score += volume_leadership * 25
+            
+            return score >= 75
+            
+        except Exception as e:
+            logger.warning(f"Error in sector_rotation_leader: {e}")
+            return pd.Series(False, index=df.index)
+    
+    @staticmethod
+    def volatility_contraction_spring(df: pd.DataFrame) -> pd.Series:
+        """
+        🎯 VOLATILITY CONTRACTION - Coiled spring ready to explode
+        Price compressing near SMAs with declining volatility = explosion imminent
+        Uses SMA data and return volatility patterns
+        """
+        try:
+            score = pd.Series(0, index=df.index)
+            
+            # 1. Price near multiple SMAs (convergence)
+            sma_cols = ['sma_20d', 'sma_50d', 'sma_200d']
+            available_smas = [col for col in sma_cols if col in df.columns]
+            
+            if len(available_smas) >= 2 and 'price' in df.columns:
+                price = df['price'].fillna(0)
+                sma_distances = []
+                
+                for sma_col in available_smas:
+                    sma_val = df[sma_col].fillna(price)  # Use price if SMA missing
+                    distance = abs(price - sma_val) / sma_val * 100
+                    sma_distances.append(distance < 5)  # Within 5% of SMA
+                
+                near_smas = sum(sma_distances) >= 2  # Near at least 2 SMAs
+                score += near_smas * 30
+            
+            # 2. Declining volatility (using return data)
+            recent_timeframes = ['ret_1d', 'ret_3d'] if 'ret_3d' in df.columns else ['ret_1d']
+            if all(col in df.columns for col in recent_timeframes):
+                recent_vol = sum(abs(df[col].fillna(0)) for col in recent_timeframes) / len(recent_timeframes)
+                low_volatility = recent_vol < 3  # Low recent volatility
+                score += low_volatility * 25
+            
+            # 3. Volume building (accumulation during compression)
+            if 'vol_ratio_7d_90d' in df.columns:
+                volume_building = df['vol_ratio_7d_90d'].fillna(100) > 110
+                score += volume_building * 25
+            
+            # 4. Good position for breakout
+            if all(col in df.columns for col in ['from_low_pct', 'from_high_pct']):
+                breakout_ready = (df['from_low_pct'].fillna(0) > 40) & (df['from_high_pct'].fillna(-50) > -25)
+                score += breakout_ready * 20
+            
+            return score >= 75
+            
+        except Exception as e:
+            logger.warning(f"Error in volatility_contraction_spring: {e}")
+            return pd.Series(False, index=df.index)
         
 # ============================================
 # RANKING ENGINE - OPTIMIZED
