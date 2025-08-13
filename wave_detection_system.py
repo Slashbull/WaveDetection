@@ -741,13 +741,13 @@ class AdvancedMetrics:
     by handling potential missing data (NaNs) gracefully.
     """
     
-    @staticmethod
+    @staticmethod 
     @PerformanceMonitor.timer(target_time=0.5)
     def calculate_all_metrics(df: pd.DataFrame) -> pd.DataFrame:
         """
         Calculates a comprehensive set of advanced metrics for the DataFrame.
-        All calculations are designed to be vectorized and handle missing data
-        without raising errors.
+        Enhanced with intelligent pattern scoring and wave detection.
+        Designed to be vectorized and handle missing data without errors.
 
         Args:
             df (pd.DataFrame): The DataFrame with raw data and core scores.
@@ -757,6 +757,51 @@ class AdvancedMetrics:
         """
         if df.empty:
             return df
+
+        # First calculate intelligent pattern confidence scores
+        pattern_scores = []
+        if 'patterns' in df.columns:
+            for _, row in df.iterrows():
+                if pd.isna(row['patterns']) or row['patterns'] == '':
+                    pattern_scores.append(0.0)
+                    continue
+
+                # Calculate confidence based on multiple factors
+                confidence = 0.0
+                patterns = row['patterns'].split(' | ')
+                
+                # Base pattern strength
+                base_confidence = 70.0
+                
+                # Confirm with technical criteria
+                if row.get('momentum_score', 0) > 70:
+                    base_confidence += 10
+                if row.get('volume_score', 0) > 70:
+                    base_confidence += 10
+                if row.get('breakout_score', 0) > 70:
+                    base_confidence += 10
+
+                # Volume confirmation adds validity
+                rvol = row.get('rvol', 1.0)
+                if rvol > 3.0:
+                    base_confidence += 15
+                elif rvol > 2.0:
+                    base_confidence += 10
+                elif rvol > 1.5:
+                    base_confidence += 5
+
+                # Multi-pattern synergy bonus
+                if len(patterns) > 1:
+                    base_confidence += min(len(patterns) * 5, 15)
+
+                # Price position impact
+                if 'from_low_pct' in df.columns and 'from_high_pct' in df.columns:
+                    if row['from_low_pct'] > 70 and row['from_high_pct'] > -30:
+                        base_confidence += 10  # Strong position, not overextended
+
+                pattern_scores.append(min(base_confidence, 100.0))
+
+        df['pattern_confidence'] = pattern_scores
         
         # Money Flow (in millions)
         if all(col in df.columns for col in ['price', 'volume_1d', 'rvol']):
@@ -804,44 +849,110 @@ class AdvancedMetrics:
         if 'ret_3m' in df.columns:
             df['momentum_harmony'] += (df['ret_3m'].fillna(0) > 0).astype(int)
         
-        # Wave State
+        # Enhanced Wave State with Pattern Integration
         df['wave_state'] = df.apply(AdvancedMetrics._get_wave_state, axis=1)
-
-        # Overall Wave Strength
+        
+        # Calculate Pattern-Enhanced Wave Strength
         score_cols = ['momentum_score', 'acceleration_score', 'rvol_score', 'breakout_score']
         if all(col in df.columns for col in score_cols):
+            # Base wave strength using core metrics
             df['overall_wave_strength'] = (
                 df['momentum_score'].fillna(50) * 0.3 +
                 df['acceleration_score'].fillna(50) * 0.3 +
                 df['rvol_score'].fillna(50) * 0.2 +
                 df['breakout_score'].fillna(50) * 0.2
             )
+            
+            # Pattern-based wave strength enhancement
+            if 'patterns' in df.columns and 'pattern_confidence' in df.columns:
+                pattern_bonus = df.apply(lambda row: 
+                    min(15.0,  # Cap the bonus at 15 points
+                        sum([
+                            10 if 'MOMENTUM WAVE' in str(row['patterns']) else 0,
+                            8 if 'BREAKOUT' in str(row['patterns']) else 0,
+                            6 if 'ACCELERATION' in str(row['patterns']) else 0,
+                            5 if 'VOL EXPLOSION' in str(row['patterns']) else 0
+                        ]) * (row['pattern_confidence'] / 100.0)  # Scale by confidence
+                    ) if pd.notna(row['patterns']) else 0, 
+                    axis=1
+                )
+                
+                # Apply bonus with dampening for low confidence
+                df['overall_wave_strength'] = df['overall_wave_strength'] + pattern_bonus
+            
+            # Volume trend confirmation
+            if 'vmi' in df.columns:
+                volume_confirmation = df['vmi'].apply(
+                    lambda x: min(10, max(0, (x - 1.0) * 10)) if pd.notna(x) else 0
+                )
+                df['overall_wave_strength'] += volume_confirmation
+            
+            # Ensure final score is within bounds
+            df['overall_wave_strength'] = df['overall_wave_strength'].clip(0, 100)
         else:
             df['overall_wave_strength'] = pd.Series(np.nan, index=df.index)
+        
+        # Add wave direction indicator 
+        df['wave_direction'] = df.apply(
+            lambda row: '🔥 Strongest' if row['overall_wave_strength'] >= 85
+            else '⚡ Strong' if row['overall_wave_strength'] >= 70  
+            else '📈 Building' if row['overall_wave_strength'] >= 55
+            else '🌊 Forming' if row['overall_wave_strength'] >= 40
+            else '💫 Weak', axis=1
+        )
         
         return df
     
     @staticmethod
     def _get_wave_state(row: pd.Series) -> str:
         """
-        Determines the `wave_state` for a single stock based on a set of thresholds.
+        Enhanced wave state detection with intelligent pattern integration.
+        Uses a weighted scoring system combining multiple factors.
         """
-        signals = 0
+        wave_score = 0.0
         
-        if row.get('momentum_score', 0) > 70:
-            signals += 1
-        if row.get('volume_score', 0) > 70:
-            signals += 1
-        if row.get('acceleration_score', 0) > 70:
-            signals += 1
-        if row.get('rvol', 0) > 2:
-            signals += 1
+        # Core momentum signals (40%)
+        if row.get('momentum_score', 0) >= 80: wave_score += 40
+        elif row.get('momentum_score', 0) >= 70: wave_score += 30
+        elif row.get('momentum_score', 0) >= 60: wave_score += 20
         
-        if signals >= 4:
-            return "🌊🌊🌊 CRESTING"
-        elif signals >= 3:
+        # Volume confirmation (30%)
+        volume_score = 0
+        if row.get('volume_score', 0) >= 70: volume_score += 15
+        if row.get('rvol', 0) >= 3.0: volume_score += 15
+        elif row.get('rvol', 0) >= 2.0: volume_score += 10
+        wave_score += volume_score
+        
+        # Acceleration signal (20%)
+        if row.get('acceleration_score', 0) >= 80: wave_score += 20
+        elif row.get('acceleration_score', 0) >= 70: wave_score += 15
+        elif row.get('acceleration_score', 0) >= 60: wave_score += 10
+        
+        # Pattern confirmation (10% bonus)
+        if pd.notna(row.get('patterns')) and row.get('patterns') != '':
+            patterns = str(row['patterns'])
+            pattern_bonus = 0
+            if 'MOMENTUM WAVE' in patterns: pattern_bonus += 4
+            if 'BREAKOUT' in patterns: pattern_bonus += 3
+            if 'VOL EXPLOSION' in patterns: pattern_bonus += 3
+            if 'ACCELERATION' in patterns: pattern_bonus += 2
+            # Scale bonus by pattern confidence if available
+            if pd.notna(row.get('pattern_confidence')):
+                pattern_bonus *= (row['pattern_confidence'] / 100.0)
+            wave_score += pattern_bonus
+        
+        # Position validation (dampening for extended stocks)
+        if pd.notna(row.get('from_high_pct')):
+            # Reduce wave score for overextended stocks
+            if row['from_high_pct'] <= -30:
+                wave_score *= 0.8  # 20% reduction in wave score
+        
+        # Determine wave state based on final score
+        if wave_score >= 80:
+            return "🌊🌊🌊 CRESTING" 
+        elif wave_score >= 60:
             return "🌊🌊 BUILDING"
-        elif signals >= 1:
+        elif wave_score >= 40:
             return "🌊 FORMING"
         else:
             return "💥 BREAKING"
