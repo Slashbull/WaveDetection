@@ -14,43 +14,57 @@ Status: PRODUCTION READY - All Issues Fixed
 # IMPORTS AND SETUP
 # ============================================
 
-# Standard library imports
+# Core framework
 import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-from datetime import datetime, timezone, timedelta
-import logging
-from typing import Dict, List, Tuple, Optional, Any  # Remove Union, Set
-from dataclasses import dataclass, field
-from functools import wraps  # Remove lru_cache
-import time
-from io import BytesIO
-import warnings
-import gc
+import plotly.express as px
+from plotly.subplots import make_subplots
+
+# Standard library
+import sys
 import re
+import gc
+import time
+import logging
+import warnings
+from datetime import datetime, timezone, timedelta
+from typing import Dict, List, Tuple, Optional, Any, Union, Set
+from dataclasses import dataclass, field
+from functools import wraps, lru_cache
+from io import BytesIO
 
-# Suppress warnings for clean production output.
+# Environment configuration
 warnings.filterwarnings('ignore')
-
-# Set NumPy to ignore floating point errors for robust calculations.
+pd.options.mode.chained_assignment = None
+pd.options.display.max_columns = None
 np.seterr(all='ignore')
-
-# Set random seed for reproducibility of any random-based operations.
 np.random.seed(42)
+gc.enable()
 
 # ============================================
 # LOGGING CONFIGURATION
 # ============================================
 
-# Configure production-ready logging with a clear format.
-log_level = logging.INFO
+# Simple production logging setup
 logging.basicConfig(
-    level=log_level,
-    format='%(asctime)s | %(name)s | %(levelname)s | %(message)s',
+    level=logging.INFO,
+    format='%(asctime)s | %(levelname)s | %(funcName)s:%(lineno)d | %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
 )
+
 logger = logging.getLogger(__name__)
+
+# Error handling for uncaught exceptions
+def handle_exception(exc_type, exc_value, exc_traceback):
+    if issubclass(exc_type, KeyboardInterrupt):
+        sys.__excepthook__(exc_type, exc_value, exc_traceback)
+        return
+    logger.critical("Uncaught exception", exc_info=(exc_type, exc_value, exc_traceback))
+
+sys.excepthook = handle_exception
+logger.info("🚀 Wave Detection Ultimate 3.0 - System initialized")
 
 # ============================================
 # CONFIGURATION AND CONSTANTS
@@ -163,41 +177,249 @@ class Config:
     
     # Market categories (Indian market specific)
     MARKET_CATEGORIES: List[str] = field(default_factory=lambda: [
-        'Mega Cap', 'Large Cap', 'Mid Cap', 'Small Cap', 'Micro Cap'
+        'Mega Cap', 'Large Cap', 'Mid Cap', 'Small Cap', 'Micro Cap','Nano Cap'
     ])
     
-    # Tier definitions with proper boundaries
-    TIERS: Dict[str, Dict[str, Tuple[float, float]]] = field(default_factory=lambda: {
+    # Enhanced Tier definitions with improved financial significance
+    TIERS: Dict[str, Dict[str, Tuple[float, float, str, str]]] = field(default_factory=lambda: {
         "eps": {
-            "Loss": (-float('inf'), 0),
-            "0-5": (0, 5),
-            "5-10": (5, 10),
-            "10-20": (10, 20),
-            "20-50": (20, 50),
-            "50-100": (50, 100),
-            "100+": (100, float('inf'))
+            "Negative": (-float('inf'), 0, "🔴", "Company is operating at a loss"),
+            "Minimal": (0, 5, "🟠", "Very low earnings - high risk or early stage"),
+            "Low": (5, 10, "🟡", "Below average earnings - potential growth"),
+            "Moderate": (10, 20, "🟢", "Healthy earnings - established company"),
+            "Strong": (20, 50, "🔵", "Strong earnings - market leader"),
+            "Very Strong": (50, 100, "🟣", "Exceptional earnings - sector dominance"),
+            "Ultra": (100, float('inf'), "⭐", "Ultra high earnings - market titan")
         },
         "pe": {
-            "Negative/NA": (-float('inf'), 0),
-            "0-10": (0, 10),
-            "10-15": (10, 15),
-            "15-20": (15, 20),
-            "20-30": (20, 30),
-            "30-50": (30, 50),
-            "50+": (50, float('inf'))
+            "Negative": (-float('inf'), 0, "⚠️", "Company has negative earnings"),
+            "Value": (0, 10, "💰", "Potentially undervalued - value play"),
+            "Fair Value": (10, 15, "✅", "Reasonably priced - balanced valuation"),
+            "Growth": (15, 20, "📈", "Growth premium - moderate expectations"),
+            "High Growth": (20, 30, "🔥", "High growth expectations - premium pricing"),
+            "Premium": (30, 50, "⚡", "Very high expectations - requires strong growth"),
+            "Ultra Premium": (50, float('inf'), "💎", "Extreme premium - extraordinary growth needed")
         },
         "price": {
-            "0-100": (0, 100),
-            "100-250": (100, 250),
-            "250-500": (250, 500),
-            "500-1000": (500, 1000),
-            "1000-2500": (1000, 2500),
-            "2500-5000": (2500, 5000),
-            "5000+": (5000, float('inf'))
+            "Penny": (0, 100, "🪙", "Low-priced stocks - high volatility potential"),
+            "Low": (100, 250, "💵", "Entry-level price range"),
+            "Mid-Low": (250, 500, "💶", "Moderate price range"),
+            "Mid": (500, 1000, "💷", "Mid-price range"),
+            "Mid-High": (1000, 2500, "💰", "Upper-mid price range"),
+            "High": (2500, 5000, "💎", "High price range"),
+            "Premium": (5000, float('inf'), "👑", "Premium price range")
         }
     })
     
-    # Metric Tooltips for better UX
+    # Tier color schemes for visualization
+    TIER_COLORS: Dict[str, Dict[str, str]] = field(default_factory=lambda: {
+        "eps": {
+            "Negative": "#FF4E50", "Minimal": "#FC913A", "Low": "#F9D423",
+            "Moderate": "#4CAF50", "Strong": "#1E88E5", "Very Strong": "#9C27B0", "Ultra": "#FFD700"
+        },
+        "pe": {
+            "Negative": "#FF5252", "Value": "#66BB6A", "Fair Value": "#26A69A",
+            "Growth": "#42A5F5", "High Growth": "#7E57C2", "Premium": "#EC407A", "Ultra Premium": "#F44336"
+        },
+        "price": {
+            "Penny": "#B2DFDB", "Low": "#80CBC4", "Mid-Low": "#4DB6AC",
+            "Mid": "#26A69A", "Mid-High": "#00897B", "High": "#00796B", "Premium": "#004D40"
+        }
+    })
+    
+    # Comprehensive sector-specific PE ratio contexts for all 11 sectors
+    SECTOR_PE_CONTEXTS: Dict[str, Dict[str, float]] = field(default_factory=lambda: {
+        "Technology": {"low": 15.0, "avg": 28.0, "high": 45.0, "premium": 70.0},
+        "Healthcare": {"low": 12.0, "avg": 22.0, "high": 35.0, "premium": 50.0},
+        "Financial Services": {"low": 6.0, "avg": 12.0, "high": 18.0, "premium": 25.0},
+        "Consumer Cyclical": {"low": 8.0, "avg": 16.0, "high": 25.0, "premium": 35.0},
+        "Consumer Defensive": {"low": 12.0, "avg": 20.0, "high": 28.0, "premium": 40.0},
+        "Communication Services": {"low": 10.0, "avg": 18.0, "high": 30.0, "premium": 45.0},
+        "Energy": {"low": 5.0, "avg": 10.0, "high": 15.0, "premium": 22.0},
+        "Industrials": {"low": 10.0, "avg": 18.0, "high": 26.0, "premium": 35.0},
+        "Basic Materials": {"low": 8.0, "avg": 14.0, "high": 20.0, "premium": 28.0},
+        "Utilities": {"low": 12.0, "avg": 18.0, "high": 24.0, "premium": 30.0},
+        "Real Estate": {"low": 10.0, "avg": 16.0, "high": 22.0, "premium": 30.0}
+    })
+    
+    # Sector characteristics and intelligence
+    SECTOR_CHARACTERISTICS: Dict[str, Dict[str, Any]] = field(default_factory=lambda: {
+        "Technology": {
+            "growth_expectation": "High", "volatility": "High", "dividend_yield": "Low",
+            "typical_patterns": ["ACCELERATING", "VOL EXPLOSION", "MOMENTUM WAVE"],
+            "risk_level": "High", "innovation_cycle": "Fast", "market_sensitivity": "High"
+        },
+        "Healthcare": {
+            "growth_expectation": "Stable", "volatility": "Medium", "dividend_yield": "Medium",
+            "typical_patterns": ["LONG STRENGTH", "QUALITY LEADER", "STEALTH"],
+            "risk_level": "Medium", "innovation_cycle": "Long", "market_sensitivity": "Low"
+        },
+        "Financial Services": {
+            "growth_expectation": "Cyclical", "volatility": "High", "dividend_yield": "High",
+            "typical_patterns": ["INSTITUTIONAL", "LIQUID LEADER", "VAMPIRE"],
+            "risk_level": "High", "innovation_cycle": "Medium", "market_sensitivity": "Very High"
+        },
+        "Consumer Cyclical": {
+            "growth_expectation": "Cyclical", "volatility": "High", "dividend_yield": "Medium",
+            "typical_patterns": ["ROTATION LEADER", "MOMENTUM WAVE", "RANGE COMPRESS"],
+            "risk_level": "High", "innovation_cycle": "Medium", "market_sensitivity": "Very High"
+        },
+        "Consumer Defensive": {
+            "growth_expectation": "Low", "volatility": "Low", "dividend_yield": "High",
+            "typical_patterns": ["QUALITY LEADER", "LONG STRENGTH", "GOLDEN ZONE"],
+            "risk_level": "Low", "innovation_cycle": "Slow", "market_sensitivity": "Low"
+        },
+        "Communication Services": {
+            "growth_expectation": "Medium", "volatility": "Medium", "dividend_yield": "Medium",
+            "typical_patterns": ["LIQUID LEADER", "MOMENTUM WAVE", "STEALTH"],
+            "risk_level": "Medium", "innovation_cycle": "Fast", "market_sensitivity": "Medium"
+        },
+        "Energy": {
+            "growth_expectation": "Cyclical", "volatility": "Very High", "dividend_yield": "High",
+            "typical_patterns": ["VOL EXPLOSION", "VAMPIRE", "CAPITULATION"],
+            "risk_level": "Very High", "innovation_cycle": "Slow", "market_sensitivity": "Extreme"
+        },
+        "Industrials": {
+            "growth_expectation": "Cyclical", "volatility": "Medium", "dividend_yield": "Medium",
+            "typical_patterns": ["PYRAMID", "INSTITUTIONAL", "BREAKOUT"],
+            "risk_level": "Medium", "innovation_cycle": "Medium", "market_sensitivity": "High"
+        },
+        "Basic Materials": {
+            "growth_expectation": "Cyclical", "volatility": "High", "dividend_yield": "Medium",
+            "typical_patterns": ["VOL EXPLOSION", "MOMENTUM DIVERGE", "VACUUM"],
+            "risk_level": "High", "innovation_cycle": "Slow", "market_sensitivity": "Very High"
+        },
+        "Utilities": {
+            "growth_expectation": "Low", "volatility": "Low", "dividend_yield": "Very High",
+            "typical_patterns": ["LONG STRENGTH", "GOLDEN ZONE", "VOL ACCUMULATION"],
+            "risk_level": "Low", "innovation_cycle": "Very Slow", "market_sensitivity": "Very Low"
+        },
+        "Real Estate": {
+            "growth_expectation": "Medium", "volatility": "Medium", "dividend_yield": "High",
+            "typical_patterns": ["LIQUID LEADER", "GOLDEN ZONE", "RANGE COMPRESS"],
+            "risk_level": "Medium", "innovation_cycle": "Slow", "market_sensitivity": "High"
+        }
+    })
+    
+    # Smart sector-specific score weightings based on actual stock distribution
+    SECTOR_SCORE_WEIGHTS: Dict[str, Dict[str, float]] = field(default_factory=lambda: {
+        # HIGH VOLUME SECTORS (400+ stocks) - More conservative weightings
+        "Industrials": {"position": 0.35, "momentum": 0.25, "volume": 0.25, "acceleration": 0.15},  # 531 stocks - Stability focused
+        "Consumer Cyclical": {"momentum": 0.30, "acceleration": 0.25, "volume": 0.25, "position": 0.20},  # 456 stocks - Cyclical patterns
+        "Basic Materials": {"volume": 0.35, "momentum": 0.25, "acceleration": 0.20, "position": 0.20},  # 402 stocks - Commodity driven
+        
+        # MEDIUM VOLUME SECTORS (150-200 stocks) - Balanced approach
+        "Healthcare": {"position": 0.35, "momentum": 0.25, "volume": 0.20, "acceleration": 0.20},  # 185 stocks - Defensive growth
+        "Technology": {"momentum": 0.35, "volume": 0.25, "acceleration": 0.20, "position": 0.20},  # 177 stocks - Growth focused
+        "Consumer Defensive": {"position": 0.40, "momentum": 0.20, "volume": 0.20, "acceleration": 0.20},  # 153 stocks - Stability
+        
+        # LOW VOLUME SECTORS (30-90 stocks) - More aggressive weightings for alpha
+        "Real Estate": {"position": 0.35, "volume": 0.30, "momentum": 0.20, "acceleration": 0.15},  # 89 stocks - Liquidity important
+        "Energy": {"volume": 0.45, "momentum": 0.25, "acceleration": 0.20, "position": 0.10},  # 37 stocks - Volatility plays
+        "Communication Services": {"momentum": 0.35, "volume": 0.30, "position": 0.20, "acceleration": 0.15},  # 34 stocks - Growth/momentum
+        "Utilities": {"position": 0.45, "momentum": 0.20, "volume": 0.20, "acceleration": 0.15},  # 32 stocks - Dividend/stability
+        
+        # VERY LOW VOLUME SECTOR (10-20 stocks) - Highly selective approach
+        "Financial Services": {"volume": 0.40, "position": 0.30, "momentum": 0.20, "acceleration": 0.10}  # 14 stocks - Institutional focus
+    })
+    
+    # Sector stock count metadata for intelligent processing
+    SECTOR_STOCK_COUNTS: Dict[str, Dict[str, Any]] = field(default_factory=lambda: {
+        "Industrials": {"count": 531, "tier": "High Volume", "selectivity": "Conservative", "alpha_potential": "Medium"},
+        "Consumer Cyclical": {"count": 456, "tier": "High Volume", "selectivity": "Conservative", "alpha_potential": "Medium"},
+        "Basic Materials": {"count": 402, "tier": "High Volume", "selectivity": "Conservative", "alpha_potential": "High"},
+        "Healthcare": {"count": 185, "tier": "Medium Volume", "selectivity": "Balanced", "alpha_potential": "Medium"},
+        "Technology": {"count": 177, "tier": "Medium Volume", "selectivity": "Balanced", "alpha_potential": "High"},
+        "Consumer Defensive": {"count": 153, "tier": "Medium Volume", "selectivity": "Balanced", "alpha_potential": "Low"},
+        "Real Estate": {"count": 89, "tier": "Low Volume", "selectivity": "Selective", "alpha_potential": "Medium"},
+        "Energy": {"count": 37, "tier": "Low Volume", "selectivity": "Highly Selective", "alpha_potential": "Very High"},
+        "Communication Services": {"count": 34, "tier": "Low Volume", "selectivity": "Highly Selective", "alpha_potential": "High"},
+        "Utilities": {"count": 32, "tier": "Low Volume", "selectivity": "Highly Selective", "alpha_potential": "Low"},
+        "Financial Services": {"count": 14, "tier": "Very Low Volume", "selectivity": "Extremely Selective", "alpha_potential": "High"}
+    }),
+
+    # Sector-specific PE ratio contexts for intelligent insights
+    SECTOR_CHARACTERISTICS: Dict[str, Dict[str, Any]] = field(default_factory=lambda: {
+        "Industrials": {
+            "typical_pe_range": (8, 25),
+            "cyclical": True,
+            "growth_type": "Economic Cycle Dependent",
+            "volatility": "Medium-High",
+            "dividend_yield": "Medium"
+        },
+        "Basic Materials": {
+            "typical_pe_range": (6, 20), 
+            "cyclical": True,
+            "growth_type": "Commodity Cycle Dependent",
+            "volatility": "High",
+            "dividend_yield": "Medium"
+        },
+        "Consumer Cyclical": {
+            "typical_pe_range": (8, 25),
+            "cyclical": True,
+            "growth_type": "Consumer Spending Dependent", 
+            "volatility": "Medium-High",
+            "dividend_yield": "Low-Medium"
+        },
+        "Consumer Defensive": {
+            "typical_pe_range": (15, 35),
+            "cyclical": False,
+            "growth_type": "Stable Growth",
+            "volatility": "Low",
+            "dividend_yield": "Medium-High"
+        },
+        "Healthcare": {
+            "typical_pe_range": (15, 40),
+            "cyclical": False,
+            "growth_type": "Innovation & Demographics",
+            "volatility": "Medium",
+            "dividend_yield": "Low-Medium"
+        },
+        "Technology": {
+            "typical_pe_range": (15, 50),
+            "cyclical": False,
+            "growth_type": "Innovation & Disruption",
+            "volatility": "High",
+            "dividend_yield": "Low"
+        },
+        "Financial Services": {
+            "typical_pe_range": (6, 18),
+            "cyclical": True,
+            "growth_type": "Interest Rate Sensitive",
+            "volatility": "Medium-High", 
+            "dividend_yield": "Medium-High"
+        },
+        "Real Estate": {
+            "typical_pe_range": (8, 25),
+            "cyclical": True,
+            "growth_type": "Interest Rate & Economy Sensitive",
+            "volatility": "Medium-High",
+            "dividend_yield": "High"
+        },
+        "Energy": {
+            "typical_pe_range": (5, 15),
+            "cyclical": True,
+            "growth_type": "Commodity Price Dependent",
+            "volatility": "Very High",
+            "dividend_yield": "Medium-High"
+        },
+        "Utilities": {
+            "typical_pe_range": (10, 22),
+            "cyclical": False,
+            "growth_type": "Regulated Utility Growth",
+            "volatility": "Low",
+            "dividend_yield": "High"
+        },
+        "Communication Services": {
+            "typical_pe_range": (12, 30),
+            "cyclical": False,
+            "growth_type": "Technology & Content Driven",
+            "volatility": "Medium",
+            "dividend_yield": "Medium"
+        }
+    })
+    
+    # Metric Tooltips for better UX - Enhanced with tier information
     METRIC_TOOLTIPS: Dict[str, str] = field(default_factory=lambda: {
         'vmi': 'Volume Momentum Index: Weighted volume trend score (higher = stronger volume momentum)',
         'position_tension': 'Range position stress: Distance from 52W low + distance from 52W high',
@@ -205,10 +427,19 @@ class Config:
         'overall_wave_strength': 'Composite wave score: Combined momentum, acceleration, RVOL & breakout',
         'money_flow_mm': 'Money Flow in millions: Price × Volume × RVOL / 1M',
         'master_score': 'Overall ranking score (0-100) combining all factors',
+        'sector_adjusted_score': 'Sector-intelligent score using sector-specific weightings for 11 sectors',
         'acceleration_score': 'Rate of momentum change (0-100)',
         'breakout_score': 'Probability of price breakout (0-100)',
         'trend_quality': 'SMA alignment quality (0-100)',
-        'liquidity_score': 'Trading liquidity measure (0-100)'
+        'liquidity_score': 'Trading liquidity measure (0-100)',
+        'eps_tier': 'EPS classification: From Negative to Ultra based on earnings per share',
+        'pe_tier': 'PE ratio classification: From Value to Ultra Premium based on price-to-earnings',
+        'price_tier': 'Price classification: From Penny to Premium based on stock price level',
+        'pe_sector_context': 'PE ratio compared to sector averages across 11 sectors',
+        'sector_characteristics': 'Sector-specific risk, volatility, and growth characteristics',
+        'pe_percentile_context': 'PE ratio position within dataset distribution',
+        'price_category_insight': 'Price level analysis relative to market cap category',
+        'pe_eps_insight': 'Valuation insight based on PE and EPS combination'
     })
 
 # Global configuration instance
@@ -698,35 +929,201 @@ class DataProcessor:
     @staticmethod
     def _add_tier_classifications(df: pd.DataFrame) -> pd.DataFrame:
         """
-        Applies a classification tier to numerical data (e.g., price, PE)
-        based on predefined ranges in the `Config` class.
-        This is a bug-fixed and robust version of the logic from earlier files.
+        Enhanced tier classification system with improved categorization,
+        industry-specific context, and visual indicators.
         """
-        def classify_tier(value: float, tier_dict: Dict[str, Tuple[float, float]]) -> str:
-            """Helper function to map a value to its tier."""
+        def classify_tier(value: float, tier_dict: Dict[str, Tuple[float, float, str, str]], tier_type: str = 'general') -> Dict[str, Any]:
+            """Enhanced helper function to map a value to its tier with metadata."""
             if pd.isna(value):
-                return "Unknown"
+                return {
+                    "tier": "Unknown", 
+                    "emoji": "❓", 
+                    "description": "Missing data", 
+                    "color": "#CCCCCC"
+                }
             
-            for tier_name, (min_val, max_val) in tier_dict.items():
+            for tier_name, (min_val, max_val, emoji, description) in tier_dict.items():
                 if min_val < value <= max_val:
-                    return tier_name
+                    color = CONFIG.TIER_COLORS.get(tier_type, {}).get(tier_name, "#CCCCCC")
+                    return {
+                        "tier": tier_name, 
+                        "emoji": emoji, 
+                        "description": description, 
+                        "color": color
+                    }
                 if min_val == -float('inf') and value <= max_val:
-                    return tier_name
+                    color = CONFIG.TIER_COLORS.get(tier_type, {}).get(tier_name, "#CCCCCC")
+                    return {
+                        "tier": tier_name, 
+                        "emoji": emoji, 
+                        "description": description, 
+                        "color": color
+                    }
                 if max_val == float('inf') and value > min_val:
-                    return tier_name
+                    color = CONFIG.TIER_COLORS.get(tier_type, {}).get(tier_name, "#CCCCCC")
+                    return {
+                        "tier": tier_name, 
+                        "emoji": emoji, 
+                        "description": description, 
+                        "color": color
+                    }
             
-            return "Unknown"
+            return {
+                "tier": "Unknown", 
+                "emoji": "❓", 
+                "description": "Outside defined ranges", 
+                "color": "#CCCCCC"
+            }
         
+        # Add sector-specific PE context (updated for your 11 sectors)
+        if 'pe' in df.columns and 'sector' in df.columns:
+            def get_sector_pe_context(row):
+                pe_val = row['pe']
+                sector = row.get('sector', 'Unknown')
+                
+                if pd.isna(pe_val) or pe_val <= 0:
+                    return "N/A"
+                    
+                # Get sector thresholds or use default
+                sector_context = CONFIG.SECTOR_PE_CONTEXTS.get(
+                    sector, 
+                    {"low": 10.0, "avg": 15.0, "high": 25.0, "premium": 35.0}  # Default thresholds
+                )
+                
+                if pe_val < sector_context["low"]:
+                    return "Below Sector Avg 🔍"
+                elif pe_val <= sector_context["avg"]:
+                    return "Sector Norm ✅"
+                elif pe_val <= sector_context["high"]:
+                    return "Above Sector Avg 📈"
+                elif pe_val <= sector_context["premium"]:
+                    return "Premium Valuation 💎"
+                else:
+                    return "Ultra Premium 🚀"
+                    
+            df['pe_sector_context'] = df.apply(get_sector_pe_context, axis=1)
+            
+            # Add sector characteristics insight
+            def get_sector_characteristics(row):
+                sector = row.get('sector', 'Unknown')
+                characteristics = CONFIG.SECTOR_CHARACTERISTICS.get(sector, {})
+                
+                if not characteristics:
+                    return "Unknown Sector"
+                    
+                risk = characteristics.get('risk_level', 'Medium')
+                volatility = characteristics.get('volatility', 'Medium')
+                growth = characteristics.get('growth_expectation', 'Medium')
+                
+                return f"{risk} Risk | {volatility} Vol | {growth} Growth"
+                
+            df['sector_characteristics'] = df.apply(get_sector_characteristics, axis=1)
+        
+        # Enhanced EPS tier classification
         if 'eps_current' in df.columns:
-            df['eps_tier'] = df['eps_current'].apply(lambda x: classify_tier(x, CONFIG.TIERS['eps']))
+            eps_results = df['eps_current'].apply(
+                lambda x: classify_tier(x, CONFIG.TIERS['eps'], 'eps')
+            ).tolist()
+            
+            df['eps_tier'] = [r["tier"] for r in eps_results]
+            df['eps_tier_emoji'] = [r["emoji"] for r in eps_results]
+            df['eps_tier_desc'] = [r["description"] for r in eps_results]
+            df['eps_tier_color'] = [r["color"] for r in eps_results]
         
+        # Enhanced PE tier classification with percentile context
         if 'pe' in df.columns:
-            df['pe_tier'] = df['pe'].apply(
-                lambda x: "Negative/NA" if pd.isna(x) or x <= 0 else classify_tier(x, CONFIG.TIERS['pe'])
-            )
+            # First get PE distribution percentiles for context
+            valid_pe = df['pe'][(df['pe'] > 0) & (df['pe'] < 1000)]  # Filter extreme outliers
+            if len(valid_pe) > 0:
+                pe_25th = valid_pe.quantile(0.25)
+                pe_50th = valid_pe.quantile(0.50)
+                pe_75th = valid_pe.quantile(0.75)
+                
+                # Add PE percentile for relative context
+                def get_pe_percentile_context(pe_val):
+                    if pd.isna(pe_val) or pe_val <= 0:
+                        return "N/A"
+                        
+                    if pe_val <= pe_25th:
+                        return "Bottom 25% 💰"
+                    elif pe_val <= pe_50th:
+                        return "Bottom 50% 📊"
+                    elif pe_val <= pe_75th:
+                        return "Top 50% 📈"
+                    else:
+                        return "Top 25% 🔍"
+                        
+                df['pe_percentile_context'] = df['pe'].apply(get_pe_percentile_context)
+            
+            # Apply tier classification  
+            pe_results = df['pe'].apply(
+                lambda x: classify_tier(x, CONFIG.TIERS['pe'], 'pe') if pd.notna(x) and x > 0 
+                else {"tier": "Negative", "emoji": "⚠️", "description": "Company has negative earnings", "color": "#FF5252"}
+            ).tolist()
+            
+            df['pe_tier'] = [r["tier"] for r in pe_results]
+            df['pe_tier_emoji'] = [r["emoji"] for r in pe_results]
+            df['pe_tier_desc'] = [r["description"] for r in pe_results]
+            df['pe_tier_color'] = [r["color"] for r in pe_results]
         
+        # Enhanced Price tier classification with market cap context
         if 'price' in df.columns:
-            df['price_tier'] = df['price'].apply(lambda x: classify_tier(x, CONFIG.TIERS['price']))
+            price_results = df['price'].apply(
+                lambda x: classify_tier(x, CONFIG.TIERS['price'], 'price')
+            ).tolist()
+            
+            df['price_tier'] = [r["tier"] for r in price_results]
+            df['price_tier_emoji'] = [r["emoji"] for r in price_results]
+            df['price_tier_desc'] = [r["description"] for r in price_results]
+            df['price_tier_color'] = [r["color"] for r in price_results]
+            
+            # Add price-to-category ratio insight
+            if 'category' in df.columns:
+                def get_price_category_insight(row):
+                    price = row['price']
+                    category = row.get('category', '')
+                    
+                    if pd.isna(price):
+                        return "N/A"
+                        
+                    # Simple insights based on price and market cap category
+                    if "Micro" in str(category) and price > 1000:
+                        return "High Price for Micro Cap 🔍"
+                    elif "Small" in str(category) and price > 2500:
+                        return "High Price for Small Cap 🔍"
+                    elif "Mid" in str(category) and price < 100:
+                        return "Low Price for Mid Cap 💰"
+                    elif "Large" in str(category) and price < 250:
+                        return "Low Price for Large Cap 💰"
+                    elif "Mega" in str(category) and price < 500:
+                        return "Low Price for Mega Cap 💰"
+                    else:
+                        return "Typical for Category ✅"
+                
+                df['price_category_insight'] = df.apply(get_price_category_insight, axis=1)
+        
+        # Add PE to EPS ratio insight
+        if 'pe' in df.columns and 'eps_current' in df.columns:
+            def calculate_pe_eps_insight(row):
+                pe = row.get('pe')
+                eps = row.get('eps_current')
+                
+                if pd.isna(pe) or pd.isna(eps) or eps == 0 or pe <= 0:
+                    return "N/A"
+                    
+                # Simple valuation insight based on PE level
+                if pe < 10:
+                    return "Strong Value 💰💰"
+                elif pe < 15:
+                    return "Good Value 💰"
+                elif pe < 20:
+                    return "Fair Valuation 📊"
+                elif pe < 30:
+                    return "Growth Premium 📈"
+                else:
+                    return "High Premium 🔍"
+                    
+            df['pe_eps_insight'] = df.apply(calculate_pe_eps_insight, axis=1)
         
         return df
         
@@ -1227,11 +1624,18 @@ class RankingEngine:
         
         df['master_score'] = np.dot(scores_matrix, weights).clip(0, 100)
         
-        # Calculate ranks
-        df['rank'] = df['master_score'].rank(method='first', ascending=False, na_option='bottom')
+        # ENHANCED: Add sector-intelligent scoring
+        if 'sector' in df.columns:
+            df['sector_adjusted_score'] = RankingEngine._calculate_sector_adjusted_score(df)
+        else:
+            df['sector_adjusted_score'] = df['master_score']
+        
+        # Calculate ranks (using sector-adjusted score if available)
+        score_column = 'sector_adjusted_score' if 'sector_adjusted_score' in df.columns else 'master_score'
+        df['rank'] = df[score_column].rank(method='first', ascending=False, na_option='bottom')
         df['rank'] = df['rank'].fillna(len(df) + 1).astype(int)
         
-        df['percentile'] = df['master_score'].rank(pct=True, ascending=True, na_option='bottom') * 100
+        df['percentile'] = df[score_column].rank(pct=True, ascending=True, na_option='bottom') * 100
         df['percentile'] = df['percentile'].fillna(0)
         
         # Calculate category-specific ranks
@@ -1622,6 +2026,106 @@ class RankingEngine:
                         df.loc[mask, 'category_percentile'] = cat_percentiles
         
         return df
+
+    @staticmethod
+    def _calculate_sector_adjusted_score(df: pd.DataFrame) -> pd.Series:
+        """
+        Calculate sector-intelligent adjusted scores using actual stock distribution data.
+        This method applies different scoring strategies based on sector stock counts:
+        - High volume sectors (400+ stocks): Conservative, stable weightings
+        - Medium volume sectors (150-200 stocks): Balanced approach  
+        - Low volume sectors (30-90 stocks): Aggressive alpha-seeking
+        - Very low volume sectors (10-20 stocks): Extremely selective
+        """
+        sector_adjusted_scores = pd.Series(df['master_score'], index=df.index)
+        
+        if 'sector' not in df.columns:
+            return sector_adjusted_scores
+        
+        # Apply sector-specific intelligent weightings
+        for sector, weights in CONFIG.SECTOR_SCORE_WEIGHTS.items():
+            sector_mask = df['sector'] == sector
+            if not sector_mask.any():
+                continue
+            
+            # Get sector metadata
+            sector_meta = CONFIG.SECTOR_STOCK_COUNTS.get(sector, {})
+            stock_count = sector_meta.get('count', 100)
+            alpha_potential = sector_meta.get('alpha_potential', 'Medium')
+            selectivity = sector_meta.get('selectivity', 'Balanced')
+            
+            # Get the subset for this sector
+            sector_df = df[sector_mask]
+            
+            # Recalculate scores with sector-specific weights
+            sector_scores_matrix = np.column_stack([
+                sector_df['position_score'].fillna(50),
+                sector_df['volume_score'].fillna(50),
+                sector_df['momentum_score'].fillna(50),
+                sector_df['acceleration_score'].fillna(50)
+            ])
+            
+            sector_weights = np.array([
+                weights.get('position', 0.25),
+                weights.get('volume', 0.25),
+                weights.get('momentum', 0.25),
+                weights.get('acceleration', 0.25)
+            ])
+            
+            # Calculate sector-adjusted scores
+            sector_specific_scores = np.dot(sector_scores_matrix, sector_weights).clip(0, 100)
+            
+            # Apply stock count based blending strategy
+            if stock_count >= 400:  # High volume sectors - conservative
+                blend_ratio = 0.6  # 60% sector-specific, 40% original
+                volatility_boost = 1.02  # Minimal boost
+            elif stock_count >= 150:  # Medium volume sectors - balanced
+                blend_ratio = 0.7  # 70% sector-specific, 30% original  
+                volatility_boost = 1.05  # Moderate boost
+            elif stock_count >= 30:  # Low volume sectors - aggressive
+                blend_ratio = 0.8  # 80% sector-specific, 20% original
+                volatility_boost = 1.08  # Higher boost for alpha
+            else:  # Very low volume sectors - extremely selective
+                blend_ratio = 0.85  # 85% sector-specific, 15% original
+                volatility_boost = 1.12  # Highest boost for rare gems
+            
+            # Blend scores
+            blended_scores = (
+                sector_specific_scores * blend_ratio + 
+                sector_df['master_score'].fillna(50) * (1 - blend_ratio)
+            ).clip(0, 100)
+            
+            # Apply alpha potential adjustments
+            if alpha_potential == 'Very High':
+                momentum_multiplier = 1.0 + (sector_df['momentum_score'].fillna(50) / 100) * 0.08  # Up to 8% boost
+            elif alpha_potential == 'High':
+                momentum_multiplier = 1.0 + (sector_df['momentum_score'].fillna(50) / 100) * 0.05  # Up to 5% boost
+            elif alpha_potential == 'Low':
+                momentum_multiplier = 1.0 + (sector_df['momentum_score'].fillna(50) / 100) * 0.01  # Up to 1% boost
+            else:  # Medium
+                momentum_multiplier = 1.0 + (sector_df['momentum_score'].fillna(50) / 100) * 0.03  # Up to 3% boost
+            
+            # Apply selectivity bonus for top performers in selective sectors
+            if selectivity in ['Highly Selective', 'Extremely Selective']:
+                # Give extra boost to top 20% performers in selective sectors
+                top_20_threshold = sector_df['master_score'].quantile(0.8)
+                top_performers = sector_df['master_score'] >= top_20_threshold
+                selectivity_bonus = np.where(top_performers, 1.05, 1.0)  # 5% bonus for top performers
+            else:
+                selectivity_bonus = 1.0
+            
+            # Final score calculation
+            final_scores = (
+                blended_scores * 
+                momentum_multiplier * 
+                volatility_boost * 
+                selectivity_bonus
+            ).clip(0, 100)
+            
+            # Apply the adjusted scores
+            sector_adjusted_scores.loc[sector_mask] = final_scores
+        
+        return sector_adjusted_scores
 
 # ============================================
 # PATTERN DETECTION ENGINE - FULLY OPTIMIZED & FIXED
@@ -5974,6 +6478,67 @@ def main():
                     max_chars=50
                 )
             
+            
+            # 🧠 Sector Intelligence Analytics (before main display)
+            st.subheader("🧠 Sector Intelligence Analytics")
+            
+            if 'sector' in display_df.columns:
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.markdown("### 📊 Stock Distribution by Sector")
+                    sector_counts = display_df['sector'].value_counts()
+                    
+                    # Create sector distribution chart
+                    fig_distribution = px.bar(
+                        x=sector_counts.index,
+                        y=sector_counts.values,
+                        title="Stock Count per Sector",
+                        labels={'x': 'Sector', 'y': 'Number of Stocks'},
+                        color=sector_counts.values,
+                        color_continuous_scale='Viridis'
+                    )
+                    fig_distribution.update_layout(
+                        xaxis_tickangle=-45,
+                        height=400,
+                        showlegend=False
+                    )
+                    st.plotly_chart(fig_distribution, use_container_width=True)
+                
+                with col2:
+                    st.markdown("### ⚡ Sector Intelligence Summary")
+                    
+                    # Display sector metadata and strategy
+                    for sector in sector_counts.index[:8]:  # Top 8 sectors by stock count
+                        sector_meta = CONFIG.SECTOR_STOCK_COUNTS.get(sector, {})
+                        sector_stocks = sector_counts.get(sector, 0)
+                        expected_count = sector_meta.get('count', sector_stocks)
+                        
+                        # Determine strategy emoji
+                        if expected_count >= 400:
+                            strategy_emoji = "🛡️"  # Conservative
+                            strategy_text = "Conservative"
+                        elif expected_count >= 150:
+                            strategy_emoji = "⚖️"  # Balanced
+                            strategy_text = "Balanced"
+                        elif expected_count >= 30:
+                            strategy_emoji = "🚀"  # Aggressive
+                            strategy_text = "Alpha-Seeking"
+                        else:
+                            strategy_emoji = "💎"  # Extremely selective
+                            strategy_text = "Gem-Mining"
+                        
+                        alpha_potential = sector_meta.get('alpha_potential', 'Medium')
+                        selectivity = sector_meta.get('selectivity', 'Balanced')
+                        
+                        st.markdown(f"""
+                        **{strategy_emoji} {sector}**
+                        - Stocks: {sector_stocks} ({expected_count} expected)
+                        - Strategy: {strategy_text}
+                        - Alpha Potential: {alpha_potential}
+                        - Selectivity: {selectivity}
+                        """)
+            
             # Display the main dataframe with column configuration
             st.dataframe(
                 final_display_df,
@@ -5985,7 +6550,7 @@ def main():
             
             # Quick Statistics Section
             with st.expander("📊 Quick Statistics", expanded=False):
-                stat_cols = st.columns(4)
+                stat_cols = st.columns(5)  # Changed to 5 columns to include sector stats
                 
                 with stat_cols[0]:
                     st.markdown("**📈 Score Distribution**")
@@ -6135,6 +6700,59 @@ def main():
                         )
                     else:
                         st.text("No trend data available")
+                
+                # New 5th column for Sector Intelligence
+                with stat_cols[4]:
+                    st.markdown("**🧠 Sector Intelligence**")
+                    if 'sector' in display_df.columns:
+                        sector_counts = display_df['sector'].value_counts()
+                        total_stocks = len(display_df)
+                        
+                        # Calculate sector diversity and concentration
+                        top_sector = sector_counts.iloc[0] if len(sector_counts) > 0 else 0
+                        concentration_pct = (top_sector / total_stocks * 100) if total_stocks > 0 else 0
+                        
+                        # Count sectors by strategy type
+                        conservative_sectors = 0
+                        aggressive_sectors = 0
+                        gem_sectors = 0
+                        
+                        for sector in sector_counts.index:
+                            sector_meta = CONFIG.SECTOR_STOCK_COUNTS.get(sector, {})
+                            expected_count = sector_meta.get('count', 100)
+                            
+                            if expected_count >= 400:
+                                conservative_sectors += 1
+                            elif expected_count >= 30:
+                                aggressive_sectors += 1
+                            else:
+                                gem_sectors += 1
+                        
+                        sector_stats = {
+                            'Total Sectors': f"{len(sector_counts)}",
+                            'Top Sector': f"{sector_counts.index[0] if len(sector_counts) > 0 else 'N/A'}",
+                            'Concentration': f"{concentration_pct:.0f}%",
+                            '🛡️ Conservative': f"{conservative_sectors}",
+                            '🚀 Alpha-Seeking': f"{aggressive_sectors}",
+                            '💎 Gem-Mining': f"{gem_sectors}"
+                        }
+                        
+                        sector_df = pd.DataFrame(
+                            list(sector_stats.items()),
+                            columns=['Metric', 'Value']
+                        )
+                        
+                        st.dataframe(
+                            sector_df,
+                            use_container_width=True,
+                            hide_index=True,
+                            column_config={
+                                'Metric': st.column_config.TextColumn('Metric', width="medium"),
+                                'Value': st.column_config.TextColumn('Value', width="small")
+                            }
+                        )
+                    else:
+                        st.text("No sector data available")
             
             # Top Patterns Section
             with st.expander("🎯 Top Patterns Detected", expanded=False):
